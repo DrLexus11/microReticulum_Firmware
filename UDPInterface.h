@@ -21,7 +21,13 @@
 #include <WiFiUdp.h>
 
 #define UDP_LOCAL_HOST "0.0.0.0"
-#define UDP_REMOTE_HOST "255.255.255.255"
+// Where this interface sends. Broadcast is the portable default, but APs drop
+// most broadcast traffic toward WiFi clients -- measured 70% loss to a station on
+// this network, which single announces survive but multi-packet link handshakes
+// do not. Override with -DUDP_REMOTE_HOST="\"<peer ip>\"" to unicast instead.
+#ifndef UDP_REMOTE_HOST
+  #define UDP_REMOTE_HOST "255.255.255.255"
+#endif
 #define UDP_PORT 4242
 
 //#include "Remote.h"
@@ -63,6 +69,8 @@ protected:
       //if (wifi_status == WL_CONNECTED) {
       if (wifi_initialized) {
         TRACEF("UDPInterface.send_outgoing: (%u bytes) data: %s", data.size(), data.toHex().c_str());
+        extern volatile uint32_t udp_tx_count;
+        udp_tx_count++;
         if (udp.beginPacket(UDP_REMOTE_HOST, udp_port) != 0) {
           size_t wrote = udp.write(data.data(), data.size());
           udp.endPacket();

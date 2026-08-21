@@ -50,6 +50,12 @@ char wr_hostname[10];
 wl_status_t wr_wifi_status = WL_IDLE_STATUS;
 #if defined(UDP_TRANSPORT)
 WiFiUDP udp;
+// Address the UDP socket was last bound with; see wifi_update_status().
+IPAddress udp_bound_ip((uint32_t)0);
+// UDP packet counters. Announces leaving the board prove nothing about whether
+// it can *hear* the mesh; these separate "not transmitting" from "not receiving".
+volatile uint32_t udp_rx_count = 0;
+volatile uint32_t udp_tx_count = 0;
 RNS::Bytes udp_buffer;
 #if defined(HAS_RNS)
 extern RNS::Interface udp_interface;
@@ -238,6 +244,29 @@ void wifi_update_status() {
   printf("[WiFi] status: %d\n", wr_wifi_status);
   if (wr_wifi_status == WL_CONNECTED) {
     wr_device_ip = WiFi.localIP();
+#if defined(UDP_TRANSPORT)
+    // wifi_remote_start() opens the UDP socket immediately after WiFi.begin(),
+    // which is before DHCP has assigned an address -- it binds with no local IP
+    // and is never reopened, because wifi_remote_init() only re-runs when the
+    // station drops. The interface then reports an empty address and never
+    // joins the mesh. Rebind once, when an address actually arrives.
+    if (wifi_initialized && wr_device_ip != IPAddress((uint32_t)0) && wr_device_ip != udp_bound_ip) {
+      // Check begin()'s result and only latch the address on success. The first
+      // attempt can land before the netif is ready to bind -- especially now that
+      // boot reaches this point in ~4s -- and an unchecked failure left the
+      // socket unbound forever: transmit still worked (beginPacket() needs no
+      // bound socket) so the board announced normally while being completely
+      // deaf, which is exactly how it presented.
+      udp.stop();
+      uint8_t ok = udp.begin(udp_port);
+      if (ok) {
+        udp_bound_ip = wr_device_ip;   // latch only on success, so failures retry
+        printf("[WiFi] udp bound on %s:%u\n", wr_device_ip.toString().c_str(), (unsigned)udp_port);
+      } else {
+        printf("[WiFi] udp bind FAILED on %s:%u, will retry\n", wr_device_ip.toString().c_str(), (unsigned)udp_port);
+      }
+    }
+#endif
     //printf("[WiFi] ip: %s\n", WiFi.localIP());
   }
   if (wifi_mode == WR_WIFI_AP && wifi_initialized) { wr_device_ip = WiFi.softAPIP(); wr_wifi_status = WL_CONNECTED; }
@@ -250,6 +279,7 @@ void update_wifi() {
 #if defined(UDP_TRANSPORT)
   if (wifi_initialized) {
     if (udp.parsePacket() > 0) {
+      udp_rx_count++;
       size_t len = udp.read(udp_buffer.writable(MTU), MTU);
     if (len > 0) {
         udp_buffer.resize(len);

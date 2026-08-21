@@ -75,6 +75,19 @@
 
 	// MCU independent configuration parameters
 	const long serial_baudrate  = 115200;
+	// Interval for the headless heap trend report; see heap_watch() in the .ino.
+	#define HEAP_REPORT_INTERVAL_MS 60000
+	// How often a headless node re-announces its NomadNet site, so peers can
+	// repair a stale or degraded path without a power cycle. Costs LoRa airtime.
+	// RNS invalidates a path when delivery fails, and this node runs with
+	// transport disabled so it never answers path requests -- the only way a peer
+	// relearns the route is the next announce. At 30 minutes that meant up to half
+	// an hour of unreachability after a single failed link. Announces are cheap on
+	// WiFi/UDP; raise this again if the node is ever LoRa-only, where they are not.
+	#define NOMADNET_ANNOUNCE_INTERVAL_MS 300000   // 5 minutes
+	// First announce after boot. Must be comfortably later than DHCP + the UDP
+	// socket rebind, or it is emitted before the interface can carry it.
+	#define NOMADNET_FIRST_ANNOUNCE_MS 60000       // 1 minute
 
 	// SX1276 RSSI offset to get dBm value from
 	// packet RSSI register
