@@ -547,7 +547,13 @@
       #define HAS_EEPROM true
       #define HAS_WIFI true
       #define HAS_BLUETOOTH false
-      #define HAS_BLE true
+      // ESP32-S3 has no Classic Bluetooth. BLE can be omitted for a
+      // Wi-Fi/USB-only image with the firmware-rad01_rev1_wifi_only target.
+      #ifdef RAD01_NO_BLE
+        #define HAS_BLE false
+      #else
+        #define HAS_BLE true
+      #endif
 
       const int pin_cs = 13;
       const int pin_reset = 14;
