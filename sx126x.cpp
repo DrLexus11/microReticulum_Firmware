@@ -114,7 +114,7 @@ extern SPIClass SPI;
 
 sx126x::sx126x() :
   _spiSettings(16E6, MSBFIRST, SPI_MODE0),
-  _ss(LORA_DEFAULT_SS_PIN), _reset(LORA_DEFAULT_RESET_PIN), _dio0(LORA_DEFAULT_DIO0_PIN), _busy(LORA_DEFAULT_BUSY_PIN), _rxen(LORA_DEFAULT_RXEN_PIN),
+  _ss(LORA_DEFAULT_SS_PIN), _reset(LORA_DEFAULT_RESET_PIN), _dio0(LORA_DEFAULT_DIO0_PIN), _busy(LORA_DEFAULT_BUSY_PIN), _rxen(LORA_DEFAULT_RXEN_PIN), _txen(LORA_DEFAULT_TXEN_PIN),
   _frequency(0),
   _txp(0),
   _sf(0x07),
@@ -140,7 +140,7 @@ bool sx126x::preInit() {
   pinMode(_ss, OUTPUT);
   digitalWrite(_ss, HIGH);
 
-  #if BOARD_MODEL == BOARD_T3S3 || BOARD_MODEL == BOARD_HELTEC32_V3 || BOARD_MODEL == BOARD_HELTEC32_V4 || BOARD_MODEL == BOARD_HELTEC_TRACKER_V2 || BOARD_MODEL == BOARD_TDECK || BOARD_MODEL == BOARD_XIAO_S3
+  #if BOARD_MODEL == BOARD_T3S3 || BOARD_MODEL == BOARD_HELTEC32_V3 || BOARD_MODEL == BOARD_HELTEC32_V4 || BOARD_MODEL == BOARD_HELTEC_TRACKER_V2 || BOARD_MODEL == BOARD_TDECK || BOARD_MODEL == BOARD_XIAO_S3 || BOARD_MODEL == BOARD_RAD01_REV2
     SPI.begin(pin_sclk, pin_miso, pin_mosi, pin_cs);
   #elif BOARD_MODEL == BOARD_TECHO
     SPI.setPins(pin_miso, pin_sclk, pin_mosi);
@@ -244,7 +244,13 @@ uint8_t ISR_VECT sx126x::singleTransfer(uint8_t opcode, uint16_t address, uint8_
 }
 
 void sx126x::rxAntEnable() {
+  if (_txen != -1) { digitalWrite(_txen, LOW); }
   if (_rxen != -1) { digitalWrite(_rxen, HIGH); }
+}
+
+void sx126x::txAntEnable() {
+  if (_rxen != -1) { digitalWrite(_rxen, LOW); }
+  if (_txen != -1) { digitalWrite(_txen, HIGH); }
 }
 
 void sx126x::loraMode() {
@@ -449,6 +455,7 @@ int sx126x::begin(uint32_t frequency) {
   if (_busy != -1) { pinMode(_busy, INPUT); }
   if (!_preinit_done) { if (!preInit()) { return false; } }
   if (_rxen != -1) { pinMode(_rxen, OUTPUT); }
+  if (_txen != -1) { pinMode(_txen, OUTPUT); }
 
   calibrate();
   calibrate_image(frequency);
@@ -574,6 +581,7 @@ int sx126x::beginPacket(int implicitHeader) {
 
 int sx126x::endPacket() {
   setPacketParams(_preambleLength, _implicitHeaderMode, _payloadLength, _crcMode);
+  txAntEnable();
   uint8_t timeout[3] = {0}; // Put in single TX mode
   executeOpcode(OP_TX_6X, timeout, 3);
 
@@ -993,12 +1001,13 @@ void sx126x::setSyncWord(uint16_t sw) {
   writeRegister(REG_SYNC_WORD_LSB_6X, 0x24);
 }
 
-void sx126x::setPins(int ss, int reset, int dio0, int busy, int rxen) {
+void sx126x::setPins(int ss, int reset, int dio0, int busy, int rxen, int txen) {
   _ss = ss;
   _reset = reset;
   _dio0 = dio0;
   _busy = busy;
   _rxen = rxen;
+  _txen = txen;
 }
 
 void sx126x::dumpRegisters(Stream& out) {

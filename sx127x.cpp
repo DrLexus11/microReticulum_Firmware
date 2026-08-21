@@ -116,7 +116,7 @@ bool sx127x::preInit() {
     delay(10);
   }
 
-  #if BOARD_MODEL == BOARD_T3S3
+  #if BOARD_MODEL == BOARD_T3S3 || BOARD_MODEL == BOARD_RAD01_REV1
     SPI.begin(pin_sclk, pin_miso, pin_mosi, pin_cs);
   #else
     SPI.begin();

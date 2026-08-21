@@ -127,9 +127,9 @@ def device_set_firmware_hash(firmware_hash, env):
 
     port_path = env.subst("$UPLOAD_PORT")
     frame = firmware_hash_kiss_frame(firmware_hash)
-    print("Writing firmware hash directly over KISS for unsupported rnodeconf model...")
+    print("Writing firmware hash directly over KISS...")
     with serial.Serial(port_path, 115200, timeout=0.1) as port:
-        # Opening native USB resets the Tracker V2. Drain startup output and
+        # Opening native USB can reset an ESP32-S3. Drain startup output and
         # wait until setup() has reached the serial command loop.
         ready_at = time.monotonic() + 4.0
         while time.monotonic() < ready_at:
@@ -164,6 +164,10 @@ def device_provision(env):
             env.Execute("rnodeconf --product 15 --model 17 --hwrev 1 --rom " + env.subst("$UPLOAD_PORT"))
         case "heltec_t114" | "heltec_t114_local":
             env.Execute("rnodeconf --product c2 --model c7 --hwrev 1 --rom " + env.subst("$UPLOAD_PORT"))
+        case "impr_rad01_rev1" | "impr_rad01_rev2":
+            # RAD-01 is provisioned as PRODUCT_HMBRW / MODEL_FE. App uploads
+            # preserve its signed EEPROM identity, so do not rewrite it here.
+            print("Preserving existing RAD-01 EEPROM provisioning")
         case _:
             print(f"Unknown board variant {variant}, can not provision device!")
 
@@ -187,7 +191,12 @@ def firmware_hash(source, env):
     else:
         print("source_file:", source_file)
         firmware_data = open(source_file, "rb").read()
-        if env.GetProjectOption("custom_variant") in ("heltec_tracker_v2", "heltec_tracker_v2_local"):
+        if env.GetProjectOption("custom_variant") in (
+            "heltec_tracker_v2",
+            "heltec_tracker_v2_local",
+            "impr_rad01_rev1",
+            "impr_rad01_rev2",
+        ):
             try:
                 calc_hash = esp_image_sha256(firmware_data)
             except ValueError as error:

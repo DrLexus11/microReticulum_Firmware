@@ -105,6 +105,11 @@
   #define BOARD_HELTEC_TRACKER_V2 0x45
   #define MODEL_CB            0xCB // Heltec Wireless Tracker V2, 863-928 MHz, 28dBm
 
+  // Local IMPR RAD-01 hardware variants. These board identifiers are kept
+  // separate from the homebrew product/model identity stored in EEPROM.
+  #define BOARD_RAD01_REV1    0x46 // ESP32-S3 + RFM95W (SX1276)
+  #define BOARD_RAD01_REV2    0x47 // ESP32-S3 + Ra-01SH (SX1262)
+
   #define PRODUCT_HELTEC_T114 0xC2 // Heltec Mesh Node T114
   #define BOARD_HELTEC_T114   0x3C
   #define MODEL_C6            0xC6 // Heltec Mesh Node T114, 470-510 MHz
@@ -534,6 +539,49 @@
       const int pin_mosi = 10;
       const int pin_miso = 11;
       const int pin_sclk = 9;
+
+    #elif BOARD_MODEL == BOARD_RAD01_REV1
+      #define IS_ESP32S3 true
+      #define HAS_CONSOLE false
+      #define HAS_SD false
+      #define HAS_EEPROM true
+      #define HAS_WIFI true
+      #define HAS_BLUETOOTH false
+      #define HAS_BLE true
+
+      const int pin_cs = 13;
+      const int pin_reset = 14;
+      const int pin_sclk = 10;
+      const int pin_mosi = 11;
+      const int pin_miso = 12;
+      const int pin_dio = 5;
+      const int pin_led_rx = 4;
+      const int pin_led_tx = 4;
+
+    #elif BOARD_MODEL == BOARD_RAD01_REV2
+      #define IS_ESP32S3 true
+      #define HAS_CONSOLE false
+      #define HAS_SD false
+      #define HAS_EEPROM true
+      #define HAS_WIFI true
+      #define HAS_BLUETOOTH false
+      #define HAS_BLE true
+      #define HAS_BUSY true
+      #define HAS_TCXO false
+      #define DIO2_AS_RF_SWITCH false
+      #define HAS_RF_SWITCH_RX_TX true
+
+      const int pin_rxen = 7;
+      const int pin_txen = 21;
+      const int pin_cs = 13;
+      const int pin_reset = 14;
+      const int pin_sclk = 10;
+      const int pin_mosi = 11;
+      const int pin_miso = 12;
+      const int pin_busy = 5;
+      const int pin_dio = 6;
+      const int pin_led_rx = 4;
+      const int pin_led_tx = 4;
 
     #elif BOARD_MODEL == BOARD_RNODE_NG_20
       #define HAS_DISPLAY true
