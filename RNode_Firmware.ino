@@ -95,6 +95,11 @@ bool kiss_framed_logs = true;
 bool nomadnet_enabled = true;
 RNS::Destination nomadnet_destination = {RNS::Type::NONE};
 char nomadnet_name[64];
+// Reason for the most recent reset, captured in setup() before the filesystem is
+// up and appended to ./bootlog.txt once it is. Persisted because replugging USB
+// power-cycles the board, which would otherwise overwrite the evidence with a
+// fresh POWERON.
+const char* boot_reset_reason = "UNKNOWN";
 
 #if HAS_CONSOLE
   #include "Console.h"
@@ -471,6 +476,14 @@ void setup() {
   memset(serialBuffer, 0, sizeof(serialBuffer));
   fifo_init(&serialFIFO, serialBuffer, CONFIG_UART_BUFFER_SIZE);
 
+  #if MCU_VARIANT == MCU_ESP32
+    // Must precede Serial.begin(): HardwareSerial refuses to resize the RX
+    // buffer once the port is running, which silently leaves it at the Arduino
+    // default of 256 bytes. Only visible on builds where Serial is a real UART
+    // (ARDUINO_USB_CDC_ON_BOOT=0); the USB CDC class has no such restriction.
+    Serial.setRxBufferSize(CONFIG_UART_BUFFER_SIZE);
+  #endif
+
   Serial.begin(serial_baudrate);
 
   // Redirect stdout to KISS framed logs
@@ -489,12 +502,55 @@ void setup() {
     delay(2000);
   #endif
 
+#if defined(ESP32)
+  // Why did we just boot? On a headless node this is the only cheap way to tell
+  // a clean power-up from a panic, a watchdog bite, a brownout, or the
+  // RNS_LOW_MEMORY_REBOOT path (which calls ESP.restart() -> ESP_RST_SW when
+  // free heap drops to <=2%). Printed unconditionally, not behind a log level.
+  {
+    const char* rr;
+    switch (esp_reset_reason()) {
+      case ESP_RST_POWERON:  rr = "POWERON";              break;
+      case ESP_RST_SW:       rr = "SW (ESP.restart)";     break;
+      case ESP_RST_PANIC:    rr = "PANIC (exception)";    break;
+      case ESP_RST_INT_WDT:  rr = "INT_WDT";              break;
+      case ESP_RST_TASK_WDT: rr = "TASK_WDT";             break;
+      case ESP_RST_WDT:      rr = "WDT (other)";          break;
+      case ESP_RST_BROWNOUT: rr = "BROWNOUT";             break;
+      case ESP_RST_DEEPSLEEP:rr = "DEEPSLEEP";            break;
+      case ESP_RST_EXT:      rr = "EXT (reset pin)";      break;
+      case ESP_RST_SDIO:     rr = "SDIO";                 break;
+      // ESP_RST_UNKNOWN is what a host-initiated USB-JTAG reset reports on the
+      // S3; it is not an error, and is distinct from BROWNOUT/PANIC/SW.
+      default:               rr = "UNKNOWN";              break;
+    }
+    printf("[boot] reset reason: %s (%d)\n", rr, (int)esp_reset_reason());
+    boot_reset_reason = rr;
+  }
+#endif
 #ifdef HAS_RNS
   printf("Total SRAM:  %7u bytes\n", RNS::Utilities::Memory::heap_size());
   printf("Free SRAM:   %7u bytes\n", RNS::Utilities::Memory::heap_available());
 #endif
 #if defined(ESP32)
 	printf("Total PSRAM: %7u bytes\n", ESP.getPsramSize());
+  #if defined(BOARD_HAS_PSRAM) && defined(PSRAM_MALLOC_THRESHOLD)
+    // The framework ships CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096, so only
+    // allocations >= 4 KB ever reach PSRAM. The RNS stack's pressure is
+    // thousands of *small* allocations -- Bytes buffers, packets, map nodes,
+    // strings -- all of which stay on internal heap and eventually trigger the
+    // OOM restarts documented in the handoff (§11). RNS_PSRAM_ALLOCATOR only
+    // covers a handful of STL containers, not these.
+    //
+    // Lower the threshold so ordinary malloc spills to PSRAM. Drivers needing
+    // DMA- or ISR-safe memory request it explicitly via heap_caps_* and are
+    // unaffected. PSRAM is slower than internal SRAM, so this trades some
+    // throughput for headroom; raise the threshold if that matters.
+    if (ESP.getPsramSize() > 0) {
+      heap_caps_malloc_extmem_enable(PSRAM_MALLOC_THRESHOLD);
+      printf("[psram] malloc threshold set to %u bytes\n", (unsigned)PSRAM_MALLOC_THRESHOLD);
+    }
+  #endif
 #endif
 	//printf("Total flash: %zu bytes\n", RNS::Utilities::OS::storage_size());
 
@@ -538,7 +594,6 @@ void setup() {
   #if MCU_VARIANT == MCU_ESP32
     boot_seq();
     EEPROM.begin(EEPROM_SIZE);
-    Serial.setRxBufferSize(CONFIG_UART_BUFFER_SIZE);
 
     #if BOARD_MODEL == BOARD_TDECK
       pinMode(pin_poweron, OUTPUT);
@@ -599,7 +654,7 @@ void setup() {
     boot_seq();
   #endif
 
-  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2
+  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2 && BOARD_MODEL != BOARD_RAD01_REV1 && BOARD_MODEL != BOARD_RAD01_REV2
     // Some boards need to wait until the hardware UART is set up before booting
     // the full firmware. In the case of the RAK4631, RAK3401, and Heltec T114,
     // the line below will wait until a serial connection is actually established
@@ -678,7 +733,7 @@ void setup() {
   #elif MODEM == SX1276 || MODEM == SX1278
   LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy);
   #elif MODEM == SX1262
-  LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen);
+  LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen, pin_txen);
   #elif MODEM == SX1280
   LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen, pin_txen);
   #endif
@@ -958,6 +1013,49 @@ void setup() {
 #else
     if (!filesystem.init()) WARNING("Failed to initialize filesystem!");
 #endif
+
+    // Persist the reset reason. A headless node that dies on a wall plug tells
+    // you nothing when you replug it into a host, because that power-cycles it
+    // and esp_reset_reason() then reports POWERON. This file keeps the history:
+    // repeated BROWNOUT entries mean a power-margin problem, PANIC means a
+    // crash, SW means something called ESP.restart() (RNS_LOW_MEMORY_REBOOT).
+    {
+      const char* bootlog = "./bootlog.txt";
+      if (filesystem.exists(bootlog) && filesystem.size(bootlog) > 4096) {
+        filesystem.remove(bootlog);   // keep it bounded; oldest history is least useful
+      }
+      microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
+      if (bl) {
+        char line[96];
+        snprintf(line, sizeof(line), "boot reason=%s\n", boot_reset_reason);
+        bl.write(line);
+        bl.close();
+      }
+      // Echo the whole history on every boot. Without this the log is written
+      // but unreadable without a file-transfer path -- and the entire point is
+      // to see it after replugging a board that died in the field.
+      microStore::File rd = filesystem.open(bootlog, microStore::File::ModeRead);
+      if (rd) {
+        // Read into a buffer and emit whole lines. stdout is unbuffered and
+        // KISS-framed, so a putchar loop would emit one frame per character and
+        // arrive shredded.
+        static char rdbuf[1025];
+        size_t n = rd.read((uint8_t*)rdbuf, sizeof(rdbuf) - 1);
+        rd.close();
+        if (n > 0 && n != (size_t)-1) {
+          rdbuf[n] = 0;
+          printf("[boot] --- bootlog history (%u bytes) ---\n", (unsigned)n);
+          char* line = rdbuf;
+          while (line && *line) {
+            char* nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            if (*line) printf("[boot] %s\n", line);
+            line = nl ? nl + 1 : nullptr;
+          }
+          printf("[boot] --- end bootlog ---\n");
+        }
+      }
+    }
 
     // Remove legacy files
     filesystem.remove("./destination_table");
@@ -2643,7 +2741,69 @@ void tx_queue_handler() {
 
 void work_while_waiting() { loop(); }
 
+// Re-announce the NomadNet site periodically.
+//
+// The startup announce below is sent exactly once, which is fine for a client
+// that happens to be listening at that moment. It is not enough for a headless
+// node: RNS path entries can go stale or get replaced by a worse route, and
+// because this device runs with transport disabled it does not answer path
+// requests either. Once a peer's path to us degrades there is nothing that ever
+// repairs it, and the node looks dead until it is power-cycled -- even though it
+// is up and on WiFi. A periodic announce is what heals that.
+//
+// Announces cost airtime on LoRa, so the interval is deliberately generous;
+// tune NOMADNET_ANNOUNCE_INTERVAL_MS in Config.h.
+#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+static void nomadnet_announce_watch() {
+  static uint32_t last_announce = 0;
+  static bool armed = false;
+  static bool first_done = false;
+  if (!nomadnet_enabled || !nomadnet_destination) return;
+  if (!armed) { armed = true; last_announce = millis(); return; }
+  // The startup announce in setup() is NOT sufficient. It fires at ~t+4s, about
+  // a second before DHCP completes and the UDP socket is rebound to a real
+  // address (see the rebind in Remote.h), so on a fast boot it is emitted into a
+  // socket bound to 0.0.0.0 and is simply lost. That race was previously hidden
+  // by a slow startup. Send the first real announce shortly after boot, once the
+  // network is definitely up, then settle into the normal interval.
+  uint32_t due = first_done ? NOMADNET_ANNOUNCE_INTERVAL_MS : NOMADNET_FIRST_ANNOUNCE_MS;
+  if (millis() - last_announce < due) return;
+  last_announce = millis();
+  first_done = true;
+  printf("[announce] re-announcing NomadNet site \"%s\"\n", nomadnet_name);
+  nomadnet_destination.announce(nomadnet_name);
+}
+#endif
+
+// Periodic heap report for headless operation. RNS_LOW_MEMORY_REBOOT resets the
+// board when free heap reaches <=2% of total; without a trend line there is no
+// way to tell a memory leak from a hang after the fact. Deliberately a plain
+// printf so it survives a low RNS_LOG_LEVEL.
+#if defined(ESP32) && defined(HAS_RNS)
+static void heap_watch() {
+  static uint32_t last_heap_report = 0;
+  if (millis() - last_heap_report < HEAP_REPORT_INTERVAL_MS) return;
+  last_heap_report = millis();
+  size_t total = RNS::Utilities::Memory::heap_size();
+  size_t avail = RNS::Utilities::Memory::heap_available();
+  #if HAS_WIFI
+    extern volatile uint32_t udp_rx_count; extern volatile uint32_t udp_tx_count;
+    printf("[udp] rx=%lu tx=%lu\n", (unsigned long)udp_rx_count, (unsigned long)udp_tx_count);
+  #endif
+  printf("[heap] free %u / %u bytes (%u%%), min-free %u, uptime %lus\n",
+         (unsigned)avail, (unsigned)total,
+         (unsigned)(total ? (avail * 100 / total) : 0),
+         (unsigned)ESP.getMinFreeHeap(), (unsigned long)(millis() / 1000));
+}
+#endif
+
 void loop() {
+#if defined(ESP32) && defined(HAS_RNS)
+  heap_watch();
+#endif
+#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+  nomadnet_announce_watch();
+#endif
 
   #if MCU_VARIANT == MCU_NATIVE
     // Deferred-reboot hook: a KISS-driven property change or CMD_RESET in
