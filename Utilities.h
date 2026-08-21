@@ -2209,6 +2209,8 @@ void host_disconnected() {
 	// fields to their -292 sentinels, which made the radio look alive-but-deaf
 	// in every telemetry page.
 	if (op_mode != MODE_TNC) {
+		printf("[radio] host_disconnected -> stopping radio at %lums\n",
+		       (unsigned long)millis());
 		stopRadio();
 		current_rssi  = -292;
 		last_rssi     = -292;

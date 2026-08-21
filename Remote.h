@@ -218,7 +218,10 @@ bool wifi_remote_available() {
     WiFiClient client = remote_listener.available();
     if (!client) { return false; }
     else {
-      // wifi_dbg("Client connected"); // TODO: Remove debug
+      // Log who connects to the KISS listener. An idle client here is what
+      // repeatedly tripped host_disconnected() (see handoff section 16).
+      printf("[kiss-tcp] client connected from %s at %lums\n",
+             client.remoteIP().toString().c_str(), (unsigned long)millis());
       connection = client;
       wr_state = WR_STATE_CONNECTED;
       wr_last_read = millis();

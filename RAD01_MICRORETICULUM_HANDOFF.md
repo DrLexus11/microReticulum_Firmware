@@ -1129,3 +1129,81 @@ gate pull-downs on Q1/Q2 instead (section 8.8).
   which is what kept triggering `host_disconnected()`. Harmless now, unidentified.
 - Transport Mode end-to-end (WiFi off on one board, route over LoRa only) is not
   yet tested — that is now possible for the first time.
+
+
+## 17. Session close — state, and the J3 wiring problem (2026-08-21 late)
+
+### 17.1 Where each board stands
+
+| | Rev 1 (`/dev/ttyACM1`) | Rev 2 (CP2102N on `/dev/ttyUSB0`) |
+|---|---|---|
+| Firmware | **current** — sections 16 fix + items 3/4/6/7 | section 16 fix only |
+| State at close | up, on mesh, LoRa working | **dark** — needs a physical S1 tap |
+| Serial | reliable (native USB-JTAG) | **unreliable** — see below |
+
+Rev 2 is missing: no-reboot-on-TX-failure, op_mode over the air, and the two boot
+diagnostics. None are needed until the Transport Mode / Columba test.
+
+### 17.2 The J3 header is the blocker
+
+Six distinct failures in one evening, all on the same dupont-to-2.54mm-header
+connection, each appearing after physical handling:
+
+| symptom | what it looked like |
+|---|---|
+| deaf RX | board transmits, ignores every command |
+| ground jumper off | board dark; revived by asserting RTS |
+| brownout loop | 20 boots/60s, all `rst:0x1 (POWERON)` |
+| stuck reset | silent, no bootloader SYNC response |
+| deaf RX again | boots and runs, answers nothing |
+| dark | no output, no ping |
+
+These are not six faults; it is one marginal connection presenting differently as
+the contact degrades. **Fix mechanically before any further Rev 2 work:** solder
+the J3 wires or fit a latching connector. Dupont contacts on a bare header cannot
+survive the handling that flashing requires.
+
+### 17.3 The flashing catch-22
+
+Grounding J3.8 gave Rev 2 autonomy (survives a closed port) but removed RTS from
+the reset path, so **esptool can no longer reset it** — entering the bootloader
+now requires holding S3 and tapping S1 by hand. Pressing those buttons disturbs
+the same wires the upload needs. Until J3 is mechanically sound, Rev 2 is
+effectively unflashable.
+
+Note also: once Rev 2 is in reset, software cannot recover it. Only S1 or a power
+cycle will.
+
+### 17.4 Outstanding list
+
+Done, committed:  board support, UDP transport fixes, PSRAM headroom, periodic
+announce, instrumentation, and the section 16 `host_disconnected` fix.
+
+Done, built, **flashed to Rev 1 only** (uncommitted at close):
+- TX failure recovers instead of rebooting (`REBOOT_ON_TX_FAILURE 0`)
+- `op_mode` settable via provisioning, defaulting to MODE_TNC
+- Boot log distinguishes power loss from reset, records previous run length
+- Instrumentation trimmed; `[kiss-tcp]` peer logging kept
+
+Blocked on Rev 2 serial:
+- **Item 2** — TX power will not persist. Expected to work now: `eeprom_conf_save()`
+  needs `radio_online`, which the section 16 fix restores. Unverified.
+- **Item 5** — retest `PSRAM_MALLOC_THRESHOLD=512` for headroom; **verify
+  `hw_ready: 1` after**, since 256 killed the radio under the old board config.
+
+Not actionable here:
+- The OOM restart paths live in `microReticulum` (`Interface.cpp:56/79`,
+  `Reticulum.cpp:258/280`), and `lib_deps` still points at **attermann's** repo in
+  four places. Changing "restart" to "degrade" needs a fork of the *library*; only
+  the firmware was forked. Item 5 is monitored, not fixed — and note no OOM
+  message was ever captured this session, so the silent `SW` restarts were most
+  likely the TX-failure `hard_reset()` that is now fixed.
+
+### 17.5 Next session, in order
+
+1. Re-solder / re-connector J3 on Rev 2.
+2. Flash Rev 2 to match Rev 1; verify `hw_ready: 1` and `op_mode: 18`.
+3. Item 2, then item 5's threshold retest.
+4. Then Transport Mode end-to-end + Columba (section 5.4 / the plan in the chat log):
+   WiFi off on one board so LoRa is its only path, and **verify per-interface
+   counters** — a proof is only valid if no alternative route exists.

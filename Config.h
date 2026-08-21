@@ -88,6 +88,13 @@
 	// First announce after boot. Must be comfortably later than DHCP + the UDP
 	// socket rebind, or it is emitted before the interface can carry it.
 	#define NOMADNET_FIRST_ANNOUNCE_MS 60000       // 1 minute
+	// What to do when the modem fails to complete a transmission. Rebooting takes
+	// a transport node off the mesh entirely and discards its path/link state to
+	// recover from one bad packet; RNS already retries above this layer. Default
+	// to dropping the packet and returning to receive. Set to 1 to restore the
+	// old reboot behaviour. (The native build has always had this choice, via
+	// rnoded.conf's reboot_on_tx_failure; embedded had no say.)
+	#define REBOOT_ON_TX_FAILURE 0
 
 	// SX1276 RSSI offset to get dBm value from
 	// packet RSSI register
@@ -163,6 +170,12 @@
 	uint8_t implicit_l = 0;
 
 	uint8_t op_mode   = MODE_HOST;
+	// Operating mode this board should adopt once it has a saved radio config.
+	// validate_status() used to hardcode MODE_TNC there, so a board could never
+	// be put back into host-driven modem mode without a serial cable. Defaults to
+	// MODE_TNC, which is exactly the previous behaviour; settable over the air via
+	// the Radio provisioning namespace (PROV_RADIO_OP_MODE).
+	uint8_t prov_op_mode = MODE_TNC;
 	uint8_t model     = 0x00;
 	uint8_t hwrev     = 0x00;
 

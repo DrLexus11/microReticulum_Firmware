@@ -100,6 +100,18 @@ char nomadnet_name[64];
 // power-cycles the board, which would otherwise overwrite the evidence with a
 // fresh POWERON.
 const char* boot_reset_reason = "UNKNOWN";
+#if defined(ESP32)
+  // esp_reset_reason() reports POWERON for an EN-pin reset as well as a genuine
+  // power cycle, so the boot log could not tell a debugger's reset from the
+  // board actually losing power. RTC memory survives EN and software resets but
+  // is cleared when the rail drops, which distinguishes them -- and carries the
+  // previous run's length across, so the log shows how long the node survived.
+  #define RTC_BOOT_MAGIC 0x52414431UL   // 'RAD1'
+  RTC_NOINIT_ATTR uint32_t rtc_boot_magic;
+  RTC_NOINIT_ATTR uint32_t rtc_last_uptime_s;
+  static bool     boot_rail_lost   = true;
+  static uint32_t boot_prev_uptime = 0;
+#endif
 
 #if HAS_CONSOLE
   #include "Console.h"
@@ -524,7 +536,17 @@ void setup() {
       // S3; it is not an error, and is distinct from BROWNOUT/PANIC/SW.
       default:               rr = "UNKNOWN";              break;
     }
-    printf("[boot] reset reason: %s (%d)\n", rr, (int)esp_reset_reason());
+    boot_rail_lost   = (rtc_boot_magic != RTC_BOOT_MAGIC);
+    boot_prev_uptime = boot_rail_lost ? 0 : rtc_last_uptime_s;
+    rtc_boot_magic    = RTC_BOOT_MAGIC;
+    rtc_last_uptime_s = 0;
+    if (boot_rail_lost) {
+      printf("[boot] reset reason: %s (%d), RTC cleared -> power was lost\n",
+             rr, (int)esp_reset_reason());
+    } else {
+      printf("[boot] reset reason: %s (%d), previous run %lus (rail held)\n",
+             rr, (int)esp_reset_reason(), (unsigned long)boot_prev_uptime);
+    }
     boot_reset_reason = rr;
   }
 #endif
@@ -1027,7 +1049,13 @@ void setup() {
       microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
       if (bl) {
         char line[96];
-        snprintf(line, sizeof(line), "boot reason=%s\n", boot_reset_reason);
+        if (boot_rail_lost) {
+          snprintf(line, sizeof(line), "boot reason=%s prev=power-lost\n",
+                   boot_reset_reason);
+        } else {
+          snprintf(line, sizeof(line), "boot reason=%s prev=%lus\n",
+                   boot_reset_reason, (unsigned long)boot_prev_uptime);
+        }
         bl.write(line);
         bl.close();
       }
@@ -1774,8 +1802,10 @@ void transmit(uint16_t size) {
             #if MCU_VARIANT == MCU_NATIVE
               if (native_config::g_config.reboot_on_tx_failure) { hard_reset(); }
               else { LoRa->receive(); return; }
-            #else
+            #elif REBOOT_ON_TX_FAILURE
               hard_reset();
+            #else
+              LoRa->receive(); return;   // drop the packet, keep the node up
             #endif
           }
 
@@ -1794,8 +1824,10 @@ void transmit(uint16_t size) {
         #if MCU_VARIANT == MCU_NATIVE
           if (native_config::g_config.reboot_on_tx_failure) { hard_reset(); }
           else { LoRa->receive(); return; }
-        #else
+        #elif REBOOT_ON_TX_FAILURE
           hard_reset();
+        #else
+          LoRa->receive(); return;   // drop the packet, keep the node up
         #endif
       }
 
@@ -2652,8 +2684,11 @@ void validate_status() {
           
           if (hw_ready && eeprom_have_conf()) {
             eeprom_conf_load();
-            op_mode = MODE_TNC;
-            startRadio();
+            op_mode = prov_op_mode;
+            // A TNC-mode board is autonomous and brings its own radio up. In
+            // host mode the attached host owns the radio and starts it with
+            // CMD_RADIO_STATE, as upstream RNode expects.
+            if (op_mode == MODE_TNC) { startRadio(); }
           }
         } else {
           hw_ready = false;
@@ -2795,6 +2830,7 @@ static void heap_watch() {
   static uint32_t last_heap_report = 0;
   if (millis() - last_heap_report < HEAP_REPORT_INTERVAL_MS) return;
   last_heap_report = millis();
+  rtc_last_uptime_s = (uint32_t)(millis() / 1000);
   size_t total = RNS::Utilities::Memory::heap_size();
   size_t avail = RNS::Utilities::Memory::heap_available();
   #if HAS_WIFI

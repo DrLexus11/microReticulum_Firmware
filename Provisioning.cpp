@@ -47,6 +47,15 @@
 // LoRaInterface implementation — so a single runtime check works in
 // both compile configurations.
 #if defined(LORA_TRANSPORT)
+// Config.h defines globals at file scope, so it cannot be pulled into a second
+// translation unit (see the note above); mirror the two operating-mode constants
+// here instead, guarded so they collapse if that ever changes.
+#ifndef MODE_HOST
+  #define MODE_HOST 0x11
+  #define MODE_TNC  0x12
+#endif
+extern uint8_t prov_op_mode;
+
 extern RNS::Interface lora_interface;
 extern uint32_t lora_freq;
 extern uint32_t lora_bw;
@@ -325,15 +334,18 @@ static void register_provisioning_namespaces() {
   metrics.end();        // close "Metrics"
 
 #if defined(LORA_TRANSPORT)
-  // ----- Radio namespace (DISABLED) -----
+  // ----- Radio namespace -----
   //
   Provisioner::instance()
     .register_namespace("RNode Radio Config", PROV_NS_RADIO)
-      //.field_enum("op_mode", PROV_RADIO_OP_MODE, FF_REBOOT_REQUIRED,
-      //           (fint_t)MODE_HOST,
-      //           std::vector<fint_t>{ (fint_t)MODE_HOST, (fint_t)MODE_TNC },
-      //           std::vector<std::string>{ "host", "tnc" },
-      //           [](const Value& v) { op_mode = (uint8_t)v.as_int(); return true; })
+      // Sets the mode adopted at boot once a radio config exists. Writes
+      // prov_op_mode rather than op_mode directly: op_mode is recomputed during
+      // validate_status(), so assigning it here would be discarded on reboot.
+      .field_enum("op_mode", PROV_RADIO_OP_MODE, FF_REBOOT_REQUIRED,
+                 (fint_t)prov_op_mode,
+                 std::vector<fint_t>{ (fint_t)MODE_HOST, (fint_t)MODE_TNC },
+                 std::vector<std::string>{ "host", "tnc" },
+                 [](const Value& v) { prov_op_mode = (uint8_t)v.as_int(); return true; })
       .field_int("Frequency", PROV_RADIO_FREQ, FF_REBOOT_REQUIRED,
         (fint_t)lora_freq, (fint_t)100000000, (fint_t)1000000000,
         [](const Value& v) { lora_freq = (uint32_t)v.as_int(); return true; })
