@@ -2200,12 +2200,22 @@ inline uint16_t fifo16_len(FIFOBuffer16 *f) {
 
 extern void stopRadio();
 void host_disconnected() {
-	stopRadio();
+	// In TNC mode the board is a standalone transport node: it must keep its
+	// radio up with no host attached at all. Tearing the radio down here is
+	// correct only for host-driven modem operation (MODE_HOST). Without this
+	// guard a TNC-mode board starts its radio, transmits for a few seconds, and
+	// is then silenced ~6.5s after the WiFi KISS session goes idle -- repeatedly,
+	// forever -- while still reporting a valid config. It also wiped the RSSI
+	// fields to their -292 sentinels, which made the radio look alive-but-deaf
+	// in every telemetry page.
+	if (op_mode != MODE_TNC) {
+		stopRadio();
+		current_rssi  = -292;
+		last_rssi     = -292;
+		last_rssi_raw = 0x00;
+		last_snr_raw  = 0x80;
+	}
 	cable_state   = CABLE_STATE_DISCONNECTED;
-	current_rssi  = -292;
-	last_rssi     = -292;
-	last_rssi_raw = 0x00;
-	last_snr_raw  = 0x80;
 }
 
 #define Q_SNR_STEP 2.0

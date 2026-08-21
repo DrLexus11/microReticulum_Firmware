@@ -968,3 +968,164 @@ Applying `-DPSRAM_MALLOC_THRESHOLD=1024` and
 `-DUDP_REMOTE_HOST='"192.168.1.51"'` to `[env:impr-rad01-rev1]` should carry
 across — but **verify `hw_ready: 1` after flashing**, since Rev 1 is SX1276 on a
 different SPI path and 256 demonstrably broke the radio on Rev 2 (§12.3).
+
+
+---
+
+## 15. LoRa bring-up — ground truth from the Meshtastic variants (2026-08-21)
+
+**Both boards are known-good on Meshtastic in their current physical
+configuration** (100+ messages exchanged). That eliminates the antennas, the RF
+paths, the MM8030 removal and range as causes. Anything still broken is in *our*
+firmware.
+
+The working variants live in the Meshtastic tree at
+`~/projects/firmware/variants/esp32s3/impr-rad-01{,-rev2}/variant.h`. They are the
+authority for these boards; §8.2's desk-derived guesses are superseded.
+
+### 15.1 What the Rev 2 variant settles
+
+| Question | Answer | Our original | Status |
+|---|---|---|---|
+| DIO2 as RF switch | **Yes** — module has an integrated SC70-6 load switch driven from DIO2 *inside the can*; DIO2 deliberately not routed | `false` | **fixed -> true** |
+| TXEN (IO21) / RXEN (IO7) | **Unused.** Routed on the PCB for the *-P* variant's external PA/LNA only; plain Ra-01SH switches via DIO2. Left undefined -> `RADIOLIB_NC` | driven | **fixed -> -1** |
+| TCXO | **None.** Plain crystal; `SX126X_DIO3_TCXO_VOLTAGE` must stay undefined | `false` | already correct |
+| Max power | `SX126X_MAX_POWER 22` | MODEL_FE caps 17 | noted |
+| Pin map | SCK 10, MOSI 11, MISO 12, CS 13, RST 14, DIO1 6, BUSY 5 | identical | confirmed |
+
+Rev 1's variant is `USE_RF95` with DIO0 5 / DIO1 6 / DIO2 7 and no PA overrides —
+identical to our board definition. **Rev 1 needs no changes.**
+
+Enabling `HAS_TCXO` was tried and put Rev 2 into a silent `ESP.restart()` loop
+(~25 s period, before the first heap report). Reverted. Do not re-try it.
+
+### 15.2 The firmware layer is not the problem
+
+Instrumented `transmit()` with a call counter and dumped the CSMA state:
+
+```
+[lora] tx_calls=3 queue=0 dcd=0 rssi=-118 nf=-117 online=1
+[lora] tx_calls=4 queue=0 dcd=0 rssi=-117 nf=-117 online=1
+```
+
+`tx_calls` increments per announce, the queue drains, `dcd` is clear and the radio
+is online. So the modem **is** being keyed, CSMA is **not** stalling the queue, and
+`packets_sent` at the RNS interface is not lying about reaching the driver. Note
+that interface-level `packets_sent` counts *queueing* only — it was misleading
+earlier and should not be used as evidence of RF emission.
+
+Also checked and found correct: the SX1262 PA config in `sx126x::setTxPower()`
+(PADutyCycle 0x04, HPMax 0x07, DeviceSel 0x00, ramp 40 us, level clamped -9..22).
+
+### 15.3 Still unresolved
+
+With the board definition now matching the known-good variant exactly, neither
+board decodes anything from the other, and Rev 2's channel telemetry never rises
+more than ~10 dB above its noise floor with the boards 30 cm apart. A 7 dBm
+transmitter at that range should read ~-30 dBm.
+
+**Do not trust `LoRaInterface.packets_received` alone.** Rev 1 has read exactly
+`6 packets / 1130 bytes` across every configuration tried, including ones where
+Rev 2 was not transmitting at all, while `last_rssi`/`last_snr` stayed at their
+`-292`/`-32` sentinels. A genuine decode would populate those. Treat the pair
+(`last_rssi` real AND counter increasing) as the only reliable evidence.
+
+### 15.4 Next step
+
+RadioLib — the driver Meshtastic uses successfully on this exact hardware — is
+available for direct comparison at:
+
+```
+~/projects/firmware/.pio/libdeps/impr-rad-01-rev2/RadioLib/src/modules/SX126x/
+```
+
+Diff its SX1262 init and transmit sequence against `sx126x.cpp`. The remaining
+difference has to be in there, since the board-level configuration now matches.
+
+A cheaper discriminator first: add a **preamble-detect counter** on Rev 2
+(`IRQ_PREAMBLE_DET_MASK_6X` in `sx126x::dcd()`). Preamble detection fires below
+the threshold for a successful decode, so if Rev 1 is radiating at all, Rev 2
+should see preambles even when nothing decodes. That splits "Rev 1 is not
+transmitting" from "Rev 2 cannot demodulate" in one measurement.
+
+
+## 16. LoRa link WORKING — root cause was host_disconnected() (2026-08-21)
+
+**Both boards now transmit and receive over LoRa with no host attached to
+either.** Measured standalone, serial ports closed:
+
+```
+REV2   rx 8 pkts / 1578 B   last_rssi -51 dBm  SNR +12.5 dB  (noise floor -117)
+REV1   rx 25 pkts / 4625 B  last_rssi -65 dBm  SNR +11.0 dB  (noise floor -116)
+```
+
+Both LED indicators flash in sync (D2 on IO4, lit by `dcd_led` on carrier
+detect) — one board transmitting lights the other's LED.
+
+### 16.1 Root cause
+
+`host_disconnected()` in `Utilities.h` called `stopRadio()` unconditionally.
+That is correct for a host-driven modem (MODE_HOST) but wrong in MODE_TNC, where
+the board is a standalone transport node. Traced on Rev 1:
+
+```
+[radio] startRadio OK at 3473ms
+[radio] Sent 184 byte packet + 2x 168 byte
+[WiFi] status: 3
+[radio] host_disconnected() -> stopping radio at 18885ms
+[radio] host_disconnected() -> ... again every ~12s, forever
+```
+
+Once WiFi comes up, `wifi_remote_check_active()` sees the WiFi-KISS session idle
+past `WR_READ_TIMEOUT_MS` (6.5 s), concludes the host is gone, and kills the
+radio. **Each board transmitted for ~15 s after boot and was then mute.** The
+same function also wiped `current_rssi`/`last_rssi` to `-292`, which is why every
+telemetry page showed a radio that looked configured, online and deaf.
+
+Fix: guard the teardown with `if (op_mode != MODE_TNC)`.
+
+This also explains why the two boards appeared to behave differently for most of
+the session: Rev 2's radio kept running only because a script was holding its
+serial port open, so it always counted as "host connected".
+
+### 16.2 What the diagnosis actually required
+
+The decisive instruments, in order of usefulness:
+
+1. **`tx_calls`** — a counter inside `transmit()`. Interface-level `packets_sent`
+   counts *queueing* and was actively misleading all session.
+2. **Preamble / header counters** (`pre`/`hdr` on SX126x, `sig`/`syn` on SX127x).
+   Preamble detection fires below decode threshold, so it separates "nothing is
+   being radiated" from "heard but not demodulated". The unplug-Rev-1 control
+   test proved the early preambles were ambient neighbourhood LoRa, not Rev 1.
+3. **Radio lifecycle tracing** in `startRadio()` / `stopRadio()` /
+   `host_disconnected()` — this is what actually found it.
+
+### 16.3 Corrections applied along the way
+
+| Change | Verdict |
+|---|---|
+| `DIO2_AS_RF_SWITCH` false -> **true** | correct (confirmed by Meshtastic variant) |
+| `pin_rxen`/`pin_txen` -> **-1** | correct (module switches via DIO2 internally) |
+| `HAS_TCXO` -> true | **WRONG** — caused a restart loop; reverted, module has a crystal |
+| `SetRegulatorMode(DC-DC)` added | real gap vs RadioLib; kept |
+| `enableTCXO()` before `calibrate()` | datasheet-correct ordering; kept (inert here) |
+
+Not the cause, despite being investigated: antennas/RF paths (Meshtastic proved
+the hardware), CSMA/`dcd`, PA config, frequency word, sync word, IQ errata,
+preamble length, IRQ setup.
+
+### 16.4 Hardware: J3.8 grounded
+
+`MB_RTS` (J3 pin 8) is now tied to GND (J3 pin 2), holding Q1's gate low so EN is
+never pulled down by an idle bridge. Rev 2 verified surviving with
+`/dev/ttyUSB0` closed. Cost: automated flashing — use S3(BOOT)+S1(RESET) with
+`--before no_reset --after no_reset`, or lift the jumper. Rev 3 should carry 10k
+gate pull-downs on Q1/Q2 instead (section 8.8).
+
+### 16.5 Still open
+
+- Something connects to Rev 1's WiFi-KISS TCP listener and goes idle every ~12 s,
+  which is what kept triggering `host_disconnected()`. Harmless now, unidentified.
+- Transport Mode end-to-end (WiFi off on one board, route over LoRa only) is not
+  yet tested — that is now possible for the first time.

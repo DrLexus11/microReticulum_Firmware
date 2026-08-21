@@ -1514,6 +1514,7 @@ bool startRadio() {
         return false;
       } else {
         radio_online = true;
+        printf("[radio] startRadio OK at %lums\n", (unsigned long)millis());
 
         init_channel_stats();
 
@@ -1538,6 +1539,8 @@ bool startRadio() {
       // Flash a warning pattern to indicate
       // that the radio was locked, and thus
       // not started
+      printf("[radio] startRadio BLOCKED locked=%d hwr=%d at %lums\n",
+             (int)radio_locked, (int)hw_ready, (unsigned long)millis());
       radio_online = false;
       kiss_indicate_radiostate();
       led_indicate_warning(3);
@@ -1559,7 +1562,11 @@ void stopRadio() {
   // (e.g. lora_receive() at the tail of flush_queue) asserts on a null
   // spiChip.
   #if defined(LORA_TRANSPORT)
-  if (radio_online) LoRa->end();
+  if (radio_online) {
+    printf("[radio] stopRadio: shutting down a RUNNING radio at %lums\n",
+           (unsigned long)millis());
+    LoRa->end();
+  }
   #endif
   radio_online = false;
   #if MCU_VARIANT == MCU_NATIVE
@@ -1743,8 +1750,11 @@ void update_airtime() {
   #endif
 }
 
+volatile uint32_t tx_calls = 0;
+volatile uint32_t tx_blocked_csma = 0;
 void transmit(uint16_t size) {
   if (radio_online) {
+    tx_calls++;
     if (!promisc) {
       uint16_t  written = 0;
       uint8_t header  = random(256) & 0xF0;
@@ -1995,6 +2005,7 @@ void serial_callback(uint8_t sbyte) {
       if (sbyte == 0xFF) {
         kiss_indicate_radiostate();
       } else if (sbyte == 0x00) {
+        printf("[radio] CMD_RADIO_STATE(0) from host at %lums\n", (unsigned long)millis());
         stopRadio();
         kiss_indicate_radiostate();
       } else if (sbyte == 0x01) {
@@ -2790,6 +2801,34 @@ static void heap_watch() {
     extern volatile uint32_t udp_rx_count; extern volatile uint32_t udp_tx_count;
     printf("[udp] rx=%lu tx=%lu\n", (unsigned long)udp_rx_count, (unsigned long)udp_tx_count);
   #endif
+  // Is the modem ever actually keyed? packets_sent only counts queueing, so a
+  // CSMA stall looks identical to a working transmitter from the RNS side.
+  {
+    extern volatile uint32_t tx_calls;
+    #if MODEM == SX1262
+      extern volatile uint32_t sx126x_preamble_count;
+      extern volatile uint32_t sx126x_header_count;
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d pre=%lu hdr=%lu\n",
+             (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
+             (int)current_rssi, (int)noise_floor, (int)radio_online,
+             (unsigned long)sx126x_preamble_count, (unsigned long)sx126x_header_count);
+    #elif MODEM == SX1276 || MODEM == SX1278
+      extern volatile uint32_t sx127x_sigdet_count;
+      extern volatile uint32_t sx127x_synced_count;
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d sig=%lu syn=%lu "
+             "locked=%d hwr=%d err=%d con=%d alock=%d f=%lu bw=%lu sf=%d txp=%d\n",
+             (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
+             (int)current_rssi, (int)noise_floor, (int)radio_online,
+             (unsigned long)sx127x_sigdet_count, (unsigned long)sx127x_synced_count,
+             (int)radio_locked, (int)hw_ready, (int)radio_error, (int)console_active,
+             (int)airtime_lock, (unsigned long)lora_freq, (unsigned long)lora_bw,
+             (int)lora_sf, (int)lora_txp);
+    #else
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d\n",
+             (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
+             (int)current_rssi, (int)noise_floor, (int)radio_online);
+    #endif
+  }
   printf("[heap] free %u / %u bytes (%u%%), min-free %u, uptime %lus\n",
          (unsigned)avail, (unsigned)total,
          (unsigned)(total ? (avail * 100 / total) : 0),

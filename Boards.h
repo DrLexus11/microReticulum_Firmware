@@ -573,12 +573,29 @@
       #define HAS_BLUETOOTH false
       #define HAS_BLE true
       #define HAS_BUSY true
+      // No TCXO: the Ra-01SH runs from a plain crystal, so DIO3 must NOT be used
+      // as a TCXO reference. Confirmed against the known-good Meshtastic variant
+      // for this board, which leaves SX126X_DIO3_TCXO_VOLTAGE undefined.
+      // (Setting this true was tried on 2026-08-21 and put the board into a
+      // silent ESP.restart loop every ~25s.)
       #define HAS_TCXO false
-      #define DIO2_AS_RF_SWITCH false
-      #define HAS_RF_SWITCH_RX_TX true
+      // DIO2 drives the RF switch INSIDE the Ra-01SH. The castellated DIO2 pad
+      // is unconnected on our PCB, which was originally read as "DIO2 unused" --
+      // wrong: the module uses it internally, exactly like every other SX1262
+      // board in this repo (all of which set this true). With it false the
+      // module's TX/RX switch is never actuated, so the radio comes up, reports
+      // a plausible noise floor, and hears nothing.
+      #define DIO2_AS_RF_SWITCH true
+      // No external RX/TX switch pins on this module; DIO2 does it internally.
+      #define HAS_RF_SWITCH_RX_TX false
 
-      const int pin_rxen = 7;
-      const int pin_txen = 21;
+      // NOT USED on the plain Ra-01SH. GPIO21/GPIO7 are routed on the PCB for the
+      // -P variant's external PA/LNA; the plain module switches via DIO2 inside
+      // the can. Confirmed against the known-good Meshtastic variant for this
+      // exact board (variants/esp32s3/impr-rad-01-rev2/variant.h), which leaves
+      // TXEN/RXEN undefined so RadioLib sees RADIOLIB_NC.
+      const int pin_rxen = -1;
+      const int pin_txen = -1;
       const int pin_cs = 13;
       const int pin_reset = 14;
       const int pin_sclk = 10;

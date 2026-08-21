@@ -457,9 +457,11 @@ int sx126x::begin(uint32_t frequency) {
   if (_rxen != -1) { pinMode(_rxen, OUTPUT); }
   if (_txen != -1) { pinMode(_txen, OUTPUT); }
 
+  // TCXO first: SetDIO3AsTcxoCtrl must precede calibration, otherwise the
+  // calibration runs against an oscillator that is not yet powered.
+  enableTCXO();
   calibrate();
   calibrate_image(frequency);
-  enableTCXO();
   loraMode();
   standby();
 
@@ -474,6 +476,15 @@ int sx126x::begin(uint32_t frequency) {
   if (enable_dio2_rf) {
     uint8_t byte = 0x01;
     executeOpcode(OP_DIO2_RF_CTRL_6X, &byte, 1);
+  }
+
+  // Select the DC-DC (SMPS) regulator. The chip powers up in LDO mode and this
+  // driver never changed it; RadioLib -- which works on this hardware under
+  // Meshtastic -- ends begin() with setRegulatorDCDC(). LDO mode roughly doubles
+  // the supply current the chip draws in TX/RX.
+  {
+    uint8_t reg = 0x01;  // 0x00 = LDO only, 0x01 = DC-DC + LDO
+    executeOpcode(OP_REGULATOR_MODE_6X, &reg, 1);
   }
 
   rxAntEnable();
@@ -615,9 +626,22 @@ extern long lora_preamble_time_ms;
 extern long lora_header_time_ms;
 static bool false_preamble_detected = false;
 
+volatile uint32_t sx126x_preamble_count = 0;
+volatile uint32_t sx126x_header_count = 0;
 bool sx126x::dcd() {
   uint8_t buf[2] = {0}; executeOpcodeRead(OP_GET_IRQ_STATUS_6X, buf, 2);
   uint32_t now = millis();
+
+  // Preamble detection fires well below the SNR needed for a successful decode,
+  // so these separate "nothing is being radiated at us" from "we hear it but
+  // cannot demodulate it".
+  static bool pre_latched = false, hdr_latched = false;
+  if ((buf[1] & IRQ_PREAMBLE_DET_MASK_6X) != 0) {
+    if (!pre_latched) { sx126x_preamble_count++; pre_latched = true; }
+  } else { pre_latched = false; }
+  if ((buf[1] & IRQ_HEADER_DET_MASK_6X) != 0) {
+    if (!hdr_latched) { sx126x_header_count++; hdr_latched = true; }
+  } else { hdr_latched = false; }
 
   bool header_detected = false;
   bool carrier_detected = false;
@@ -851,6 +875,11 @@ void sx126x::enableTCXO() {
         #elif BOARD_MODEL == BOARD_HELTEC32_V4
           mode = MODE_TCXO_1_8V_6X;
         #elif BOARD_MODEL == BOARD_HELTEC_TRACKER_V2
+          mode = MODE_TCXO_1_8V_6X;
+        #elif BOARD_MODEL == BOARD_RAD01_REV2
+          mode = MODE_TCXO_1_8V_6X;
+        #else
+          // Without a case `mode` would be used uninitialised.
           mode = MODE_TCXO_1_8V_6X;
         #endif
       }
