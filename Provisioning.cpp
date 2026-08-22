@@ -506,4 +506,27 @@ void kiss_indicate_provision_response(const RNS::Bytes& payload) {
   serial_write(FEND);
 }
 
+// Push the live radio configuration back into the provisioning store.
+//
+// Needed when the firmware changes the radio behind provisioning's back. The
+// only case today is the commit-confirm rollback in RNode_Firmware.ino, which
+// restores the last known-good PHY after a change strands the link. Without
+// this the store would keep advertising -- and, because these fields are
+// re-applied from storage at boot, keep restoring -- the very configuration
+// that broke the link, so the node would strand itself again on next reboot.
+//
+// Deliberately routed through the normal draft+commit path so the registered
+// commit hook runs and the values are persisted exactly as an operator-issued
+// change would be.
+void provisioning_sync_radio_from_runtime() {
+  auto& prov = RNS::Provisioning::Provisioner::instance();
+  if (!prov.started()) return;
+  prov.field(PROV_NS_RADIO, PROV_RADIO_FREQ, RNS::Provisioning::Value((int)lora_freq));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_BW, RNS::Provisioning::Value((int)lora_bw));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_SF, RNS::Provisioning::Value((int)lora_sf));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_CR, RNS::Provisioning::Value((int)lora_cr));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_TXP, RNS::Provisioning::Value((int)lora_txp));
+  prov.commit(PROV_NS_RADIO);
+}
+
 #endif // HAS_PROVISIONING

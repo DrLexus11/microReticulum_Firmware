@@ -114,7 +114,31 @@
 	// A node that legitimately hears nobody re-inits on this interval forever
 	// and says so in the log, which is the right trade for an unattended node.
 	// Set to 0 to disable.
+	#ifndef RADIO_RX_WATCHDOG_MS
 	#define RADIO_RX_WATCHDOG_MS 1200000           // 20 minutes
+	#endif
+
+	// Commit-confirm window for radio PHY changes ("commit confirmed", as on
+	// network gear). LoRa PHY parameters must match on both ends: the instant
+	// one node's SF/BW/frequency changes and its peer's does not, the link is
+	// gone in both directions -- strong RF arrives and nothing demodulates.
+	// For a node reachable ONLY over that radio, this is unrecoverable without
+	// physically retrieving it.
+	//
+	// So: when a config change is applied over a link that was demonstrably
+	// working, remember the previous settings and start this timer. Any decoded
+	// packet confirms the new config and disarms it. If the window expires in
+	// silence, roll back to the last known-good settings and persist them.
+	//
+	// Must be comfortably longer than the peer's announce interval (see
+	// NOMADNET_ANNOUNCE_INTERVAL_MS), or a healthy link gets reverted just
+	// because nobody happened to transmit. It must also be long enough to
+	// change both ends of a link by hand without the first one reverting
+	// while the second is still being edited.
+	// Set to 0 to disable.
+	#ifndef RADIO_CONFIG_CONFIRM_MS
+	#define RADIO_CONFIG_CONFIRM_MS 900000         // 15 minutes
+	#endif
 
 	// SX1276 RSSI offset to get dBm value from
 	// packet RSSI register

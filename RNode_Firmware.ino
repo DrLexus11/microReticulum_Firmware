@@ -2852,33 +2852,37 @@ static void nomadnet_announce_watch() {
 // here, and re-initialising costs milliseconds, so we treat prolonged silence
 // as suspect either way rather than trying to prove which it is.
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+// Shared receive-activity tracking. radio_config_apply_live() consults it to
+// decide whether the link it is about to reconfigure was actually working --
+// only then is a rollback worth arming.
+static uint32_t rx_last_change_ms = 0;
+static size_t   rx_last_count     = 0;
+static bool     rx_tracking       = false;
+
 static void radio_rx_watchdog() {
   #if RADIO_RX_WATCHDOG_MS > 0
-    static uint32_t last_rx_change = 0;
-    static size_t   last_rx_count  = 0;
-    static bool     armed          = false;
-    static uint32_t reinit_count   = 0;
+    static uint32_t reinit_count = 0;
 
     // Disarm while the radio is down so a deliberate stop (console mode, a
     // host CMD_RADIO_STATE(0)) is not counted as silence and does not trigger
     // a re-init the moment the radio comes back.
-    if (!radio_online || !lora_interface) { armed = false; return; }
+    if (!radio_online || !lora_interface) { rx_tracking = false; return; }
 
     size_t rx_now = lora_interface.rx();
-    if (!armed) {
-      armed = true; last_rx_count = rx_now; last_rx_change = millis();
+    if (!rx_tracking) {
+      rx_tracking = true; rx_last_count = rx_now; rx_last_change_ms = millis();
       return;
     }
-    if (rx_now != last_rx_count) {
-      last_rx_count = rx_now; last_rx_change = millis();
+    if (rx_now != rx_last_count) {
+      rx_last_count = rx_now; rx_last_change_ms = millis();
       return;
     }
-    if (millis() - last_rx_change < RADIO_RX_WATCHDOG_MS) return;
+    if (millis() - rx_last_change_ms < RADIO_RX_WATCHDOG_MS) return;
 
     ++reinit_count;
     printf("[radio] rx watchdog: nothing demodulated for %lums, reinitialising "
            "modem (reinit #%lu, rx=%lu tx_calls=%lu nf=%d)\n",
-           (unsigned long)(millis() - last_rx_change), (unsigned long)reinit_count,
+           (unsigned long)(millis() - rx_last_change_ms), (unsigned long)reinit_count,
            (unsigned long)rx_now, (unsigned long)tx_calls, (int)noise_floor);
 
     stopRadio();
@@ -2890,8 +2894,8 @@ static void radio_rx_watchdog() {
       // normal interval instead of spinning every loop iteration.
       printf("[radio] rx watchdog: modem reinit FAILED\n");
     }
-    last_rx_change = millis();
-    last_rx_count  = lora_interface ? lora_interface.rx() : 0;
+    rx_last_change_ms = millis();
+    rx_last_count     = lora_interface ? lora_interface.rx() : 0;
   #endif
 }
 
@@ -2993,6 +2997,24 @@ bool radio_preset_apply(uint8_t idx) {
 
 void radio_config_apply_live() {
   if (!radio_online) { rc_armed = false; return; }
+  #if RADIO_CONFIG_CONFIRM_MS > 0
+    // Arm a rollback only when we are changing away from a configuration that
+    // was demonstrably carrying traffic. Applying config on a link that was
+    // already silent tells us nothing, and reverting to an equally silent
+    // previous setting would just add churn.
+    if (rc_armed && !rb_armed && !rb_reverting && lora_interface && rx_tracking &&
+        (millis() - rx_last_change_ms) < RADIO_CONFIG_CONFIRM_MS) {
+      rb_freq = rc_seen_freq; rb_bw  = rc_seen_bw;  rb_sf = rc_seen_sf;
+      rb_cr   = rc_seen_cr;   rb_txp = rc_seen_txp;
+      rb_rx_at_apply = lora_interface.rx();
+      rb_deadline    = millis() + RADIO_CONFIG_CONFIRM_MS;
+      rb_armed       = true;
+      printf("[radio] commit-confirm armed: revert to f=%lu bw=%lu sf=%d cr=%d txp=%d "
+             "in %lums unless traffic resumes\n",
+             (unsigned long)rb_freq, (unsigned long)rb_bw, rb_sf, rb_cr, rb_txp,
+             (unsigned long)RADIO_CONFIG_CONFIRM_MS);
+    }
+  #endif
   // setFrequency() ends in getFrequency(), which writes the modem's quantised
   // readback back into lora_freq. Re-applying an already-quantised value
   // re-quantises it, so without this the configured frequency walks downward a
@@ -3041,6 +3063,46 @@ static void lora_config_consistency_watch() {
            (int)lora_sf, (unsigned long)lora_bw, (int)lora_cr);
     lora_interface.bitrate(lora_bitrate);
   }
+}
+
+// Confirm or roll back a PHY change. Any decoded packet is proof the new
+// settings work; silence for the whole window means they do not, and the node
+// puts itself back on the last configuration known to carry traffic.
+static void radio_commit_confirm_watch() {
+#if RADIO_CONFIG_CONFIRM_MS > 0
+  if (!rb_armed || !radio_online) return;
+
+  if (lora_interface && lora_interface.rx() != rb_rx_at_apply) {
+    rb_armed = false;
+    printf("[radio] config confirmed: traffic resumed on f=%lu bw=%lu sf=%d (phy=%08lx)\n",
+           (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
+           (unsigned long)lora_phy_hash());
+    return;
+  }
+
+  if ((int32_t)(millis() - rb_deadline) < 0) return;
+
+  printf("[radio] config NOT confirmed after %lums of silence -- reverting to "
+         "f=%lu bw=%lu sf=%d cr=%d txp=%d\n",
+         (unsigned long)RADIO_CONFIG_CONFIRM_MS, (unsigned long)rb_freq,
+         (unsigned long)rb_bw, rb_sf, rb_cr, rb_txp);
+
+  rb_armed     = false;
+  rb_reverting = true;                      // keep apply_live from re-arming
+  lora_freq = rb_freq; lora_bw = rb_bw; lora_sf = rb_sf;
+  lora_cr   = rb_cr;   lora_txp = rb_txp;
+  radio_config_apply_live();
+  // Persist, so a reboot does not resurrect the configuration that stranded us.
+  // Both stores must be corrected: EEPROM for the classic config path, and the
+  // provisioning store because its values are re-applied at boot and would
+  // otherwise strand the node again on the next restart.
+  if (hw_ready && radio_online) { eeprom_conf_save(); }
+  #ifdef HAS_PROVISIONING
+    extern void provisioning_sync_radio_from_runtime();
+    provisioning_sync_radio_from_runtime();
+  #endif
+  rb_reverting = false;
+#endif
 }
 #endif
 
@@ -3108,6 +3170,7 @@ void loop() {
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
   radio_rx_watchdog();
   lora_config_consistency_watch();
+  radio_commit_confirm_watch();
 #endif
 
   #if MCU_VARIANT == MCU_NATIVE
