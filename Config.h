@@ -96,6 +96,26 @@
 	// rnoded.conf's reboot_on_tx_failure; embedded had no say.)
 	#define REBOOT_ON_TX_FAILURE 0
 
+	// How long the modem may go without demodulating a single packet before it
+	// is torn down and re-initialised.
+	//
+	// A wedged modem is invisible from every health indicator this firmware
+	// exposes: radio_online stays 1, hw_ready stays 1, the configured SF/BW/
+	// frequency read back correctly, the noise floor looks plausible, and the
+	// transmitter keeps keying happily. Only the receive side is dead, and
+	// nothing ever repairs it. Observed 2026-08-22: a board that had been up
+	// for days stopped demodulating entirely -- RF from its peer arrived at
+	// -44 dBm and was never decoded, in either direction -- and only a reboot
+	// brought it back. On a wall plug, with no USB and no WiFi, such a node is
+	// simply gone with no way to notice or recover.
+	//
+	// stopRadio()/startRadio() is a few milliseconds and reprograms every modem
+	// register from the live config, so the cost of a false trigger is trivial.
+	// A node that legitimately hears nobody re-inits on this interval forever
+	// and says so in the log, which is the right trade for an unattended node.
+	// Set to 0 to disable.
+	#define RADIO_RX_WATCHDOG_MS 1200000           // 20 minutes
+
 	// SX1276 RSSI offset to get dBm value from
 	// packet RSSI register
 	const int  rssi_offset = 157;

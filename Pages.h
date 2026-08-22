@@ -112,6 +112,13 @@ RNS::Bytes serve_page(
 	}
 
 	VERBOSEF("Serving page %s with category \"%s\" to link <%s> with identity <%s>", path.toString().c_str(), category.c_str(), link_id.toHex().c_str(), (remote_identity ? remote_identity.hash().toHex().c_str() : RNS::Bytes{}.toHex().c_str()));
+	// Plain printf so it survives a low RNS_LOG_LEVEL: shows whether a browsing
+	// client identified at all, and with which hash. ALLOW_LIST pages are denied
+	// to unidentified peers no matter what the list contains, so "identity=<none>"
+	// and "identity=<hash not in list>" are very different problems.
+	printf("[page] %s cat=%s identity=%s\n", path.toString().c_str(),
+	       category.empty() ? "-" : category.c_str(),
+	       remote_identity ? remote_identity.hash().toHex().c_str() : "<NONE - client did not identify>");
 	MsgPack::Packer packer;
   {
     RNS::Bytes content;
