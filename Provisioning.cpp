@@ -13,6 +13,7 @@
 #ifdef HAS_PROVISIONING
 
 #include "Provisioning.h"
+#include "RadioPresets.h"
 
 //#include "Config.h"
 
@@ -63,6 +64,8 @@ extern int lora_sf;
 extern int lora_cr;
 extern int lora_txp;
 extern uint32_t lora_bitrate;
+extern uint8_t radio_preset_current();
+extern bool radio_preset_apply(uint8_t idx);
 extern uint8_t implicit_l;
 extern int noise_floor;
 extern int current_rssi;
@@ -336,8 +339,40 @@ static void register_provisioning_namespaces() {
 #if defined(LORA_TRANSPORT)
   // ----- Radio namespace -----
   //
+  // Preset enum lists, derived from RADIO_PRESETS so the table in
+  // RadioPresets.h stays the single source of truth. "Custom" is offered as a
+  // reportable value only -- radio_preset_apply() rejects it, because "custom"
+  // describes a configuration rather than selecting one.
+  std::vector<fint_t> prov_preset_values;
+  std::vector<std::string> prov_preset_labels;
+  for (uint8_t i = 0; i < RADIO_PRESET_COUNT; i++) {
+    prov_preset_values.push_back((fint_t)i);
+    prov_preset_labels.push_back(RADIO_PRESETS[i].name);
+  }
+  prov_preset_values.push_back((fint_t)RADIO_PRESET_CUSTOM);
+  prov_preset_labels.push_back("Custom");
+
   Provisioner::instance()
     .register_namespace("RNode Radio Config", PROV_NS_RADIO)
+      // Named preset covering bandwidth/SF/CR together. Registered first so it
+      // reads as the primary control: the individual fields below remain for
+      // deliberate off-ladder work, but a fleet should agree by preset name.
+      //
+      // FF_LIVE_APPLY, not FF_REBOOT_REQUIRED. The reboot-required fields below
+      // are applied by this namespace's on_commit hook, which reads their
+      // drafts by name and knows nothing about this one -- so a reboot-required
+      // preset would be stored and silently never applied. Live apply runs the
+      // setter on commit, and the consistency watch in loop() then reprograms
+      // the modem and arms the commit-confirm rollback.
+      //
+      // Note this field reports the value last *written*, like every other
+      // config field. The authoritative live view is "preset" on
+      // /page/device.mu, which is computed from the running radio and says
+      // "Custom" whenever bandwidth/SF/CR were edited individually.
+      .field_enum("Radio Preset", PROV_RADIO_PRESET, FF_LIVE_APPLY,
+                 (fint_t)radio_preset_current(),
+                 prov_preset_values, prov_preset_labels,
+                 [](const Value& v) { return radio_preset_apply((uint8_t)v.as_int()); })
       // Sets the mode adopted at boot once a radio config exists. Writes
       // prov_op_mode rather than op_mode directly: op_mode is recomputed during
       // validate_status(), so assigning it here would be discarded on reboot.

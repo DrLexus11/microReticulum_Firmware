@@ -32,6 +32,8 @@
 #include <string>
 
 extern RNS::Interface lora_interface;
+extern uint32_t lora_phy_hash();
+extern const char* radio_preset_name();
 #if HAS_WIFI && defined(UDP_TRANSPORT)
 extern RNS::Interface udp_interface;
 extern IPAddress wr_device_ip;
@@ -282,6 +284,18 @@ RNS::Bytes serve_page(
         content << "    \"tx_power\": " << std::to_string(lora_txp) << ",\n";
         content << "    \"spreading_factor\": " << std::to_string(lora_sf) << ",\n";
         content << "    \"coding_rate\": " << std::to_string(lora_cr) << ",\n";
+        // Fingerprint of the parameters that must match for two nodes to hear
+        // each other. Comparing this between nodes reachable by any other route
+        // turns "the radios are mysteriously deaf" into a one-line diagnosis.
+        {
+          char phybuf[16];
+          snprintf(phybuf, sizeof(phybuf), "%08lx", (unsigned long)lora_phy_hash());
+          content << "    \"phy_hash\": \"" << phybuf << "\",\n";
+        }
+        // The named preset this configuration corresponds to, or "Custom".
+        // Reading it beside phy_hash answers both fleet questions at once:
+        // "are these two nodes on the same settings" and "which settings".
+        content << "    \"preset\": \"" << radio_preset_name() << "\",\n";
         content << "    \"current_rssi\": " << std::to_string(current_rssi) << ",\n";
         content << "    \"noise_floor\": " << std::to_string((int16_t)noise_floor) << ",\n";
         content << "    \"last_rssi\": " << std::to_string((int16_t)last_rssi) << ",\n";

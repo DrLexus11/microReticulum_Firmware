@@ -17,6 +17,7 @@
 #ifdef HAS_RNS
 #include <microReticulum.h>
 #include "Provisioning.h"
+#include "RadioPresets.h"
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
 #endif
@@ -2926,6 +2927,70 @@ static void radio_config_snapshot() {
 // Reprogram every modem register from the shadow config. Each setter is a
 // no-op while the radio is down, and startRadio() programs all of them from
 // these same variables, so a stopped radio needs nothing here.
+// Commit-confirm ("commit confirmed") state for PHY changes. See
+// RADIO_CONFIG_CONFIRM_MS in Config.h.
+static bool     rb_armed     = false;
+static bool     rb_reverting = false;
+static uint32_t rb_deadline  = 0;
+static size_t   rb_rx_at_apply = 0;
+static uint32_t rb_freq = 0, rb_bw = 0;
+static int      rb_sf = 0, rb_cr = 0, rb_txp = 0;
+
+// A stable fingerprint of the parameters that must match for two nodes to hear
+// each other at all. Two nodes with the same value can talk; two with different
+// values cannot, no matter how strong the signal. Exposed in the [lora] log line
+// and on /page/device.mu so a mismatch can be spotted from any node that is
+// reachable by some other route -- which is exactly the check that would have
+// found the 2026-08-22 outage in seconds instead of a day.
+uint32_t lora_phy_hash() {
+  const uint32_t vals[4] = { lora_freq, lora_bw, (uint32_t)lora_sf, (uint32_t)lora_cr };
+  uint32_t h = 2166136261u;                 // FNV-1a
+  for (size_t i = 0; i < 4; i++) {
+    for (int b = 0; b < 4; b++) {
+      h ^= (uint8_t)((vals[i] >> (8*b)) & 0xFF);
+      h *= 16777619u;
+    }
+  }
+  return h;
+}
+
+// Which named preset the live configuration corresponds to, or
+// RADIO_PRESET_CUSTOM if bandwidth/SF/CR were set individually to something off
+// the ladder. Computed from the live values rather than stored, so the reported
+// preset can never drift out of step with the radio the way a cached copy would.
+uint8_t radio_preset_current() {
+  for (uint8_t i = 0; i < RADIO_PRESET_COUNT; i++) {
+    if (RADIO_PRESETS[i].bw == lora_bw &&
+        RADIO_PRESETS[i].sf == (uint8_t)lora_sf &&
+        RADIO_PRESETS[i].cr == (uint8_t)lora_cr) return i;
+  }
+  return RADIO_PRESET_CUSTOM;
+}
+
+const char* radio_preset_name() {
+  uint8_t i = radio_preset_current();
+  return (i == RADIO_PRESET_CUSTOM) ? "Custom" : RADIO_PRESETS[i].name;
+}
+
+// Adopt a preset. Rejects RADIO_PRESET_CUSTOM and any out-of-range index:
+// "custom" describes a configuration, it does not select one.
+//
+// Only the shadow values are written here. The consistency watch in loop()
+// notices they no longer match what the modem was programmed with, applies them
+// and arms the commit-confirm rollback -- so a preset that strands the link
+// unwinds itself exactly like any other PHY change.
+bool radio_preset_apply(uint8_t idx) {
+  if (idx >= RADIO_PRESET_COUNT) return false;
+  const RadioPreset& p = RADIO_PRESETS[idx];
+  lora_bw = p.bw; lora_sf = (int)p.sf; lora_cr = (int)p.cr;
+  printf("[radio] preset selected: %s (bw=%lu sf=%d cr=%d)\n",
+         p.name, (unsigned long)lora_bw, (int)lora_sf, (int)lora_cr);
+  // The namespace's on_commit hook persists EEPROM before field setters run, so
+  // a preset chosen in that same commit would otherwise not be saved.
+  if (hw_ready && radio_online) { eeprom_conf_save(); }
+  return true;
+}
+
 void radio_config_apply_live() {
   if (!radio_online) { rc_armed = false; return; }
   // setFrequency() ends in getFrequency(), which writes the modem's quantised
@@ -3002,21 +3067,24 @@ static void heap_watch() {
     #if MODEM == SX1262
       extern volatile uint32_t sx126x_preamble_count;
       extern volatile uint32_t sx126x_header_count;
-      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d pre=%lu hdr=%lu\n",
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d pre=%lu hdr=%lu "
+             "f=%lu bw=%lu sf=%d txp=%d phy=%08lx\n",
              (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
              (int)current_rssi, (int)noise_floor, (int)radio_online,
-             (unsigned long)sx126x_preamble_count, (unsigned long)sx126x_header_count);
+             (unsigned long)sx126x_preamble_count, (unsigned long)sx126x_header_count,
+             (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
+             (int)lora_txp, (unsigned long)lora_phy_hash());
     #elif MODEM == SX1276 || MODEM == SX1278
       extern volatile uint32_t sx127x_sigdet_count;
       extern volatile uint32_t sx127x_synced_count;
       printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d sig=%lu syn=%lu "
-             "locked=%d hwr=%d err=%d con=%d alock=%d f=%lu bw=%lu sf=%d txp=%d\n",
+             "locked=%d hwr=%d err=%d con=%d alock=%d f=%lu bw=%lu sf=%d txp=%d phy=%08lx\n",
              (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
              (int)current_rssi, (int)noise_floor, (int)radio_online,
              (unsigned long)sx127x_sigdet_count, (unsigned long)sx127x_synced_count,
              (int)radio_locked, (int)hw_ready, (int)radio_error, (int)console_active,
              (int)airtime_lock, (unsigned long)lora_freq, (unsigned long)lora_bw,
-             (int)lora_sf, (int)lora_txp);
+             (int)lora_sf, (int)lora_txp, (unsigned long)lora_phy_hash());
     #else
       printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d\n",
              (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
