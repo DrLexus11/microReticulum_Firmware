@@ -258,7 +258,14 @@ char bt_devname[11];
 
     void bt_update_passkey() {
       // Serial.println("Updating passkey");
-      pairing_pin = random(899999)+100000;
+      #if HAS_DISPLAY == true
+        // A display can show a fresh random passkey, so use one.
+        pairing_pin = random(899999)+100000;
+      #else
+        // No display: see BLE_FIXED_PASSKEY in Config.h for why this is fixed
+        // rather than random, and what it does and does not concede.
+        pairing_pin = BLE_FIXED_PASSKEY;
+      #endif
       bt_ssp_pin = pairing_pin;
     }
 
@@ -480,7 +487,14 @@ char bt_devname[11];
 
   void bt_update_passkey() {
     // Serial.println("Update passkey");
-    pairing_pin = random(899999)+100000;
+    #if HAS_DISPLAY == true
+      // A display can show a fresh random passkey, so use one.
+      pairing_pin = random(899999)+100000;
+    #else
+      // No display: see BLE_FIXED_PASSKEY in Config.h for why this is fixed
+      // rather than random, and what it does and does not concede.
+      pairing_pin = BLE_FIXED_PASSKEY;
+    #endif
     bt_ssp_pin = pairing_pin;
   }
 

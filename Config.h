@@ -36,6 +36,33 @@
 	#define BT_STATE_ON        0x01
 	#define BT_STATE_PAIRING   0x02
 	#define BT_STATE_CONNECTED 0x03
+
+	// Bluetooth pairing passkey used on boards with no display.
+	//
+	// The stock behaviour generates a random six-digit passkey and surfaces it
+	// two ways: on a display, or over a wired KISS link. A RAD-01 has neither in
+	// the field -- no screen, and no accessible UART once it is in a wall or on
+	// a roof -- so pairing was simply impossible for a resident. During bring-up
+	// on 2026-08-23 the only way to pair at all was to read the passkey off USB
+	// serial and type it in by hand.
+	//
+	// A fixed passkey is not a meaningful loss of security here, and it is worth
+	// being precise about why: BLE bonding protects the radio hop between phone
+	// and node. It is not what protects the traffic. Reticulum above it is
+	// already end-to-end encrypted and identity-authenticated, so a node cannot
+	// read its clients' messages whatever the BLE link does. What a fixed
+	// passkey concedes is protection against an attacker actively MITM-ing the
+	// BLE hop in the pairing window -- who would gain a transport-layer position
+	// and still not be able to read anything.
+	//
+	// 123456 matches the Meshtastic convention, so it is what users already
+	// expect to type.
+	//
+	// Boards WITH a display keep the random passkey: they can show it, so there
+	// is no reason to weaken them.
+	#ifndef BLE_FIXED_PASSKEY
+	#define BLE_FIXED_PASSKEY 123456
+	#endif
 	uint8_t bt_state = BT_STATE_NA;
 	uint32_t bt_ssp_pin = 0;
 	bool bt_ready = false;
