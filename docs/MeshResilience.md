@@ -151,10 +151,21 @@ becomes useful once the firmware can accept RNS clients over IP, which today it
 cannot (see `docs/ResourceAPI.md` §"TCP interfaces" discussion and the note
 below).
 
-**Blocking dependency:** `UDPInterface.h` transmits only to a single
-compile-time `UDP_REMOTE_HOST`. A phone joining a node's SoftAP has nothing to
-talk to. An RNS `TCPServerInterface` in the firmware is a prerequisite for
-SoftAP client attachment to mean anything.
+**Blocking dependency — RESOLVED 2026-08-23.** `UDPInterface.h` transmits only
+to a single compile-time `UDP_REMOTE_HOST`, so a phone joining a node's SoftAP
+had nothing to talk to. `TCPServerInterface.h` now provides an RNS TCP listener
+(HDLC framed, five concurrent clients, enabled by default on both RAD-01
+variants). Verified on hardware: a client attached over TCP learns the node it
+is attached to at 1 hop and the far LoRa node at 2 hops, and Columba attaches to
+it as a real client.
+
+Note this also settles a question left open under BLE: a **TCP** client *can*
+reach the node it is attached to, which a KISS host over BLE cannot, because the
+board does not loop its own transmissions back to a KISS host. Another reason to
+prefer TCP for resident attachment.
+
+What remains for the disaster case is SoftAP itself — the interface works, but a
+node still only raises its own AP if configured to. That is the next step.
 
 ## 5. The orphan problem, and the stampede that must be avoided
 
@@ -264,10 +275,16 @@ it.
 
 ## 7. Build order
 
-1. **`TCPClientInterface`** (outbound) — lets a node anchor itself to an
-   always-on off-site transport through NAT, with no port forwarding.
-2. **`TCPServerInterface`** (inbound) — makes SoftAP and LAN client attachment
-   meaningful; turns a mains-powered node into the local hub.
+1. ~~**`TCPServerInterface`** (inbound)~~ — **done 2026-08-23.** Five clients,
+   default on for RAD-01. Sized to an average EU household (4-5 residents, one
+   Reticulum identity each), which is also roughly what the lwIP socket budget
+   allows alongside the UDP interface and KISS console.
+2. **SoftAP** — the node raises its own AP when building infrastructure is gone,
+   so residents can attach with no surviving router.
+3. **`TCPClientInterface`** (outbound) — lets a node anchor itself to an
+   always-on off-site transport through NAT, with no port forwarding. Useful for
+   remote monitoring in normal times; not part of the disaster path, since in an
+   earthquake there is no internet to dial out to.
 3. **Announce jitter + duty-cycle enforcement** — small, and required before any
    real deployment.
 4. **Orphan state machine with listen-only preset sweep.**

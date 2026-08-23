@@ -86,6 +86,17 @@ public:
 	virtual bool start() override {
 		if (_started) return true;
 		_server.begin();
+		// WiFiServer::begin() returns void and gives up SILENTLY if the socket,
+		// bind or listen call fails -- it simply returns with _listening false.
+		// Reporting success here regardless would produce the worst possible
+		// symptom: a log line claiming the interface is listening while it
+		// accepts nobody, which is an hour of debugging in the wrong place.
+		// operator bool() exposes _listening, so check it.
+		if (!_server) {
+			printf("[tcpi] ERROR: could not bind port %u -- interface is up but "
+			       "will accept no clients\n", (unsigned)TCP_SERVER_PORT);
+			return false;
+		}
 		_server.setNoDelay(true);   // packets are small and latency-sensitive
 		_started = true;
 		printf("[tcpi] listening on port %u (max %d clients)\n",
@@ -120,7 +131,14 @@ public:
 		// constructed. Binding here rather than at construction avoids ordering
 		// assumptions about which happens first.
 		if (!wifi_initialized) return;
-		if (!_started) { start(); }
+		// Retry a failed bind on an interval rather than every pass: this runs
+		// thousands of times a second, and a permanently unbindable port would
+		// otherwise bury the log.
+		if (!_started) {
+			if (millis() - _last_start_try < 5000) return;
+			_last_start_try = millis();
+			if (!start()) return;
+		}
 		#ifdef TCPI_DEBUG
 		{
 			static uint32_t calls = 0, last = 0;
@@ -306,4 +324,5 @@ private:
 	bool       _in_frame[TCP_SERVER_MAX_CLIENTS];
 	bool       _escape[TCP_SERVER_MAX_CLIENTS];
 	bool       _started = false;
+	uint32_t   _last_start_try = 0;
 };
