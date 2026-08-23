@@ -32,6 +32,9 @@
 #include <string>
 
 extern RNS::Interface lora_interface;
+#if defined(TCP_SERVER_TRANSPORT)
+extern RNS::Interface tcp_server_interface;
+#endif
 extern uint32_t lora_phy_hash();
 extern const char* radio_preset_name();
 #if HAS_WIFI && defined(UDP_TRANSPORT)
@@ -302,6 +305,14 @@ RNS::Bytes serve_page(
         content << "    \"last_snr\": " << std::to_string((int8_t)((int8_t)last_snr_raw) / 4.0f) << ",\n";
         add_interface_details(content, lora_interface);
       	content << "  },\n";
+#endif
+#if defined(TCP_SERVER_TRANSPORT)
+        if (tcp_server_interface) {
+          content << "  \"" << tcp_server_interface.name().c_str() << "\": {\n";
+          content << "    \"listen_port\": " << std::to_string(4242) << ",\n";
+          add_interface_details(content, tcp_server_interface);
+          content << "  },\n";
+        }
 #endif
 #if defined(UDP_TRANSPORT)
         if (wifi_mode != WR_WIFI_OFF && udp_interface) {

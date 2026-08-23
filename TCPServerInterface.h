@@ -54,6 +54,8 @@
 
 // Per-client receive buffer size; matches the interface HW MTU.
 #define TCPI_RX_BUFLEN 1064
+// Worst case for an escaped frame: every payload byte doubles, plus two flags.
+#define TCPI_TX_BUFLEN (2 * TCPI_RX_BUFLEN + 2)
 
 // HDLC framing, as used by RNS TCPInterface.
 #define TCPI_HDLC_FLAG      0x7E
@@ -73,12 +75,14 @@ public:
 			_rx[i] = (uint8_t*)malloc(TCPI_RX_BUFLEN);
 			reset_rx(i);
 		}
+		_tx = (uint8_t*)malloc(TCPI_TX_BUFLEN);
 	}
 	TCPServerInterface() : TCPServerInterface("TCPServerInterface") {}
 	virtual ~TCPServerInterface() {
 		for (int i = 0; i < TCP_SERVER_MAX_CLIENTS; i++) {
 			if (_rx[i]) { free(_rx[i]); _rx[i] = nullptr; }
 		}
+		if (_tx) { free(_tx); _tx = nullptr; }
 		_name = "deleted";
 	}
 
@@ -159,11 +163,17 @@ public:
 		for (int i = 0; i < TCP_SERVER_MAX_CLIENTS; i++) {
 			if (!_clients[i]) continue;
 			if (!peer_alive(i)) { drop(i, "disconnected"); continue; }
+			// Read in chunks. read() one byte at a time is a syscall per byte --
+			// the receive-side twin of the write-side bug that made this
+			// interface slower than LoRa.
 			int avail = _clients[i].available();
-			while (avail-- > 0) {
-				int b = _clients[i].read();
-				if (b < 0) break;
-				feed(i, (uint8_t)b);
+			while (avail > 0) {
+				uint8_t chunk[256];
+				int want = avail > (int)sizeof(chunk) ? (int)sizeof(chunk) : avail;
+				int got = _clients[i].read(chunk, want);
+				if (got <= 0) break;
+				for (int n = 0; n < got; n++) { feed(i, chunk[n]); }
+				avail -= got;
 			}
 		}
 	}
@@ -289,21 +299,32 @@ private:
 		}
 	}
 
+	// Build the whole escaped frame, then write it ONCE.
+	//
+	// The first version wrote a byte at a time, which combined with
+	// setNoDelay(true) -- Nagle disabled -- turned every byte into its own TCP
+	// segment: a 500-byte packet left as ~500 packets, each with 40 bytes of
+	// IP/TCP header and a full WiFi frame exchange behind it. Over a link that
+	// should be orders of magnitude faster than LoRa, page loads came out
+	// *slower* than LoRa. One write per frame is the whole fix; NoDelay is
+	// correct once frames are whole, since it avoids Nagle's 40ms wait on the
+	// small packets RNS actually sends.
 	bool write_framed(int i, const RNS::Bytes& data) {
-		uint8_t flag = TCPI_HDLC_FLAG;
-		if (_clients[i].write(&flag, 1) != 1) return false;
+		if (!_tx) return false;
 		const uint8_t* p = data.data();
+		size_t len = 0;
+		_tx[len++] = TCPI_HDLC_FLAG;
 		for (size_t n = 0; n < data.size(); n++) {
 			uint8_t b = p[n];
 			if (b == TCPI_HDLC_FLAG || b == TCPI_HDLC_ESC) {
-				uint8_t esc[2] = { TCPI_HDLC_ESC, (uint8_t)(b ^ TCPI_HDLC_ESC_MASK) };
-				if (_clients[i].write(esc, 2) != 2) return false;
+				_tx[len++] = TCPI_HDLC_ESC;
+				_tx[len++] = (uint8_t)(b ^ TCPI_HDLC_ESC_MASK);
 			} else {
-				if (_clients[i].write(&b, 1) != 1) return false;
+				_tx[len++] = b;
 			}
 		}
-		if (_clients[i].write(&flag, 1) != 1) return false;
-		return true;
+		_tx[len++] = TCPI_HDLC_FLAG;
+		return _clients[i].write(_tx, len) == len;
 	}
 
 	WiFiServer _server;
@@ -320,6 +341,7 @@ private:
 	// Keeping the object small leaves the socket objects in internal RAM where
 	// the network stack needs them; the plain data buffers are fine in PSRAM.
 	uint8_t*   _rx[TCP_SERVER_MAX_CLIENTS] = { nullptr };
+	uint8_t*   _tx = nullptr;   // shared: send_outgoing() is not reentrant
 	size_t     _rx_len[TCP_SERVER_MAX_CLIENTS];
 	bool       _in_frame[TCP_SERVER_MAX_CLIENTS];
 	bool       _escape[TCP_SERVER_MAX_CLIENTS];
