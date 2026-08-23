@@ -3161,7 +3161,11 @@ static void heap_watch() {
          (int)airtime_lock, (int)bt_state);
   size_t total = RNS::Utilities::Memory::heap_size();
   size_t avail = RNS::Utilities::Memory::heap_available();
-  #if HAS_WIFI
+  // Guarded on UDP_TRANSPORT, not HAS_WIFI: the counters are defined in
+  // Remote.h inside #if defined(UDP_TRANSPORT), so a Wi-Fi board built without
+  // UDP transport (heltec_wifi_lora_32_V2/V3) fails to LINK, not to compile --
+  // which is why building only the RAD-01 targets missed it.
+  #if HAS_WIFI == true && defined(UDP_TRANSPORT)
     extern volatile uint32_t udp_rx_count; extern volatile uint32_t udp_tx_count;
     printf("[udp] rx=%lu tx=%lu\n", (unsigned long)udp_rx_count, (unsigned long)udp_tx_count);
   #endif

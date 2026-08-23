@@ -824,7 +824,13 @@ void sx126x::receive(int size) {
     setPacketParams(_preambleLength, _implicitHeaderMode, _payloadLength, _crcMode);
   } else { explicitHeaderMode(); }
 
-  if (_rxen != -1) { rxAntEnable(); }
+  // Unconditional on purpose. txAntEnable() is called unconditionally before
+  // every transmit, so gating the restore on _rxen leaves a txen-only board
+  // with its switch stuck in TX after the first packet -- it then hears
+  // nothing, for ever, while reporting a perfectly healthy radio. rxAntEnable()
+  // already guards each pin individually, so the outer check was redundant as
+  // well as harmful.
+  rxAntEnable();
   uint8_t mode[3] = {0xFF, 0xFF, 0xFF}; // Continuous mode
   executeOpcode(OP_RX_6X, mode, 3);
 }
