@@ -63,6 +63,41 @@
 	#ifndef BLE_FIXED_PASSKEY
 	#define BLE_FIXED_PASSKEY 123456
 	#endif
+
+	// --- SoftAP fallback -------------------------------------------------
+	//
+	// A node whose configured network is gone -- or which was never given one
+	// at flash time -- raises its own access point so residents can still
+	// reach it. This is the disaster case the project exists for: the
+	// building's router is down, and a phone needs *something* to join.
+	//
+	// Fallback, not permanent AP+STA: running both costs power and airtime on
+	// a node that may be on battery, and the uplink is worth having whenever
+	// it exists.
+	//
+	// How long to keep trying the configured station network before giving up
+	// and raising our own AP. Must be comfortably longer than a slow router's
+	// boot, or a node will desert a network that was merely restarting.
+	#ifndef WIFI_AP_FALLBACK_MS
+	#define WIFI_AP_FALLBACK_MS 120000             // 2 minutes
+	#endif
+
+	// While serving a fallback AP, how often to look for the configured
+	// network again. Retrying is only attempted when NO station is associated:
+	// dropping a resident mid-message to chase an uplink is the wrong trade.
+	#ifndef WIFI_AP_RETRY_STA_MS
+	#define WIFI_AP_RETRY_STA_MS 600000            // 10 minutes
+	#endif
+
+	// Pre-shared key for the fallback AP. Set to "" for an open network.
+	//
+	// Open is arguably right for a disaster -- someone on 3% battery in a
+	// stairwell should not be hunting for a password -- but that is a
+	// deployment policy decision, so this defaults to a key and is overridable
+	// per board or per build.
+	#ifndef WIFI_AP_PSK
+	#define WIFI_AP_PSK "imprrad01"
+	#endif
 	uint8_t bt_state = BT_STATE_NA;
 	uint32_t bt_ssp_pin = 0;
 	bool bt_ready = false;

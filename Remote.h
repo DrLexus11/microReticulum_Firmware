@@ -64,6 +64,19 @@ extern RNS::Interface udp_interface;
 
 uint8_t wifi_mode = WIFI_OFF;
 bool wifi_init_ran = false;
+
+// --- SoftAP fallback state (see WIFI_AP_FALLBACK_MS in Config.h) ---
+// True while we are serving our OWN access point because the configured
+// station network could not be reached. Distinct from wifi_mode == WR_WIFI_AP,
+// which means the operator asked for AP mode deliberately.
+bool     wifi_ap_fallback_active = false;
+uint32_t wifi_sta_failing_since  = 0;   // 0 = not currently failing
+uint32_t wifi_ap_last_sta_retry  = 0;
+char     wifi_ap_ssid[33]        = {0};
+// The node's provisioned name, used to build the AP SSID. Defined in the
+// sketch and populated during setup, after WiFi first comes up -- which is
+// why the SSID is built at fallback time rather than at init.
+extern char nomadnet_name[64];
 bool wifi_initialized = false;
 
 char wr_ssid[33];
@@ -79,6 +92,51 @@ uint8_t wifi_remote_mode() { return wifi_mode; }
 
 bool wifi_is_connected() { return (wr_wifi_status == WL_CONNECTED); }
 bool wifi_host_is_connected() { if (connection) { return true; } else { return false; } }
+
+// Build the fallback AP SSID: node name plus a MAC suffix.
+//
+// The name alone is not unique -- a building full of RAD-01s provisioned from
+// the same template would all advertise the same SSID, and a resident could not
+// tell which one is in their flat. Appending MAC bytes follows the Meshtastic
+// convention users already recognise.
+void wifi_build_ap_ssid() {
+	uint8_t mac[6] = {0};
+	WiFi.macAddress(mac);
+	// Prefer the provisioned node name; fall back to the RNode device name if
+	// provisioning has not run yet.
+	const char* base = (nomadnet_name[0] != 0) ? nomadnet_name : bt_devname;
+	char clean[24]; size_t c = 0;
+	for (size_t i = 0; base[i] != 0 && c < sizeof(clean) - 1; i++) {
+		char ch = base[i];
+		// Keep SSIDs boring: alphanumerics and dashes survive, spaces and
+		// brackets (the default name contains both) become dashes.
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+		    (ch >= '0' && ch <= '9') || ch == '-') { clean[c++] = ch; }
+		else if (ch == ' ' || ch == '_' || ch == '[') { if (c && clean[c-1] != '-') clean[c++] = '-'; }
+	}
+	while (c && clean[c-1] == '-') c--;      // no trailing dash before the suffix
+	clean[c] = 0;
+	snprintf(wifi_ap_ssid, sizeof(wifi_ap_ssid), "%s-%02X%02X", clean, mac[4], mac[5]);
+}
+
+// Raise our own AP because the configured network is unreachable or absent.
+void wifi_remote_start_ap_fallback() {
+	wifi_build_ap_ssid();
+	WiFi.mode(WIFI_AP);
+	const char* psk = WIFI_AP_PSK;
+	if (psk[0] != 0) { WiFi.softAP(wifi_ap_ssid, psk, wr_channel); }
+	else             { WiFi.softAP(wifi_ap_ssid, NULL, wr_channel); }
+	delay(150);
+	WiFi.softAPConfig(ap_ip, ap_ip, ap_nm);
+	wifi_initialized = true;
+	wifi_ap_fallback_active = true;
+	wifi_ap_last_sta_retry = millis();
+	wr_device_ip = WiFi.softAPIP();
+	wr_wifi_status = WL_CONNECTED;
+	printf("[WiFi] station network unreachable -- serving fallback AP \"%s\"%s at %s\n",
+	       wifi_ap_ssid, (psk[0] != 0) ? " (PSK)" : " (open)",
+	       wr_device_ip.toString().c_str());
+}
 
 void wifi_remote_start_ap() {
   WiFi.mode(WIFI_AP);
@@ -273,9 +331,50 @@ void wifi_update_status() {
     //printf("[WiFi] ip: %s\n", WiFi.localIP());
   }
   if (wifi_mode == WR_WIFI_AP && wifi_initialized) { wr_device_ip = WiFi.softAPIP(); wr_wifi_status = WL_CONNECTED; }
-  if (wifi_init_ran && wifi_mode == WR_WIFI_STA && wr_wifi_status != WL_CONNECTED) {
+  if (wifi_init_ran && wifi_mode == WR_WIFI_STA && !wifi_ap_fallback_active &&
+      wr_wifi_status != WL_CONNECTED) {
     if (millis()-wr_last_connect_try >= WR_RECONNECT_INTERVAL_MS) { wifi_remote_init(); }
+
+#if WIFI_AP_FALLBACK_MS > 0
+    // A node whose network is gone is useless to the people around it. After
+    // trying long enough that this is not merely a router rebooting, raise our
+    // own AP so residents have something to join.
+    //
+    // A node with no SSID at all -- never provisioned, or flashed blank -- is
+    // treated as immediately unreachable rather than waiting out the timer for
+    // a network that does not exist.
+    bool never_configured = (wr_ssid[0] == 0x00);
+    if (wifi_sta_failing_since == 0) { wifi_sta_failing_since = millis(); }
+    if (never_configured || (millis() - wifi_sta_failing_since >= WIFI_AP_FALLBACK_MS)) {
+      printf("[WiFi] %s -- falling back to own AP\n",
+             never_configured ? "no station network configured"
+                              : "station network unreachable");
+      wifi_remote_start_ap_fallback();
+    }
+#endif
+  } else if (wr_wifi_status == WL_CONNECTED && !wifi_ap_fallback_active) {
+    wifi_sta_failing_since = 0;      // connected: reset the fallback timer
   }
+
+#if WIFI_AP_FALLBACK_MS > 0
+  // While serving the fallback AP, look for the configured network again --
+  // but ONLY when nobody is associated. Dropping a resident mid-message to go
+  // chase an uplink is the wrong trade; the uplink can wait until they leave.
+  if (wifi_ap_fallback_active && wr_ssid[0] != 0x00 &&
+      millis() - wifi_ap_last_sta_retry >= WIFI_AP_RETRY_STA_MS) {
+    wifi_ap_last_sta_retry = millis();
+    uint8_t stations = WiFi.softAPgetStationNum();
+    if (stations > 0) {
+      printf("[WiFi] fallback AP has %u client(s) -- deferring station retry\n",
+             (unsigned)stations);
+    } else {
+      printf("[WiFi] fallback AP idle -- retrying station network \"%s\"\n", wr_ssid);
+      wifi_ap_fallback_active = false;
+      wifi_sta_failing_since = 0;
+      wifi_remote_init();
+    }
+  }
+#endif
 }
 
 void update_wifi() {
