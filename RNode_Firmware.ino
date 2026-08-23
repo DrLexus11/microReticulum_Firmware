@@ -23,6 +23,9 @@
 #endif
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
+#if defined(TCP_SERVER_TRANSPORT)
+#include "TCPServerInterface.h"
+#endif
 #endif
 #ifdef URTN_STATS_PAGES
 #include "Pages.h"
@@ -236,6 +239,9 @@ RNS::Reticulum reticulum(RNS::Type::NONE);
 RNS::Interface lora_interface(RNS::Type::NONE);
 #if defined(UDP_TRANSPORT)
 RNS::Interface udp_interface(RNS::Type::NONE);
+#endif
+#if defined(TCP_SERVER_TRANSPORT)
+RNS::Interface tcp_server_interface(RNS::Type::NONE);
 #endif
 #if defined(RNS_USE_FS)
   // CBA microStore
@@ -1160,6 +1166,16 @@ void setup() {
         udp_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
       }
 #endif
+#if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
+      // Serves attached clients (residents' phones on the SoftAP, or hosts on
+      // the LAN). Created whenever WiFi is on in either mode -- SoftAP is the
+      // disaster case and STA the everyday one, and the interface does not care
+      // which. The listener itself binds later, from poll(), once WiFi is up.
+      if (wifi_mode != WR_WIFI_OFF) {
+        tcp_server_interface = new TCPServerInterface();
+        tcp_server_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+      }
+#endif
 
       // Provisioning default
       reticulum.transport_enabled(true);
@@ -1205,6 +1221,13 @@ void setup() {
         HEAD("Registering UDP Interface...", RNS::LOG_TRACE);
         RNS::Transport::register_interface(udp_interface);
         TRACEF("UDPInterface hash: %s", udp_interface.get_hash().toHex().c_str());
+      }
+#endif
+#if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
+      if (wifi_mode != WR_WIFI_OFF && tcp_server_interface) {
+        HEAD("Registering TCP Server Interface...", RNS::LOG_TRACE);
+        RNS::Transport::register_interface(tcp_server_interface);
+        TRACEF("TCPServerInterface hash: %s", tcp_server_interface.get_hash().toHex().c_str());
       }
 #endif
 
