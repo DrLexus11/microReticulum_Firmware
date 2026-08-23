@@ -89,15 +89,34 @@
 	#define WIFI_AP_RETRY_STA_MS 600000            // 10 minutes
 	#endif
 
-	// Pre-shared key for the fallback AP. Set to "" for an open network.
+	// How long the station retry may be deferred by attached clients before it
+	// happens anyway.
 	//
+	// Deferring while someone is associated is right -- dropping a resident
+	// mid-message to chase an uplink is the wrong trade -- but unbounded
+	// deferral is a trap at scale: in a building with continuous occupancy, one
+	// phone left connected overnight keeps a node isolated from a router that
+	// came back hours ago. Long enough that nobody loses a conversation, short
+	// enough that a node rejoins within a working day.
+	#ifndef WIFI_AP_MAX_DEFER_MS
+	#define WIFI_AP_MAX_DEFER_MS 14400000          // 4 hours
+	#endif
+
+	// Pre-shared key for the fallback AP.
+	//
+	// Leave this UNSET (the default) to derive a per-node key from the MAC, the
+	// same source as the SSID suffix -- so IMPR-RAD-01-Rev1-C7A4 has its own
+	// password. A fleet-wide shared key is fine on a bench and a liability
+	// across a building: one resident's key opens every neighbour's node.
+	//
+	// The derivation is deterministic, so SSID and key can be printed on the
+	// enclosure label at build time, and both are logged when the AP comes up.
+	//
+	// Define it explicitly to force a fixed key, or to "" for an open network.
 	// Open is arguably right for a disaster -- someone on 3% battery in a
 	// stairwell should not be hunting for a password -- but that is a
-	// deployment policy decision, so this defaults to a key and is overridable
-	// per board or per build.
-	#ifndef WIFI_AP_PSK
-	#define WIFI_AP_PSK "imprrad01"
-	#endif
+	// deployment policy decision, not a default.
+	//#define WIFI_AP_PSK "somefixedkey"
 	uint8_t bt_state = BT_STATE_NA;
 	uint32_t bt_ssp_pin = 0;
 	bool bt_ready = false;

@@ -73,6 +73,8 @@ bool     wifi_ap_fallback_active = false;
 uint32_t wifi_sta_failing_since  = 0;   // 0 = not currently failing
 uint32_t wifi_ap_last_sta_retry  = 0;
 char     wifi_ap_ssid[33]        = {0};
+char     wifi_ap_psk[16]         = {0};
+uint32_t wifi_ap_deferring_since = 0;   // 0 = not currently deferring
 // The node's provisioned name, used to build the AP SSID. Defined in the
 // sketch and populated during setup, after WiFi first comes up -- which is
 // why the SSID is built at fallback time rather than at init.
@@ -117,15 +119,36 @@ void wifi_build_ap_ssid() {
 	while (c && clean[c-1] == '-') c--;      // no trailing dash before the suffix
 	clean[c] = 0;
 	snprintf(wifi_ap_ssid, sizeof(wifi_ap_ssid), "%s-%02X%02X", clean, mac[4], mac[5]);
+
+#ifdef WIFI_AP_PSK
+	// Explicit override, including "" for an open network.
+	snprintf(wifi_ap_psk, sizeof(wifi_ap_psk), "%s", WIFI_AP_PSK);
+#else
+	// Derive a per-node key from the MAC. A fleet-wide shared key means one
+	// resident's password opens every neighbour's node; this gives each node
+	// its own, deterministically, so SSID and key can be printed on the
+	// enclosure label.
+	//
+	// The alphabet omits 0/O/1/l/I: these get read off a label and typed by
+	// someone in a stairwell, and an ambiguous character there is a support
+	// call. WPA2 requires at least 8 characters.
+	static const char alpha[] = "abcdefghjkmnpqrstuvwxyz23456789";
+	uint32_t h = 2166136261u;                       // FNV-1a over the MAC
+	for (int i = 0; i < 6; i++) { h ^= mac[i]; h *= 16777619u; }
+	for (int i = 0; i < 8; i++) {
+		wifi_ap_psk[i] = alpha[h % (sizeof(alpha) - 1)];
+		h = h / (sizeof(alpha) - 1) + (h << 7) + 0x9E3779B9u;
+	}
+	wifi_ap_psk[8] = 0;
+#endif
 }
 
 // Raise our own AP because the configured network is unreachable or absent.
 void wifi_remote_start_ap_fallback() {
 	wifi_build_ap_ssid();
 	WiFi.mode(WIFI_AP);
-	const char* psk = WIFI_AP_PSK;
-	if (psk[0] != 0) { WiFi.softAP(wifi_ap_ssid, psk, wr_channel); }
-	else             { WiFi.softAP(wifi_ap_ssid, NULL, wr_channel); }
+	if (wifi_ap_psk[0] != 0) { WiFi.softAP(wifi_ap_ssid, wifi_ap_psk, wr_channel); }
+	else                     { WiFi.softAP(wifi_ap_ssid, NULL, wr_channel); }
 	delay(150);
 	WiFi.softAPConfig(ap_ip, ap_ip, ap_nm);
 	wifi_initialized = true;
@@ -133,9 +156,16 @@ void wifi_remote_start_ap_fallback() {
 	wifi_ap_last_sta_retry = millis();
 	wr_device_ip = WiFi.softAPIP();
 	wr_wifi_status = WL_CONNECTED;
-	printf("[WiFi] station network unreachable -- serving fallback AP \"%s\"%s at %s\n",
-	       wifi_ap_ssid, (psk[0] != 0) ? " (PSK)" : " (open)",
-	       wr_device_ip.toString().c_str());
+	wifi_ap_deferring_since = 0;
+	// Log the key as well as the SSID: it is derived, so this is how it gets
+	// onto the enclosure label and into a resident's hands.
+	if (wifi_ap_psk[0] != 0) {
+		printf("[WiFi] serving fallback AP \"%s\" key \"%s\" at %s\n",
+		       wifi_ap_ssid, wifi_ap_psk, wr_device_ip.toString().c_str());
+	} else {
+		printf("[WiFi] serving fallback AP \"%s\" (open) at %s\n",
+		       wifi_ap_ssid, wr_device_ip.toString().c_str());
+	}
 }
 
 void wifi_remote_start_ap() {
@@ -364,10 +394,25 @@ void wifi_update_status() {
       millis() - wifi_ap_last_sta_retry >= WIFI_AP_RETRY_STA_MS) {
     wifi_ap_last_sta_retry = millis();
     uint8_t stations = WiFi.softAPgetStationNum();
-    if (stations > 0) {
+    if (stations > 0 && wifi_ap_deferring_since == 0) { wifi_ap_deferring_since = millis(); }
+    bool defer_expired = (wifi_ap_deferring_since != 0 &&
+                          millis() - wifi_ap_deferring_since >= WIFI_AP_MAX_DEFER_MS);
+    if (stations > 0 && !defer_expired) {
+      // Someone is using us; the uplink can wait.
       printf("[WiFi] fallback AP has %u client(s) -- deferring station retry\n",
              (unsigned)stations);
+    } else if (stations > 0 && defer_expired) {
+      // ...but not for ever. In a building with continuous occupancy an
+      // unbounded defer means never rejoining a router that came back hours
+      // ago, so past the ceiling we retry regardless.
+      printf("[WiFi] fallback AP deferred %lums with %u client(s) -- retrying anyway\n",
+             (unsigned long)(millis() - wifi_ap_deferring_since), (unsigned)stations);
+      wifi_ap_fallback_active = false;
+      wifi_sta_failing_since = 0;
+      wifi_ap_deferring_since = 0;
+      wifi_remote_init();
     } else {
+      wifi_ap_deferring_since = 0;
       printf("[WiFi] fallback AP idle -- retrying station network \"%s\"\n", wr_ssid);
       wifi_ap_fallback_active = false;
       wifi_sta_failing_since = 0;

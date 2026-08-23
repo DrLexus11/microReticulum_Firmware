@@ -136,6 +136,35 @@ provides:
 An industrial customer who has fought PKI and VLANs to get one sensor talking
 will care far more about that than about verbs.
 
+## 5a. Where this sits relative to NomadNet and IFAC
+
+Three surfaces are easy to conflate. They are complementary, and the API must
+not invent its own answer to a question already answered elsewhere:
+
+- **NomadNet pages** — the human-facing surface. Micron markup, browsed from
+  Sideband/Columba. Already implemented.
+- **This resource API** — the machine-facing surface. MsgPack, typed schema,
+  validation, transactional commit.
+- **IFAC** — who may exchange packets on an interface at all. Not implemented;
+  see `docs/PrivateMesh.md`, which is the next substantial piece of work.
+
+**Authorisation must be shared, not duplicated.** NomadNet pages gate access by
+proven identity against `ALLOW_LIST`
+(`RNS::Transport::remote_management_allowed()`). The API must use that same
+mechanism. A device with two different answers to "who may change this" has a
+security bug waiting to be found by whoever holds the weaker one.
+
+**IFAC does not remove the need for it.** Being on the network is not the same
+as being authorised to reconfigure a radio, and on a public mesh anyone can
+reach the node anyway. IFAC reduces exposure; identity authorisation is what
+actually decides who may act.
+
+**Ordering.** If government adoption progresses, IFAC is likely a hard
+procurement requirement and blocks; the resource API is a differentiator for the
+industrial thread but blocks nothing. That argues for IFAC first, with the API's
+Stage 1 (host-side schema to OpenAPI, zero firmware cost) running alongside it
+since the two do not touch the same code.
+
 ## 6. Non-goals
 
 - Closed-loop or safety-rated control.
