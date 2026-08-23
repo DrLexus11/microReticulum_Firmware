@@ -88,6 +88,22 @@
 	// First announce after boot. Must be comfortably later than DHCP + the UDP
 	// socket rebind, or it is emitted before the interface can carry it.
 	#define NOMADNET_FIRST_ANNOUNCE_MS 60000       // 1 minute
+	// Random extra delay (0..this) added to every announce interval, re-rolled
+	// each cycle.
+	//
+	// Without it a fleet transmits in lockstep. That is not a theoretical
+	// concern for QuakeMesh: when mains power returns to a block, every node
+	// boots within seconds of every other, and each would then announce at
+	// exactly NOMADNET_FIRST_ANNOUNCE_MS. Hundreds of simultaneous
+	// transmissions on a half-duplex channel with no collision detection means
+	// none of them land, and the nodes are least able to recover at precisely
+	// the moment recovery matters most.
+	//
+	// The PRNG is seeded from esp_random() during setup(), so nodes running
+	// identical firmware still pick different offsets. Jitter is additive only
+	// (never early), so it lengthens the mean interval slightly -- deliberate,
+	// since erring toward less airtime is the safe direction.
+	#define NOMADNET_ANNOUNCE_JITTER_MS 60000      // up to 1 minute
 	// What to do when the modem fails to complete a transmission. Rebooting takes
 	// a transport node off the mesh entirely and discards its path/link state to
 	// recover from one bad packet; RNS already retries above this layer. Default
@@ -265,8 +281,32 @@
 		float longterm_airtime = 0.0;
 		#define current_airtime_bin(void) (millis()%AIRTIME_LONGTERM_MS)/AIRTIME_BINLEN_MS
 	#endif
-	float st_airtime_limit = 0.0;
-	float lt_airtime_limit = 0.0;
+	// Airtime limits, as a fraction of the window spent transmitting. 0.0
+	// disables a limit entirely.
+	//
+	// The long-term window is AIRTIME_LONGTERM (3600 s), which is exactly the
+	// window EU 868 duty-cycle rules are written against. 867.2 MHz sits in
+	// sub-band g3 (867-868.6 MHz), where the limit is 1%.
+	//
+	// This ships ENABLED. A node that is factory-reset or freshly flashed must
+	// be compliant by default; a deployment of rooftop relays cannot depend on
+	// someone remembering to set this per node.
+	//
+	// Understand the consequence before raising or lowering it: 1% of an hour
+	// is 36 seconds of transmission. At BW250/SF7 a 483-byte packet is ~366 ms,
+	// and serving one NomadNet page costs roughly a second of transmit time --
+	// so the cap permits on the order of tens of page loads per hour per node.
+	// That is a real constraint on interactive browsing and a strong argument
+	// for keeping served pages small. It is also the correct trade: exceeding
+	// it is illegal and degrades the band for every other node.
+	#ifndef RADIO_DUTY_CYCLE_SHORTTERM
+	#define RADIO_DUTY_CYCLE_SHORTTERM 0.0f        // no extra short-window cap
+	#endif
+	#ifndef RADIO_DUTY_CYCLE_LONGTERM
+	#define RADIO_DUTY_CYCLE_LONGTERM 0.01f        // EU 868 sub-band g3: 1%
+	#endif
+	float st_airtime_limit = RADIO_DUTY_CYCLE_SHORTTERM;
+	float lt_airtime_limit = RADIO_DUTY_CYCLE_LONGTERM;
 	bool airtime_lock = false;
 
 	bool stat_signal_detected   = false;

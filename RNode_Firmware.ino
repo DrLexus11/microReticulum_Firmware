@@ -2820,10 +2820,18 @@ void work_while_waiting() { loop(); }
 #if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
 static void nomadnet_announce_watch() {
   static uint32_t last_announce = 0;
+  static uint32_t announce_jitter = 0;
   static bool armed = false;
   static bool first_done = false;
   if (!nomadnet_enabled || !nomadnet_destination) return;
-  if (!armed) { armed = true; last_announce = millis(); return; }
+  // Jitter is rolled when arming as well as after each announce: the very
+  // first announce is the one most likely to collide fleet-wide, because a
+  // block of nodes restored to mains power all reach this point together.
+  if (!armed) {
+    armed = true; last_announce = millis();
+    announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
+    return;
+  }
   // The startup announce in setup() is NOT sufficient. It fires at ~t+4s, about
   // a second before DHCP completes and the UDP socket is rebound to a real
   // address (see the rebind in Remote.h), so on a fast boot it is emitted into a
@@ -2831,8 +2839,10 @@ static void nomadnet_announce_watch() {
   // by a slow startup. Send the first real announce shortly after boot, once the
   // network is definitely up, then settle into the normal interval.
   uint32_t due = first_done ? NOMADNET_ANNOUNCE_INTERVAL_MS : NOMADNET_FIRST_ANNOUNCE_MS;
+  due += announce_jitter;
   if (millis() - last_announce < due) return;
   last_announce = millis();
+  announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
   first_done = true;
   printf("[announce] re-announcing NomadNet site \"%s\"\n", nomadnet_name);
   nomadnet_destination.announce(nomadnet_name);
@@ -3116,6 +3126,12 @@ static void heap_watch() {
   if (millis() - last_heap_report < HEAP_REPORT_INTERVAL_MS) return;
   last_heap_report = millis();
   rtc_last_uptime_s = (uint32_t)(millis() / 1000);
+  // Duty-cycle headroom and BLE state. Both are otherwise invisible: a node
+  // silenced by airtime_lock looks exactly like one with nothing to say, and
+  // BLE has no status output at all.
+  printf("[duty] longterm=%.4f limit=%.4f locked=%d | [ble] state=%d\n",
+         (double)longterm_airtime, (double)lt_airtime_limit,
+         (int)airtime_lock, (int)bt_state);
   size_t total = RNS::Utilities::Memory::heap_size();
   size_t avail = RNS::Utilities::Memory::heap_available();
   #if HAS_WIFI
