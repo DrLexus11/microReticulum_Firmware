@@ -288,22 +288,36 @@
 	// window EU 868 duty-cycle rules are written against. 867.2 MHz sits in
 	// sub-band g3 (867-868.6 MHz), where the limit is 1%.
 	//
-	// This ships ENABLED. A node that is factory-reset or freshly flashed must
-	// be compliant by default; a deployment of rooftop relays cannot depend on
-	// someone remembering to set this per node.
+	// ---------------------------------------------------------------------
+	// DISABLED BY DEFAULT -- lab/bench builds only. MUST be enabled to ship.
+	// ---------------------------------------------------------------------
 	//
-	// Understand the consequence before raising or lowering it: 1% of an hour
-	// is 36 seconds of transmission. At BW250/SF7 a 483-byte packet is ~366 ms,
-	// and serving one NomadNet page costs roughly a second of transmit time --
-	// so the cap permits on the order of tens of page loads per hour per node.
-	// That is a real constraint on interactive browsing and a strong argument
-	// for keeping served pages small. It is also the correct trade: exceeding
-	// it is illegal and degrades the band for every other node.
+	// Enforcement is left off here because it throttles the bench: 1% of an
+	// hour is 36 seconds of transmit time, and serving one NomadNet page costs
+	// roughly a second at BW250/SF7, so a back-to-back test run exhausts the
+	// budget in minutes and every subsequent failure looks like a radio fault
+	// rather than a deliberate airtime_lock.
+	//
+	// For any build that leaves the bench, set the long-term limit to the legal
+	// value for the region. At 867.2 MHz that is EU 868 sub-band g3 -- 1%:
+	//
+	//     -DRADIO_DUTY_CYCLE_LONGTERM=0.01f
+	//
+	// The #ifndef guards exist precisely so a production environment in
+	// platformio.ini can override without touching this file. Exceeding the
+	// duty cycle is illegal and degrades the band for every other node, so
+	// treat enabling it as a release requirement, not an optimisation.
+	//
+	// The enforcement machinery itself is always compiled in and always
+	// accounting: AIRTIME_LONGTERM is 3600 s (exactly the window the rules are
+	// written against) and the [duty] telemetry reports accumulation whether or
+	// not a limit is set -- so bench runs still show what a real deployment
+	// would have spent.
 	#ifndef RADIO_DUTY_CYCLE_SHORTTERM
-	#define RADIO_DUTY_CYCLE_SHORTTERM 0.0f        // no extra short-window cap
+	#define RADIO_DUTY_CYCLE_SHORTTERM 0.0f        // disabled
 	#endif
 	#ifndef RADIO_DUTY_CYCLE_LONGTERM
-	#define RADIO_DUTY_CYCLE_LONGTERM 0.01f        // EU 868 sub-band g3: 1%
+	#define RADIO_DUTY_CYCLE_LONGTERM 0.0f         // disabled -- set 0.01f to ship
 	#endif
 	float st_airtime_limit = RADIO_DUTY_CYCLE_SHORTTERM;
 	float lt_airtime_limit = RADIO_DUTY_CYCLE_LONGTERM;

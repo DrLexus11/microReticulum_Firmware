@@ -171,13 +171,19 @@ build and code inspection only. **Test on return before trusting any of it.**
   cycle and also at arm time so the *first* announce after a mass reboot is
   already spread). The PRNG is seeded from `esp_random()` in `setup()`, so
   identical firmware still yields different offsets per node.
-- **Duty cycle enabled by default**: `lt_airtime_limit` now defaults to
-  `RADIO_DUTY_CYCLE_LONGTERM` = 0.01 (EU 868 sub-band g3, 1%) instead of 0.0.
-  The enforcement machinery already existed and was simply switched off.
-  **Consequence to watch for:** 1% of an hour is 36 s of transmit time, and
-  serving one NomadNet page costs roughly a second — so a node can serve on the
-  order of tens of page loads per hour before `airtime_lock` silences it. That
-  is legally correct and operationally significant.
+- **Duty-cycle knob added, deliberately left DISABLED for lab work.**
+  `RADIO_DUTY_CYCLE_LONGTERM` defaults to 0.0; set it to `0.01f` (EU 868
+  sub-band g3) to ship. It was briefly defaulted on and then reverted on
+  2026-08-23: enforcement throttles the bench, because 1% of an hour is 36 s of
+  transmit time and serving one NomadNet page costs roughly a second, so a
+  back-to-back test run exhausts the budget in minutes and every later failure
+  looks like a radio fault rather than a deliberate `airtime_lock`.
+
+  **This is a release requirement, not an optimisation.** The `#ifndef` guards
+  let a production environment in `platformio.ini` set it without touching
+  `Config.h`. Accounting runs regardless of whether a limit is set, so bench
+  runs still report via `[duty]` what a real deployment would have spent —
+  which is the number to check before enabling it for real.
 - **`[duty]` / `[ble]` telemetry** in the periodic report, added deliberately
   alongside the change above: a node muted by `airtime_lock` is otherwise
   indistinguishable from one with nothing to say, and BLE had no status output
