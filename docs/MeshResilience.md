@@ -75,6 +75,56 @@ automatically" — that behaviour does not exist in BLE without one of:
    sense). Flood-based, designed for lighting control, very low effective
    throughput. A poor fit for RNS's ~500-byte packets.
 
+### BLE attachment: tested 2026-08-23, and it does not work for residents
+
+Hardware findings, all verified:
+
+- The board advertises correctly and continuously as `RNode XXXX` with the
+  Nordic UART service UUID, at healthy power (seen at -33 dBm from a metre
+  away). `bt_disable_pairing()` does *not* stop advertising, so the device stays
+  discoverable after the pairing window lapses.
+- A completely fresh, unbonded client (a Linux host via `bluetoothctl`) can
+  connect and resolve the NUS service. The board is not the obstacle.
+- **A phone attached over BLE really does drive the radio.** With Columba
+  connected, `tx_calls` rose from 4 to 58 and Rev 2 received 54 packets over
+  LoRa. Rev 1's own TNC stack kept announcing throughout, so a KISS host and the
+  local RNS stack genuinely coexist on one modem — the open question in this
+  document is answered, affirmatively.
+- **BLE preempts the wired console.** `serial_write()` routes *all* KISS output,
+  logs included, to BLE whenever `bt_state == BT_STATE_CONNECTED`. USB serial
+  goes completely silent. It is one host at a time, and debugging over USB
+  requires disconnecting BLE first.
+
+**The blocker: the pairing passkey is unobtainable in the field.**
+`BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM)` demands MITM passkey
+pairing, and `bt_update_passkey()` generates a *random* six-digit PIN each
+attempt. That PIN is surfaced in exactly two places: a display (which RAD boards
+do not have) and `kiss_indicate_btpin()` over a wired KISS link. Pairing on
+2026-08-23 succeeded only because the PIN was read off the USB serial line and
+typed in by hand.
+
+**A resident cannot do that.** A node in a wall or on a roof has no screen and no
+accessible UART, so BLE attachment is impossible for the people it exists for.
+This is a firmware decision that must be made before BLE can be the resident
+path:
+
+1. **Fixed or derived passkey** — e.g. from the device hash, printed on the
+   enclosure label. Keeps MITM protection, makes it usable.
+2. **Just Works pairing (no MITM)** — weaker against an active MITM attacker on
+   the BLE hop, but note what the BLE link is actually protecting: nothing.
+   Reticulum above it is already end-to-end encrypted and identity-
+   authenticated, so BLE bonding is not carrying the security here.
+
+Option 2 is probably right, but it should be chosen deliberately.
+
+Separately, Columba listed the device only once, immediately after it was bonded
+via a third-party app, and never again — while nRF Connect saw it every time on
+the same phone with the same permissions. That is app-side behaviour we could
+not diagnose from the firmware, and it is a second reason not to depend on BLE
+for resident attachment until it is understood. **SoftAP + `TCPServerInterface`
+looks like the more practical route**, since it needs no pairing, no passkey, and
+serves several phones at once.
+
 **Recommendation: do not build a BLE backbone.** Through apartment walls BLE
 manages perhaps one room; LoRa at 868 MHz manages the building. Keep BLE for
 what it is already good at — a resident's phone attaching to the RAD in their
