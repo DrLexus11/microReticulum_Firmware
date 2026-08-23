@@ -2730,7 +2730,13 @@ void validate_status() {
       }
     } else {
       hw_ready = false;
+      // Spell out the consequence and the fix. A blank EEPROM is the normal
+      // state of NEW hardware, and the upload that produced it reports success
+      // -- so without this the symptom reads as a failed flash or a dead radio
+      // rather than a missing one-time provisioning step.
       printf("[init] Device unprovisioned, no device configuration found in EEPROM\r\n");
+      printf("[init] hw_ready=0: the radio will NOT start until this board is\r\n");
+      printf("[init] provisioned once with:  pio run -e <env> -t provision\r\n");
       #if HAS_DISPLAY
         if (disp_ready) {
           device_init_done = true;
