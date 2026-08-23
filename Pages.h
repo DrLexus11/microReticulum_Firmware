@@ -34,6 +34,11 @@
 extern RNS::Interface lora_interface;
 #if defined(TCP_SERVER_TRANSPORT)
 extern RNS::Interface tcp_server_interface;
+// Mirror of the default in TCPServerInterface.h. A -D override reaches both,
+// so the page cannot report a port the interface is not listening on.
+#ifndef TCP_SERVER_PORT
+#define TCP_SERVER_PORT 4242
+#endif
 #endif
 extern uint32_t lora_phy_hash();
 extern const char* radio_preset_name();
@@ -309,7 +314,7 @@ RNS::Bytes serve_page(
 #if defined(TCP_SERVER_TRANSPORT)
         if (tcp_server_interface) {
           content << "  \"" << tcp_server_interface.name().c_str() << "\": {\n";
-          content << "    \"listen_port\": " << std::to_string(4242) << ",\n";
+          content << "    \"listen_port\": " << std::to_string(TCP_SERVER_PORT) << ",\n";
           add_interface_details(content, tcp_server_interface);
           content << "  },\n";
         }

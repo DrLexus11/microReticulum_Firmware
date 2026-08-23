@@ -148,6 +148,27 @@ needs it, because "on the network" is not the same as "authorised to reconfigure
 the radio". IFAC reduces exposure; it does not remove the need for
 authorisation.
 
+## 6a. The fallback AP key is not a secret
+
+Worth stating plainly, because it looks like one. The SoftAP PSK is derived from
+the MAC by an algorithm that ships in open-source firmware, and the MAC is
+broadcast in every WiFi frame. **Anyone who can see the access point can compute
+its key.**
+
+It is still better than a fleet-wide shared key -- one resident's password no
+longer opens every neighbour's node, and it removes the "everyone knows the
+building password" failure -- but it is a speed bump, not a credential. As of
+2026-08-23 it is also no longer printed in logs by default
+(`-DWIFI_AP_LOG_PSK` to print it for labelling), since log output reaches the
+unauthenticated KISS console on port 7633. That closes an incidental leak; it
+does not change the paragraph above.
+
+A genuinely secret AP key has to be **provisioned per node** rather than
+derived, which lands the same key-distribution problem described in §5. If the
+fallback AP is ever expected to carry sensitive traffic, that work is a
+prerequisite -- and note it should not have to, since Reticulum above it is
+already end-to-end encrypted.
+
 ## 7. What implementing IFAC involves
 
 1. Port the sign/derive/mask path in `Transport.cpp` from the commented Python,

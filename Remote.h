@@ -114,7 +114,7 @@ void wifi_build_ap_ssid() {
 		// brackets (the default name contains both) become dashes.
 		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
 		    (ch >= '0' && ch <= '9') || ch == '-') { clean[c++] = ch; }
-		else if (ch == ' ' || ch == '_' || ch == '[') { if (c && clean[c-1] != '-') clean[c++] = '-'; }
+		else if (ch == ' ' || ch == '_' || ch == '[' || ch == ']') { if (c && clean[c-1] != '-') clean[c++] = '-'; }
 	}
 	while (c && clean[c-1] == '-') c--;      // no trailing dash before the suffix
 	clean[c] = 0;
@@ -157,11 +157,30 @@ void wifi_remote_start_ap_fallback() {
 	wr_device_ip = WiFi.softAPIP();
 	wr_wifi_status = WL_CONNECTED;
 	wifi_ap_deferring_since = 0;
-	// Log the key as well as the SSID: it is derived, so this is how it gets
-	// onto the enclosure label and into a resident's hands.
+	// The key is NOT logged by default.
+	//
+	// serial_write() sends log output to whichever host transport is attached --
+	// including the KISS console on port 7633, which has no authentication, so
+	// anyone on the LAN could read it. Printing a credential there fails a
+	// security review regardless of how narrow the practical risk is.
+	//
+	// Read it deliberately with -DWIFI_AP_LOG_PSK when labelling hardware.
+	//
+	// Be clear about what this does and does not achieve: the key is derived
+	// from the MAC by an algorithm in open-source firmware, and the MAC is
+	// broadcast in every frame -- so anyone who can see the AP can compute the
+	// key. Hiding it from logs closes an incidental leak; it does not make the
+	// key a secret. A genuinely secret PSK has to be provisioned per node, with
+	// the distribution problem that implies. See docs/PrivateMesh.md.
 	if (wifi_ap_psk[0] != 0) {
+#ifdef WIFI_AP_LOG_PSK
 		printf("[WiFi] serving fallback AP \"%s\" key \"%s\" at %s\n",
 		       wifi_ap_ssid, wifi_ap_psk, wr_device_ip.toString().c_str());
+#else
+		printf("[WiFi] serving fallback AP \"%s\" (PSK set; build with "
+		       "-DWIFI_AP_LOG_PSK to print it) at %s\n",
+		       wifi_ap_ssid, wr_device_ip.toString().c_str());
+#endif
 	} else {
 		printf("[WiFi] serving fallback AP \"%s\" (open) at %s\n",
 		       wifi_ap_ssid, wr_device_ip.toString().c_str());

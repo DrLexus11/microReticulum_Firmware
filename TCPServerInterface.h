@@ -246,9 +246,13 @@ private:
 	void reset_rx(int i) { _rx_len[i] = 0; _in_frame[i] = false; _escape[i] = false; }
 
 	void drop(int i, const char* why) {
-		printf("[tcpi] client %d %s (now %d connected)\n", i, why, client_count() - 1);
+		// Stop first, then count. Subtracting one from client_count() was wrong:
+		// this is usually called *because* peer_alive(i) already returned false,
+		// so the slot was not in the count to begin with -- the log undercounted,
+		// and with a single client it printed -1.
 		_clients[i].stop();
 		reset_rx(i);
+		printf("[tcpi] client %d %s (now %d connected)\n", i, why, client_count());
 	}
 
 	void accept_new() {
