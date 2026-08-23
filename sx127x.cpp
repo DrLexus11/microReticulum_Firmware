@@ -116,7 +116,7 @@ bool sx127x::preInit() {
     delay(10);
   }
 
-  #if BOARD_MODEL == BOARD_T3S3
+  #if BOARD_MODEL == BOARD_T3S3 || BOARD_MODEL == BOARD_RAD01_REV1
     SPI.begin(pin_sclk, pin_miso, pin_mosi, pin_cs);
   #else
     SPI.begin();
@@ -234,11 +234,24 @@ int sx127x::endPacket() {
   return 1;
 }
 
+volatile uint32_t sx127x_sigdet_count = 0;
+volatile uint32_t sx127x_synced_count = 0;
 bool sx127x::dcd() {
   bool carrier_detected = false;
   uint8_t status = readRegister(REG_MODEM_STAT_7X);
-  if ((status & SIG_DETECT) == SIG_DETECT) { carrier_detected = true; }
-  if ((status & SIG_SYNCED) == SIG_SYNCED) { carrier_detected = true; }
+  // Same purpose as the SX126x preamble/header counters: signal-detected fires
+  // on any LoRa energy at the configured SF/BW, while synced additionally
+  // requires the sync word to match. The pair separates "hearing nothing" from
+  // "hearing the wrong network".
+  static bool sig_latched = false, syn_latched = false;
+  if ((status & SIG_DETECT) == SIG_DETECT) {
+    carrier_detected = true;
+    if (!sig_latched) { sx127x_sigdet_count++; sig_latched = true; }
+  } else { sig_latched = false; }
+  if ((status & SIG_SYNCED) == SIG_SYNCED) {
+    carrier_detected = true;
+    if (!syn_latched) { sx127x_synced_count++; syn_latched = true; }
+  } else { syn_latched = false; }
   return carrier_detected;
 }
 

@@ -93,6 +93,7 @@
 #define PROV_RADIO_IMPLICIT     7
 #define PROV_RADIO_STAL         8
 #define PROV_RADIO_LTAL         9
+#define PROV_RADIO_PRESET      10
 
 #define PROV_NET_IP             1
 #define PROV_NET_PORT           2

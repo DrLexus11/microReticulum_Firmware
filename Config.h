@@ -75,6 +75,86 @@
 
 	// MCU independent configuration parameters
 	const long serial_baudrate  = 115200;
+	// Interval for the headless heap trend report; see heap_watch() in the .ino.
+	#define HEAP_REPORT_INTERVAL_MS 60000
+	// How often a headless node re-announces its NomadNet site, so peers can
+	// repair a stale or degraded path without a power cycle. Costs LoRa airtime.
+	// RNS invalidates a path when delivery fails, and this node runs with
+	// transport disabled so it never answers path requests -- the only way a peer
+	// relearns the route is the next announce. At 30 minutes that meant up to half
+	// an hour of unreachability after a single failed link. Announces are cheap on
+	// WiFi/UDP; raise this again if the node is ever LoRa-only, where they are not.
+	#define NOMADNET_ANNOUNCE_INTERVAL_MS 300000   // 5 minutes
+	// First announce after boot. Must be comfortably later than DHCP + the UDP
+	// socket rebind, or it is emitted before the interface can carry it.
+	#define NOMADNET_FIRST_ANNOUNCE_MS 60000       // 1 minute
+	// Random extra delay (0..this) added to every announce interval, re-rolled
+	// each cycle.
+	//
+	// Without it a fleet transmits in lockstep. That is not a theoretical
+	// concern for QuakeMesh: when mains power returns to a block, every node
+	// boots within seconds of every other, and each would then announce at
+	// exactly NOMADNET_FIRST_ANNOUNCE_MS. Hundreds of simultaneous
+	// transmissions on a half-duplex channel with no collision detection means
+	// none of them land, and the nodes are least able to recover at precisely
+	// the moment recovery matters most.
+	//
+	// The PRNG is seeded from esp_random() during setup(), so nodes running
+	// identical firmware still pick different offsets. Jitter is additive only
+	// (never early), so it lengthens the mean interval slightly -- deliberate,
+	// since erring toward less airtime is the safe direction.
+	#define NOMADNET_ANNOUNCE_JITTER_MS 60000      // up to 1 minute
+	// What to do when the modem fails to complete a transmission. Rebooting takes
+	// a transport node off the mesh entirely and discards its path/link state to
+	// recover from one bad packet; RNS already retries above this layer. Default
+	// to dropping the packet and returning to receive. Set to 1 to restore the
+	// old reboot behaviour. (The native build has always had this choice, via
+	// rnoded.conf's reboot_on_tx_failure; embedded had no say.)
+	#define REBOOT_ON_TX_FAILURE 0
+
+	// How long the modem may go without demodulating a single packet before it
+	// is torn down and re-initialised.
+	//
+	// A wedged modem is invisible from every health indicator this firmware
+	// exposes: radio_online stays 1, hw_ready stays 1, the configured SF/BW/
+	// frequency read back correctly, the noise floor looks plausible, and the
+	// transmitter keeps keying happily. Only the receive side is dead, and
+	// nothing ever repairs it. Observed 2026-08-22: a board that had been up
+	// for days stopped demodulating entirely -- RF from its peer arrived at
+	// -44 dBm and was never decoded, in either direction -- and only a reboot
+	// brought it back. On a wall plug, with no USB and no WiFi, such a node is
+	// simply gone with no way to notice or recover.
+	//
+	// stopRadio()/startRadio() is a few milliseconds and reprograms every modem
+	// register from the live config, so the cost of a false trigger is trivial.
+	// A node that legitimately hears nobody re-inits on this interval forever
+	// and says so in the log, which is the right trade for an unattended node.
+	// Set to 0 to disable.
+	#ifndef RADIO_RX_WATCHDOG_MS
+	#define RADIO_RX_WATCHDOG_MS 1200000           // 20 minutes
+	#endif
+
+	// Commit-confirm window for radio PHY changes ("commit confirmed", as on
+	// network gear). LoRa PHY parameters must match on both ends: the instant
+	// one node's SF/BW/frequency changes and its peer's does not, the link is
+	// gone in both directions -- strong RF arrives and nothing demodulates.
+	// For a node reachable ONLY over that radio, this is unrecoverable without
+	// physically retrieving it.
+	//
+	// So: when a config change is applied over a link that was demonstrably
+	// working, remember the previous settings and start this timer. Any decoded
+	// packet confirms the new config and disarms it. If the window expires in
+	// silence, roll back to the last known-good settings and persist them.
+	//
+	// Must be comfortably longer than the peer's announce interval (see
+	// NOMADNET_ANNOUNCE_INTERVAL_MS), or a healthy link gets reverted just
+	// because nobody happened to transmit. It must also be long enough to
+	// change both ends of a link by hand without the first one reverting
+	// while the second is still being edited.
+	// Set to 0 to disable.
+	#ifndef RADIO_CONFIG_CONFIRM_MS
+	#define RADIO_CONFIG_CONFIRM_MS 900000         // 15 minutes
+	#endif
 
 	// SX1276 RSSI offset to get dBm value from
 	// packet RSSI register
@@ -150,6 +230,12 @@
 	uint8_t implicit_l = 0;
 
 	uint8_t op_mode   = MODE_HOST;
+	// Operating mode this board should adopt once it has a saved radio config.
+	// validate_status() used to hardcode MODE_TNC there, so a board could never
+	// be put back into host-driven modem mode without a serial cable. Defaults to
+	// MODE_TNC, which is exactly the previous behaviour; settable over the air via
+	// the Radio provisioning namespace (PROV_RADIO_OP_MODE).
+	uint8_t prov_op_mode = MODE_TNC;
 	uint8_t model     = 0x00;
 	uint8_t hwrev     = 0x00;
 
@@ -195,8 +281,46 @@
 		float longterm_airtime = 0.0;
 		#define current_airtime_bin(void) (millis()%AIRTIME_LONGTERM_MS)/AIRTIME_BINLEN_MS
 	#endif
-	float st_airtime_limit = 0.0;
-	float lt_airtime_limit = 0.0;
+	// Airtime limits, as a fraction of the window spent transmitting. 0.0
+	// disables a limit entirely.
+	//
+	// The long-term window is AIRTIME_LONGTERM (3600 s), which is exactly the
+	// window EU 868 duty-cycle rules are written against. 867.2 MHz sits in
+	// sub-band g3 (867-868.6 MHz), where the limit is 1%.
+	//
+	// ---------------------------------------------------------------------
+	// DISABLED BY DEFAULT -- lab/bench builds only. MUST be enabled to ship.
+	// ---------------------------------------------------------------------
+	//
+	// Enforcement is left off here because it throttles the bench: 1% of an
+	// hour is 36 seconds of transmit time, and serving one NomadNet page costs
+	// roughly a second at BW250/SF7, so a back-to-back test run exhausts the
+	// budget in minutes and every subsequent failure looks like a radio fault
+	// rather than a deliberate airtime_lock.
+	//
+	// For any build that leaves the bench, set the long-term limit to the legal
+	// value for the region. At 867.2 MHz that is EU 868 sub-band g3 -- 1%:
+	//
+	//     -DRADIO_DUTY_CYCLE_LONGTERM=0.01f
+	//
+	// The #ifndef guards exist precisely so a production environment in
+	// platformio.ini can override without touching this file. Exceeding the
+	// duty cycle is illegal and degrades the band for every other node, so
+	// treat enabling it as a release requirement, not an optimisation.
+	//
+	// The enforcement machinery itself is always compiled in and always
+	// accounting: AIRTIME_LONGTERM is 3600 s (exactly the window the rules are
+	// written against) and the [duty] telemetry reports accumulation whether or
+	// not a limit is set -- so bench runs still show what a real deployment
+	// would have spent.
+	#ifndef RADIO_DUTY_CYCLE_SHORTTERM
+	#define RADIO_DUTY_CYCLE_SHORTTERM 0.0f        // disabled
+	#endif
+	#ifndef RADIO_DUTY_CYCLE_LONGTERM
+	#define RADIO_DUTY_CYCLE_LONGTERM 0.0f         // disabled -- set 0.01f to ship
+	#endif
+	float st_airtime_limit = RADIO_DUTY_CYCLE_SHORTTERM;
+	float lt_airtime_limit = RADIO_DUTY_CYCLE_LONGTERM;
 	bool airtime_lock = false;
 
 	bool stat_signal_detected   = false;

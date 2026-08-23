@@ -15,6 +15,10 @@
 
 # Version 2.0.17 of the Arduino ESP core is based on ESP-IDF v4.4.7
 ARDUINO_ESP_CORE_VER = 2.0.17
+RAD01_PORT ?= /dev/ttyACM1
+# IMPR RAD-01 Rev 1 uses an ESP32-S3-WROOM-1-N8R8. Wi-Fi and BLE together
+# require its 8 MB octal PSRAM; the Wi-Fi-only build can disable BLE.
+RAD01_FQBN = esp32:esp32:esp32s3:CDCOnBoot=cdc,PSRAM=opi
 
 # Version 3.2.0 of the Arduino ESP core is based on ESP-IDF v5.4.1
 # ARDUINO_ESP_CORE_VER = 3.2.0
@@ -87,6 +91,12 @@ firmware-t3s3:
 
 firmware-t3s3_sx127x:
 	arduino-cli compile --log --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" -e --build-property "build.partitions=no_ota" --build-property "upload.maximum_size=2097152" --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x42\" \"-DMODEM=0x01\""
+
+firmware-rad01_rev1:
+	arduino-cli compile --log --fqbn "$(RAD01_FQBN)" -e --build-property "build.partitions=no_ota" --build-property "upload.maximum_size=2097152" --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x46\" \"-DMODEM=0x01\""
+
+firmware-rad01_rev1_wifi_only:
+	arduino-cli compile --log --fqbn "$(RAD01_FQBN)" -e --build-property "build.partitions=no_ota" --build-property "upload.maximum_size=2097152" --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x46\" \"-DMODEM=0x01\" \"-DRAD01_NO_BLE\""
 
 firmware-t3s3_sx1280_pa:
 	arduino-cli compile --log --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc" -e --build-property "build.partitions=no_ota" --build-property "upload.maximum_size=2097152" --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x42\" \"-DMODEM=0x04\""
@@ -247,6 +257,9 @@ upload-t3s3:
 	rnodeconf /dev/ttyACM0 --firmware-hash $$(./partition_hashes ./build/esp32.esp32.esp32s3/RNode_Firmware.ino.bin)
 	@sleep 3
 	python ./Release/esptool/esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 80m --flash_size 4MB 0x210000 ./Release/console_image.bin
+
+upload-rad01_rev1: firmware-rad01_rev1
+	arduino-cli upload -p "$(RAD01_PORT)" --fqbn "$(RAD01_FQBN)"
 
 upload-featheresp32:
 	arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:featheresp32

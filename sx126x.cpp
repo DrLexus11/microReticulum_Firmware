@@ -114,7 +114,7 @@ extern SPIClass SPI;
 
 sx126x::sx126x() :
   _spiSettings(16E6, MSBFIRST, SPI_MODE0),
-  _ss(LORA_DEFAULT_SS_PIN), _reset(LORA_DEFAULT_RESET_PIN), _dio0(LORA_DEFAULT_DIO0_PIN), _busy(LORA_DEFAULT_BUSY_PIN), _rxen(LORA_DEFAULT_RXEN_PIN),
+  _ss(LORA_DEFAULT_SS_PIN), _reset(LORA_DEFAULT_RESET_PIN), _dio0(LORA_DEFAULT_DIO0_PIN), _busy(LORA_DEFAULT_BUSY_PIN), _rxen(LORA_DEFAULT_RXEN_PIN), _txen(LORA_DEFAULT_TXEN_PIN),
   _frequency(0),
   _txp(0),
   _sf(0x07),
@@ -140,7 +140,7 @@ bool sx126x::preInit() {
   pinMode(_ss, OUTPUT);
   digitalWrite(_ss, HIGH);
 
-  #if BOARD_MODEL == BOARD_T3S3 || BOARD_MODEL == BOARD_HELTEC32_V3 || BOARD_MODEL == BOARD_HELTEC32_V4 || BOARD_MODEL == BOARD_HELTEC_TRACKER_V2 || BOARD_MODEL == BOARD_TDECK || BOARD_MODEL == BOARD_XIAO_S3
+  #if BOARD_MODEL == BOARD_T3S3 || BOARD_MODEL == BOARD_HELTEC32_V3 || BOARD_MODEL == BOARD_HELTEC32_V4 || BOARD_MODEL == BOARD_HELTEC_TRACKER_V2 || BOARD_MODEL == BOARD_TDECK || BOARD_MODEL == BOARD_XIAO_S3 || BOARD_MODEL == BOARD_RAD01_REV2
     SPI.begin(pin_sclk, pin_miso, pin_mosi, pin_cs);
   #elif BOARD_MODEL == BOARD_TECHO
     SPI.setPins(pin_miso, pin_sclk, pin_mosi);
@@ -244,7 +244,13 @@ uint8_t ISR_VECT sx126x::singleTransfer(uint8_t opcode, uint16_t address, uint8_
 }
 
 void sx126x::rxAntEnable() {
+  if (_txen != -1) { digitalWrite(_txen, LOW); }
   if (_rxen != -1) { digitalWrite(_rxen, HIGH); }
+}
+
+void sx126x::txAntEnable() {
+  if (_rxen != -1) { digitalWrite(_rxen, LOW); }
+  if (_txen != -1) { digitalWrite(_txen, HIGH); }
 }
 
 void sx126x::loraMode() {
@@ -449,10 +455,13 @@ int sx126x::begin(uint32_t frequency) {
   if (_busy != -1) { pinMode(_busy, INPUT); }
   if (!_preinit_done) { if (!preInit()) { return false; } }
   if (_rxen != -1) { pinMode(_rxen, OUTPUT); }
+  if (_txen != -1) { pinMode(_txen, OUTPUT); }
 
+  // TCXO first: SetDIO3AsTcxoCtrl must precede calibration, otherwise the
+  // calibration runs against an oscillator that is not yet powered.
+  enableTCXO();
   calibrate();
   calibrate_image(frequency);
-  enableTCXO();
   loraMode();
   standby();
 
@@ -467,6 +476,15 @@ int sx126x::begin(uint32_t frequency) {
   if (enable_dio2_rf) {
     uint8_t byte = 0x01;
     executeOpcode(OP_DIO2_RF_CTRL_6X, &byte, 1);
+  }
+
+  // Select the DC-DC (SMPS) regulator. The chip powers up in LDO mode and this
+  // driver never changed it; RadioLib -- which works on this hardware under
+  // Meshtastic -- ends begin() with setRegulatorDCDC(). LDO mode roughly doubles
+  // the supply current the chip draws in TX/RX.
+  {
+    uint8_t reg = 0x01;  // 0x00 = LDO only, 0x01 = DC-DC + LDO
+    executeOpcode(OP_REGULATOR_MODE_6X, &reg, 1);
   }
 
   rxAntEnable();
@@ -574,6 +592,7 @@ int sx126x::beginPacket(int implicitHeader) {
 
 int sx126x::endPacket() {
   setPacketParams(_preambleLength, _implicitHeaderMode, _payloadLength, _crcMode);
+  txAntEnable();
   uint8_t timeout[3] = {0}; // Put in single TX mode
   executeOpcode(OP_TX_6X, timeout, 3);
 
@@ -607,9 +626,22 @@ extern long lora_preamble_time_ms;
 extern long lora_header_time_ms;
 static bool false_preamble_detected = false;
 
+volatile uint32_t sx126x_preamble_count = 0;
+volatile uint32_t sx126x_header_count = 0;
 bool sx126x::dcd() {
   uint8_t buf[2] = {0}; executeOpcodeRead(OP_GET_IRQ_STATUS_6X, buf, 2);
   uint32_t now = millis();
+
+  // Preamble detection fires well below the SNR needed for a successful decode,
+  // so these separate "nothing is being radiated at us" from "we hear it but
+  // cannot demodulate it".
+  static bool pre_latched = false, hdr_latched = false;
+  if ((buf[1] & IRQ_PREAMBLE_DET_MASK_6X) != 0) {
+    if (!pre_latched) { sx126x_preamble_count++; pre_latched = true; }
+  } else { pre_latched = false; }
+  if ((buf[1] & IRQ_HEADER_DET_MASK_6X) != 0) {
+    if (!hdr_latched) { sx126x_header_count++; hdr_latched = true; }
+  } else { hdr_latched = false; }
 
   bool header_detected = false;
   bool carrier_detected = false;
@@ -792,7 +824,13 @@ void sx126x::receive(int size) {
     setPacketParams(_preambleLength, _implicitHeaderMode, _payloadLength, _crcMode);
   } else { explicitHeaderMode(); }
 
-  if (_rxen != -1) { rxAntEnable(); }
+  // Unconditional on purpose. txAntEnable() is called unconditionally before
+  // every transmit, so gating the restore on _rxen leaves a txen-only board
+  // with its switch stuck in TX after the first packet -- it then hears
+  // nothing, for ever, while reporting a perfectly healthy radio. rxAntEnable()
+  // already guards each pin individually, so the outer check was redundant as
+  // well as harmful.
+  rxAntEnable();
   uint8_t mode[3] = {0xFF, 0xFF, 0xFF}; // Continuous mode
   executeOpcode(OP_RX_6X, mode, 3);
 }
@@ -843,6 +881,11 @@ void sx126x::enableTCXO() {
         #elif BOARD_MODEL == BOARD_HELTEC32_V4
           mode = MODE_TCXO_1_8V_6X;
         #elif BOARD_MODEL == BOARD_HELTEC_TRACKER_V2
+          mode = MODE_TCXO_1_8V_6X;
+        #elif BOARD_MODEL == BOARD_RAD01_REV2
+          mode = MODE_TCXO_1_8V_6X;
+        #else
+          // Without a case `mode` would be used uninitialised.
           mode = MODE_TCXO_1_8V_6X;
         #endif
       }
@@ -993,12 +1036,13 @@ void sx126x::setSyncWord(uint16_t sw) {
   writeRegister(REG_SYNC_WORD_LSB_6X, 0x24);
 }
 
-void sx126x::setPins(int ss, int reset, int dio0, int busy, int rxen) {
+void sx126x::setPins(int ss, int reset, int dio0, int busy, int rxen, int txen) {
   _ss = ss;
   _reset = reset;
   _dio0 = dio0;
   _busy = busy;
   _rxen = rxen;
+  _txen = txen;
 }
 
 void sx126x::dumpRegisters(Stream& out) {

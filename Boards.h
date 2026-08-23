@@ -105,6 +105,11 @@
   #define BOARD_HELTEC_TRACKER_V2 0x45
   #define MODEL_CB            0xCB // Heltec Wireless Tracker V2, 863-928 MHz, 28dBm
 
+  // Local IMPR RAD-01 hardware variants. These board identifiers are kept
+  // separate from the homebrew product/model identity stored in EEPROM.
+  #define BOARD_RAD01_REV1    0x46 // ESP32-S3 + RFM95W (SX1276)
+  #define BOARD_RAD01_REV2    0x47 // ESP32-S3 + Ra-01SH (SX1262)
+
   #define PRODUCT_HELTEC_T114 0xC2 // Heltec Mesh Node T114
   #define BOARD_HELTEC_T114   0x3C
   #define MODEL_C6            0xC6 // Heltec Mesh Node T114, 470-510 MHz
@@ -534,6 +539,72 @@
       const int pin_mosi = 10;
       const int pin_miso = 11;
       const int pin_sclk = 9;
+
+    #elif BOARD_MODEL == BOARD_RAD01_REV1
+      #define IS_ESP32S3 true
+      #define HAS_CONSOLE false
+      #define HAS_SD false
+      #define HAS_EEPROM true
+      #define HAS_WIFI true
+      #define HAS_BLUETOOTH false
+      // ESP32-S3 has no Classic Bluetooth. BLE can be omitted for a
+      // Wi-Fi/USB-only image with the firmware-rad01_rev1_wifi_only target.
+      #ifdef RAD01_NO_BLE
+        #define HAS_BLE false
+      #else
+        #define HAS_BLE true
+      #endif
+
+      const int pin_cs = 13;
+      const int pin_reset = 14;
+      const int pin_sclk = 10;
+      const int pin_mosi = 11;
+      const int pin_miso = 12;
+      const int pin_dio = 5;
+      const int pin_led_rx = 4;
+      const int pin_led_tx = 4;
+
+    #elif BOARD_MODEL == BOARD_RAD01_REV2
+      #define IS_ESP32S3 true
+      #define HAS_CONSOLE false
+      #define HAS_SD false
+      #define HAS_EEPROM true
+      #define HAS_WIFI true
+      #define HAS_BLUETOOTH false
+      #define HAS_BLE true
+      #define HAS_BUSY true
+      // No TCXO: the Ra-01SH runs from a plain crystal, so DIO3 must NOT be used
+      // as a TCXO reference. Confirmed against the known-good Meshtastic variant
+      // for this board, which leaves SX126X_DIO3_TCXO_VOLTAGE undefined.
+      // (Setting this true was tried on 2026-08-21 and put the board into a
+      // silent ESP.restart loop every ~25s.)
+      #define HAS_TCXO false
+      // DIO2 drives the RF switch INSIDE the Ra-01SH. The castellated DIO2 pad
+      // is unconnected on our PCB, which was originally read as "DIO2 unused" --
+      // wrong: the module uses it internally, exactly like every other SX1262
+      // board in this repo (all of which set this true). With it false the
+      // module's TX/RX switch is never actuated, so the radio comes up, reports
+      // a plausible noise floor, and hears nothing.
+      #define DIO2_AS_RF_SWITCH true
+      // No external RX/TX switch pins on this module; DIO2 does it internally.
+      #define HAS_RF_SWITCH_RX_TX false
+
+      // NOT USED on the plain Ra-01SH. GPIO21/GPIO7 are routed on the PCB for the
+      // -P variant's external PA/LNA; the plain module switches via DIO2 inside
+      // the can. Confirmed against the known-good Meshtastic variant for this
+      // exact board (variants/esp32s3/impr-rad-01-rev2/variant.h), which leaves
+      // TXEN/RXEN undefined so RadioLib sees RADIOLIB_NC.
+      const int pin_rxen = -1;
+      const int pin_txen = -1;
+      const int pin_cs = 13;
+      const int pin_reset = 14;
+      const int pin_sclk = 10;
+      const int pin_mosi = 11;
+      const int pin_miso = 12;
+      const int pin_busy = 5;
+      const int pin_dio = 6;
+      const int pin_led_rx = 4;
+      const int pin_led_tx = 4;
 
     #elif BOARD_MODEL == BOARD_RNODE_NG_20
       #define HAS_DISPLAY true

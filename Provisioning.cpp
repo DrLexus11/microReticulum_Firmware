@@ -13,6 +13,7 @@
 #ifdef HAS_PROVISIONING
 
 #include "Provisioning.h"
+#include "RadioPresets.h"
 
 //#include "Config.h"
 
@@ -47,6 +48,15 @@
 // LoRaInterface implementation — so a single runtime check works in
 // both compile configurations.
 #if defined(LORA_TRANSPORT)
+// Config.h defines globals at file scope, so it cannot be pulled into a second
+// translation unit (see the note above); mirror the two operating-mode constants
+// here instead, guarded so they collapse if that ever changes.
+#ifndef MODE_HOST
+  #define MODE_HOST 0x11
+  #define MODE_TNC  0x12
+#endif
+extern uint8_t prov_op_mode;
+
 extern RNS::Interface lora_interface;
 extern uint32_t lora_freq;
 extern uint32_t lora_bw;
@@ -54,6 +64,8 @@ extern int lora_sf;
 extern int lora_cr;
 extern int lora_txp;
 extern uint32_t lora_bitrate;
+extern uint8_t radio_preset_current();
+extern bool radio_preset_apply(uint8_t idx);
 extern uint8_t implicit_l;
 extern int noise_floor;
 extern int current_rssi;
@@ -325,15 +337,50 @@ static void register_provisioning_namespaces() {
   metrics.end();        // close "Metrics"
 
 #if defined(LORA_TRANSPORT)
-  // ----- Radio namespace (DISABLED) -----
+  // ----- Radio namespace -----
   //
+  // Preset enum lists, derived from RADIO_PRESETS so the table in
+  // RadioPresets.h stays the single source of truth. "Custom" is offered as a
+  // reportable value only -- radio_preset_apply() rejects it, because "custom"
+  // describes a configuration rather than selecting one.
+  std::vector<fint_t> prov_preset_values;
+  std::vector<std::string> prov_preset_labels;
+  for (uint8_t i = 0; i < RADIO_PRESET_COUNT; i++) {
+    prov_preset_values.push_back((fint_t)i);
+    prov_preset_labels.push_back(RADIO_PRESETS[i].name);
+  }
+  prov_preset_values.push_back((fint_t)RADIO_PRESET_CUSTOM);
+  prov_preset_labels.push_back("Custom");
+
   Provisioner::instance()
     .register_namespace("RNode Radio Config", PROV_NS_RADIO)
-      //.field_enum("op_mode", PROV_RADIO_OP_MODE, FF_REBOOT_REQUIRED,
-      //           (fint_t)MODE_HOST,
-      //           std::vector<fint_t>{ (fint_t)MODE_HOST, (fint_t)MODE_TNC },
-      //           std::vector<std::string>{ "host", "tnc" },
-      //           [](const Value& v) { op_mode = (uint8_t)v.as_int(); return true; })
+      // Named preset covering bandwidth/SF/CR together. Registered first so it
+      // reads as the primary control: the individual fields below remain for
+      // deliberate off-ladder work, but a fleet should agree by preset name.
+      //
+      // FF_LIVE_APPLY, not FF_REBOOT_REQUIRED. The reboot-required fields below
+      // are applied by this namespace's on_commit hook, which reads their
+      // drafts by name and knows nothing about this one -- so a reboot-required
+      // preset would be stored and silently never applied. Live apply runs the
+      // setter on commit, and the consistency watch in loop() then reprograms
+      // the modem and arms the commit-confirm rollback.
+      //
+      // Note this field reports the value last *written*, like every other
+      // config field. The authoritative live view is "preset" on
+      // /page/device.mu, which is computed from the running radio and says
+      // "Custom" whenever bandwidth/SF/CR were edited individually.
+      .field_enum("Radio Preset", PROV_RADIO_PRESET, FF_LIVE_APPLY,
+                 (fint_t)radio_preset_current(),
+                 prov_preset_values, prov_preset_labels,
+                 [](const Value& v) { return radio_preset_apply((uint8_t)v.as_int()); })
+      // Sets the mode adopted at boot once a radio config exists. Writes
+      // prov_op_mode rather than op_mode directly: op_mode is recomputed during
+      // validate_status(), so assigning it here would be discarded on reboot.
+      .field_enum("op_mode", PROV_RADIO_OP_MODE, FF_REBOOT_REQUIRED,
+                 (fint_t)prov_op_mode,
+                 std::vector<fint_t>{ (fint_t)MODE_HOST, (fint_t)MODE_TNC },
+                 std::vector<std::string>{ "host", "tnc" },
+                 [](const Value& v) { prov_op_mode = (uint8_t)v.as_int(); return true; })
       .field_int("Frequency", PROV_RADIO_FREQ, FF_REBOOT_REQUIRED,
         (fint_t)lora_freq, (fint_t)100000000, (fint_t)1000000000,
         [](const Value& v) { lora_freq = (uint32_t)v.as_int(); return true; })
@@ -457,6 +504,29 @@ void kiss_indicate_provision_response(const RNS::Bytes& payload) {
   size_t n = payload.size();
   for (size_t i = 0; i < n; ++i) escaped_serial_write(data[i]);
   serial_write(FEND);
+}
+
+// Push the live radio configuration back into the provisioning store.
+//
+// Needed when the firmware changes the radio behind provisioning's back. The
+// only case today is the commit-confirm rollback in RNode_Firmware.ino, which
+// restores the last known-good PHY after a change strands the link. Without
+// this the store would keep advertising -- and, because these fields are
+// re-applied from storage at boot, keep restoring -- the very configuration
+// that broke the link, so the node would strand itself again on next reboot.
+//
+// Deliberately routed through the normal draft+commit path so the registered
+// commit hook runs and the values are persisted exactly as an operator-issued
+// change would be.
+void provisioning_sync_radio_from_runtime() {
+  auto& prov = RNS::Provisioning::Provisioner::instance();
+  if (!prov.started()) return;
+  prov.field(PROV_NS_RADIO, PROV_RADIO_FREQ, RNS::Provisioning::Value((int)lora_freq));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_BW, RNS::Provisioning::Value((int)lora_bw));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_SF, RNS::Provisioning::Value((int)lora_sf));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_CR, RNS::Provisioning::Value((int)lora_cr));
+  prov.field(PROV_NS_RADIO, PROV_RADIO_TXP, RNS::Provisioning::Value((int)lora_txp));
+  prov.commit(PROV_NS_RADIO);
 }
 
 #endif // HAS_PROVISIONING

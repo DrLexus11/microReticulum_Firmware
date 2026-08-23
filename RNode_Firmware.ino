@@ -17,6 +17,7 @@
 #ifdef HAS_RNS
 #include <microReticulum.h>
 #include "Provisioning.h"
+#include "RadioPresets.h"
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
 #endif
@@ -95,6 +96,26 @@ bool kiss_framed_logs = true;
 bool nomadnet_enabled = true;
 RNS::Destination nomadnet_destination = {RNS::Type::NONE};
 char nomadnet_name[64];
+// Reason for the most recent reset, captured in setup() before the filesystem is
+// up and appended to ./bootlog.txt once it is. Persisted because replugging USB
+// power-cycles the board, which would otherwise overwrite the evidence with a
+// fresh POWERON.
+const char* boot_reset_reason = "UNKNOWN";
+#if defined(ESP32)
+  // esp_reset_reason() reports POWERON for an EN-pin reset as well as a genuine
+  // power cycle. RTC memory narrows that down, but not as far as first assumed:
+  // pulling EN low powers down the RTC domain too, so a button/RTS reset clears
+  // it exactly like a real power loss. What this actually distinguishes is a
+  // SOFTWARE reset (ESP.restart -- RTC survives, so the previous run's length is
+  // carried across) from a HARDWARE one (EN pin, brownout, or the rail dropping,
+  // which are indistinguishable from each other). Still worth having: it says
+  // whether a silent restart came from firmware or from the power/reset path.
+  #define RTC_BOOT_MAGIC 0x52414431UL   // 'RAD1'
+  RTC_NOINIT_ATTR uint32_t rtc_boot_magic;
+  RTC_NOINIT_ATTR uint32_t rtc_last_uptime_s;
+  static bool     boot_rail_lost   = true;
+  static uint32_t boot_prev_uptime = 0;
+#endif
 
 #if HAS_CONSOLE
   #include "Console.h"
@@ -471,6 +492,14 @@ void setup() {
   memset(serialBuffer, 0, sizeof(serialBuffer));
   fifo_init(&serialFIFO, serialBuffer, CONFIG_UART_BUFFER_SIZE);
 
+  #if MCU_VARIANT == MCU_ESP32
+    // Must precede Serial.begin(): HardwareSerial refuses to resize the RX
+    // buffer once the port is running, which silently leaves it at the Arduino
+    // default of 256 bytes. Only visible on builds where Serial is a real UART
+    // (ARDUINO_USB_CDC_ON_BOOT=0); the USB CDC class has no such restriction.
+    Serial.setRxBufferSize(CONFIG_UART_BUFFER_SIZE);
+  #endif
+
   Serial.begin(serial_baudrate);
 
   // Redirect stdout to KISS framed logs
@@ -489,12 +518,65 @@ void setup() {
     delay(2000);
   #endif
 
+#if defined(ESP32)
+  // Why did we just boot? On a headless node this is the only cheap way to tell
+  // a clean power-up from a panic, a watchdog bite, a brownout, or the
+  // RNS_LOW_MEMORY_REBOOT path (which calls ESP.restart() -> ESP_RST_SW when
+  // free heap drops to <=2%). Printed unconditionally, not behind a log level.
+  {
+    const char* rr;
+    switch (esp_reset_reason()) {
+      case ESP_RST_POWERON:  rr = "POWERON";              break;
+      case ESP_RST_SW:       rr = "SW (ESP.restart)";     break;
+      case ESP_RST_PANIC:    rr = "PANIC (exception)";    break;
+      case ESP_RST_INT_WDT:  rr = "INT_WDT";              break;
+      case ESP_RST_TASK_WDT: rr = "TASK_WDT";             break;
+      case ESP_RST_WDT:      rr = "WDT (other)";          break;
+      case ESP_RST_BROWNOUT: rr = "BROWNOUT";             break;
+      case ESP_RST_DEEPSLEEP:rr = "DEEPSLEEP";            break;
+      case ESP_RST_EXT:      rr = "EXT (reset pin)";      break;
+      case ESP_RST_SDIO:     rr = "SDIO";                 break;
+      // ESP_RST_UNKNOWN is what a host-initiated USB-JTAG reset reports on the
+      // S3; it is not an error, and is distinct from BROWNOUT/PANIC/SW.
+      default:               rr = "UNKNOWN";              break;
+    }
+    boot_rail_lost   = (rtc_boot_magic != RTC_BOOT_MAGIC);
+    boot_prev_uptime = boot_rail_lost ? 0 : rtc_last_uptime_s;
+    rtc_boot_magic    = RTC_BOOT_MAGIC;
+    rtc_last_uptime_s = 0;
+    if (boot_rail_lost) {
+      printf("[boot] reset reason: %s (%d), RTC cleared -> hardware reset "
+             "(EN pin, brownout or power loss)\n", rr, (int)esp_reset_reason());
+    } else {
+      printf("[boot] reset reason: %s (%d), software reset, previous run %lus\n",
+             rr, (int)esp_reset_reason(), (unsigned long)boot_prev_uptime);
+    }
+    boot_reset_reason = rr;
+  }
+#endif
 #ifdef HAS_RNS
   printf("Total SRAM:  %7u bytes\n", RNS::Utilities::Memory::heap_size());
   printf("Free SRAM:   %7u bytes\n", RNS::Utilities::Memory::heap_available());
 #endif
 #if defined(ESP32)
 	printf("Total PSRAM: %7u bytes\n", ESP.getPsramSize());
+  #if defined(BOARD_HAS_PSRAM) && defined(PSRAM_MALLOC_THRESHOLD)
+    // The framework ships CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096, so only
+    // allocations >= 4 KB ever reach PSRAM. The RNS stack's pressure is
+    // thousands of *small* allocations -- Bytes buffers, packets, map nodes,
+    // strings -- all of which stay on internal heap and eventually trigger the
+    // OOM restarts documented in the handoff (§11). RNS_PSRAM_ALLOCATOR only
+    // covers a handful of STL containers, not these.
+    //
+    // Lower the threshold so ordinary malloc spills to PSRAM. Drivers needing
+    // DMA- or ISR-safe memory request it explicitly via heap_caps_* and are
+    // unaffected. PSRAM is slower than internal SRAM, so this trades some
+    // throughput for headroom; raise the threshold if that matters.
+    if (ESP.getPsramSize() > 0) {
+      heap_caps_malloc_extmem_enable(PSRAM_MALLOC_THRESHOLD);
+      printf("[psram] malloc threshold set to %u bytes\n", (unsigned)PSRAM_MALLOC_THRESHOLD);
+    }
+  #endif
 #endif
 	//printf("Total flash: %zu bytes\n", RNS::Utilities::OS::storage_size());
 
@@ -538,7 +620,6 @@ void setup() {
   #if MCU_VARIANT == MCU_ESP32
     boot_seq();
     EEPROM.begin(EEPROM_SIZE);
-    Serial.setRxBufferSize(CONFIG_UART_BUFFER_SIZE);
 
     #if BOARD_MODEL == BOARD_TDECK
       pinMode(pin_poweron, OUTPUT);
@@ -599,7 +680,7 @@ void setup() {
     boot_seq();
   #endif
 
-  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2
+  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2 && BOARD_MODEL != BOARD_RAD01_REV1 && BOARD_MODEL != BOARD_RAD01_REV2
     // Some boards need to wait until the hardware UART is set up before booting
     // the full firmware. In the case of the RAK4631, RAK3401, and Heltec T114,
     // the line below will wait until a serial connection is actually established
@@ -678,7 +759,7 @@ void setup() {
   #elif MODEM == SX1276 || MODEM == SX1278
   LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy);
   #elif MODEM == SX1262
-  LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen);
+  LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen, pin_txen);
   #elif MODEM == SX1280
   LoRa->setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen, pin_txen);
   #endif
@@ -959,6 +1040,58 @@ void setup() {
     if (!filesystem.init()) WARNING("Failed to initialize filesystem!");
 #endif
 
+    // Persist the reset reason. A headless node that dies on a wall plug tells
+    // you nothing when you replug it into a host, because that power-cycles it
+    // and esp_reset_reason() then reports POWERON. This file keeps the history:
+    // repeated BROWNOUT entries mean a power-margin problem, PANIC means a
+    // crash, SW means something called ESP.restart() (RNS_LOW_MEMORY_REBOOT).
+    {
+      const char* bootlog = "./bootlog.txt";
+      if (filesystem.exists(bootlog) && filesystem.size(bootlog) > 4096) {
+        filesystem.remove(bootlog);   // keep it bounded; oldest history is least useful
+      }
+      microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
+      if (bl) {
+        char line[96];
+        if (boot_rail_lost) {
+          snprintf(line, sizeof(line), "boot reason=%s prev=hw-reset\n",
+                   boot_reset_reason);
+        } else {
+          snprintf(line, sizeof(line), "boot reason=%s prev=%lus\n",
+                   boot_reset_reason, (unsigned long)boot_prev_uptime);
+        }
+        bl.write(line);
+        bl.close();
+      }
+      // Echo the whole history on every boot. Without this the log is written
+      // but unreadable without a file-transfer path -- and the entire point is
+      // to see it after replugging a board that died in the field.
+      microStore::File rd = filesystem.open(bootlog, microStore::File::ModeRead);
+      if (rd) {
+        // Read into a buffer and emit whole lines. stdout is unbuffered and
+        // KISS-framed, so a putchar loop would emit one frame per character and
+        // arrive shredded. The buffer must cover the writer's whole 4096-byte
+        // cap plus one line: a smaller one echoes the OLDEST entries and
+        // silently hides the newest, which are the only ones that matter when
+        // you are reading this after a board died in the field.
+        static char rdbuf[4353];
+        size_t n = rd.read((uint8_t*)rdbuf, sizeof(rdbuf) - 1);
+        rd.close();
+        if (n > 0 && n != (size_t)-1) {
+          rdbuf[n] = 0;
+          printf("[boot] --- bootlog history (%u bytes) ---\n", (unsigned)n);
+          char* line = rdbuf;
+          while (line && *line) {
+            char* nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            if (*line) printf("[boot] %s\n", line);
+            line = nl ? nl + 1 : nullptr;
+          }
+          printf("[boot] --- end bootlog ---\n");
+        }
+      }
+    }
+
     // Remove legacy files
     filesystem.remove("./destination_table");
     filesystem.remove("./path_store_index.dat");
@@ -1127,8 +1260,19 @@ printf("[init] op_mode: %U\n", op_mode);
         // node's default policy.
         //nomadnet_destination.register_request_handler("/page/index.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/index.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+        // These pages expose device telemetry (heap, flash, interfaces, transport
+        // metrics). Gated to the remote-management allow list by default; a peer
+        // that has not identified is refused before serve_page is ever called,
+        // which is indistinguishable from the request never arriving. Define
+        // NOMADNET_PAGES_ALLOW_ALL to open them to any peer on the mesh -- useful
+        // for diagnosis, but it publishes device internals to everyone.
+#ifdef NOMADNET_PAGES_ALLOW_ALL
+        nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+        nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#else
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#endif
 #ifdef HAS_BME
         if (BME680::bme_installed) {
           nomadnet_destination.register_request_handler("/page/telemetry.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
@@ -1416,6 +1560,7 @@ bool startRadio() {
         return false;
       } else {
         radio_online = true;
+        printf("[radio] startRadio OK at %lums\n", (unsigned long)millis());
 
         init_channel_stats();
 
@@ -1440,6 +1585,8 @@ bool startRadio() {
       // Flash a warning pattern to indicate
       // that the radio was locked, and thus
       // not started
+      printf("[radio] startRadio BLOCKED locked=%d hwr=%d at %lums\n",
+             (int)radio_locked, (int)hw_ready, (unsigned long)millis());
       radio_online = false;
       kiss_indicate_radiostate();
       led_indicate_warning(3);
@@ -1461,7 +1608,11 @@ void stopRadio() {
   // (e.g. lora_receive() at the tail of flush_queue) asserts on a null
   // spiChip.
   #if defined(LORA_TRANSPORT)
-  if (radio_online) LoRa->end();
+  if (radio_online) {
+    printf("[radio] stopRadio: shutting down a RUNNING radio at %lums\n",
+           (unsigned long)millis());
+    LoRa->end();
+  }
   #endif
   radio_online = false;
   #if MCU_VARIANT == MCU_NATIVE
@@ -1645,8 +1796,11 @@ void update_airtime() {
   #endif
 }
 
+volatile uint32_t tx_calls = 0;
+volatile uint32_t tx_blocked_csma = 0;
 void transmit(uint16_t size) {
   if (radio_online) {
+    tx_calls++;
     if (!promisc) {
       uint16_t  written = 0;
       uint8_t header  = random(256) & 0xF0;
@@ -1666,8 +1820,10 @@ void transmit(uint16_t size) {
             #if MCU_VARIANT == MCU_NATIVE
               if (native_config::g_config.reboot_on_tx_failure) { hard_reset(); }
               else { LoRa->receive(); return; }
-            #else
+            #elif REBOOT_ON_TX_FAILURE
               hard_reset();
+            #else
+              LoRa->receive(); return;   // drop the packet, keep the node up
             #endif
           }
 
@@ -1686,8 +1842,10 @@ void transmit(uint16_t size) {
         #if MCU_VARIANT == MCU_NATIVE
           if (native_config::g_config.reboot_on_tx_failure) { hard_reset(); }
           else { LoRa->receive(); return; }
-        #else
+        #elif REBOOT_ON_TX_FAILURE
           hard_reset();
+        #else
+          LoRa->receive(); return;   // drop the packet, keep the node up
         #endif
       }
 
@@ -1897,6 +2055,7 @@ void serial_callback(uint8_t sbyte) {
       if (sbyte == 0xFF) {
         kiss_indicate_radiostate();
       } else if (sbyte == 0x00) {
+        printf("[radio] CMD_RADIO_STATE(0) from host at %lums\n", (unsigned long)millis());
         stopRadio();
         kiss_indicate_radiostate();
       } else if (sbyte == 0x01) {
@@ -2543,8 +2702,11 @@ void validate_status() {
           
           if (hw_ready && eeprom_have_conf()) {
             eeprom_conf_load();
-            op_mode = MODE_TNC;
-            startRadio();
+            op_mode = prov_op_mode;
+            // A TNC-mode board is autonomous and brings its own radio up. In
+            // host mode the attached host owns the radio and starts it with
+            // CMD_RADIO_STATE, as upstream RNode expects.
+            if (op_mode == MODE_TNC) { startRadio(); }
           }
         } else {
           hw_ready = false;
@@ -2568,7 +2730,13 @@ void validate_status() {
       }
     } else {
       hw_ready = false;
+      // Spell out the consequence and the fix. A blank EEPROM is the normal
+      // state of NEW hardware, and the upload that produced it reports success
+      // -- so without this the symptom reads as a failed flash or a dead radio
+      // rather than a missing one-time provisioning step.
       printf("[init] Device unprovisioned, no device configuration found in EEPROM\r\n");
+      printf("[init] hw_ready=0: the radio will NOT start until this board is\r\n");
+      printf("[init] provisioned once with:  pio run -e <env> -t provision\r\n");
       #if HAS_DISPLAY
         if (disp_ready) {
           device_init_done = true;
@@ -2643,7 +2811,420 @@ void tx_queue_handler() {
 
 void work_while_waiting() { loop(); }
 
+// Re-announce the NomadNet site periodically.
+//
+// The startup announce below is sent exactly once, which is fine for a client
+// that happens to be listening at that moment. It is not enough for a headless
+// node: RNS path entries can go stale or get replaced by a worse route, and
+// because this device runs with transport disabled it does not answer path
+// requests either. Once a peer's path to us degrades there is nothing that ever
+// repairs it, and the node looks dead until it is power-cycled -- even though it
+// is up and on WiFi. A periodic announce is what heals that.
+//
+// Announces cost airtime on LoRa, so the interval is deliberately generous;
+// tune NOMADNET_ANNOUNCE_INTERVAL_MS in Config.h.
+#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+static void nomadnet_announce_watch() {
+  static uint32_t last_announce = 0;
+  static uint32_t announce_jitter = 0;
+  static bool armed = false;
+  static bool first_done = false;
+  if (!nomadnet_enabled || !nomadnet_destination) return;
+  // Jitter is rolled when arming as well as after each announce: the very
+  // first announce is the one most likely to collide fleet-wide, because a
+  // block of nodes restored to mains power all reach this point together.
+  if (!armed) {
+    armed = true; last_announce = millis();
+    announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
+    return;
+  }
+  // The startup announce in setup() is NOT sufficient. It fires at ~t+4s, about
+  // a second before DHCP completes and the UDP socket is rebound to a real
+  // address (see the rebind in Remote.h), so on a fast boot it is emitted into a
+  // socket bound to 0.0.0.0 and is simply lost. That race was previously hidden
+  // by a slow startup. Send the first real announce shortly after boot, once the
+  // network is definitely up, then settle into the normal interval.
+  uint32_t due = first_done ? NOMADNET_ANNOUNCE_INTERVAL_MS : NOMADNET_FIRST_ANNOUNCE_MS;
+  due += announce_jitter;
+  if (millis() - last_announce < due) return;
+  last_announce = millis();
+  announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
+  first_done = true;
+  printf("[announce] re-announcing NomadNet site \"%s\"\n", nomadnet_name);
+  nomadnet_destination.announce(nomadnet_name);
+}
+#endif
+
+// Recover a wedged modem.
+//
+// See RADIO_RX_WATCHDOG_MS in Config.h for the failure this exists for: the
+// receive path can die while every indicator this firmware exposes still says
+// the radio is healthy. The only observable that actually distinguishes a
+// working modem from a wedged one is whether packets are still arriving, so
+// that is what we watch.
+//
+// Deliberately NOT conditioned on having transmitted or on having a known
+// peer. A wedged receiver and an empty channel are indistinguishable from
+// here, and re-initialising costs milliseconds, so we treat prolonged silence
+// as suspect either way rather than trying to prove which it is.
+#if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+// Shared receive-activity tracking. radio_config_apply_live() consults it to
+// decide whether the link it is about to reconfigure was actually working --
+// only then is a rollback worth arming.
+static uint32_t rx_last_change_ms = 0;
+static size_t   rx_last_count     = 0;
+static bool     rx_tracking       = false;
+
+static void radio_rx_watchdog() {
+  #if RADIO_RX_WATCHDOG_MS > 0
+    static uint32_t reinit_count = 0;
+
+    // Disarm while the radio is down so a deliberate stop (console mode, a
+    // host CMD_RADIO_STATE(0)) is not counted as silence and does not trigger
+    // a re-init the moment the radio comes back.
+    if (!radio_online || !lora_interface) { rx_tracking = false; return; }
+
+    size_t rx_now = lora_interface.rx();
+    if (!rx_tracking) {
+      rx_tracking = true; rx_last_count = rx_now; rx_last_change_ms = millis();
+      return;
+    }
+    if (rx_now != rx_last_count) {
+      rx_last_count = rx_now; rx_last_change_ms = millis();
+      return;
+    }
+    if (millis() - rx_last_change_ms < RADIO_RX_WATCHDOG_MS) return;
+
+    ++reinit_count;
+    printf("[radio] rx watchdog: nothing demodulated for %lums, reinitialising "
+           "modem (reinit #%lu, rx=%lu tx_calls=%lu nf=%d)\n",
+           (unsigned long)(millis() - rx_last_change_ms), (unsigned long)reinit_count,
+           (unsigned long)rx_now, (unsigned long)tx_calls, (int)noise_floor);
+
+    stopRadio();
+    if (startRadio()) {
+      printf("[radio] rx watchdog: modem reinitialised OK\n");
+    } else {
+      // startRadio() has already reported the specific reason. Leave the timer
+      // reset regardless so a permanently unstartable radio retries on the
+      // normal interval instead of spinning every loop iteration.
+      printf("[radio] rx watchdog: modem reinit FAILED\n");
+    }
+    rx_last_change_ms = millis();
+    rx_last_count     = lora_interface ? lora_interface.rx() : 0;
+  #endif
+}
+
+// Apply the live radio shadow config to the modem, and keep the two in step.
+//
+// The provisioning commit path writes lora_freq/bw/sf/cr/txp straight into the
+// shadow variables and saves EEPROM, but does not touch the modem -- those
+// fields are declared FF_REBOOT_REQUIRED. Nothing anywhere reported that the
+// running radio and the reported config had diverged, and the divergence
+// persisted for as long as the board stayed up.
+//
+// That is not cosmetic. On 2026-08-22 it took the mesh down. An SF8 -> SF7
+// change was accepted and reported by both boards and applied by neither, so
+// both kept running SF8. The first board to be power-cycled came back on SF7
+// (read from EEPROM by startRadio) while its peer stayed on SF8, and the link
+// died: RF arrived at -44 dBm and nothing demodulated in either direction,
+// while every health indicator -- radio_online, hw_ready, noise floor, the
+// reported SF itself -- looked perfect. It also explains why that SF7 change
+// produced no measurable speed-up at the time: it never reached the radio.
+//
+// The snapshot below is the invariant: if the shadow config differs from what
+// was last programmed, the modem is not running the configuration this node is
+// telling everyone it runs. Reprogram it and say so.
+static uint32_t rc_seen_freq = 0, rc_seen_bw = 0;
+static int      rc_seen_sf   = 0, rc_seen_cr = 0, rc_seen_txp = 0;
+static bool     rc_armed     = false;
+
+static void radio_config_snapshot() {
+  rc_seen_freq = lora_freq; rc_seen_bw  = lora_bw;  rc_seen_sf = lora_sf;
+  rc_seen_cr   = lora_cr;   rc_seen_txp = lora_txp; rc_armed   = true;
+}
+
+// Reprogram every modem register from the shadow config. Each setter is a
+// no-op while the radio is down, and startRadio() programs all of them from
+// these same variables, so a stopped radio needs nothing here.
+// Commit-confirm ("commit confirmed") state for PHY changes. See
+// RADIO_CONFIG_CONFIRM_MS in Config.h.
+static bool     rc_preset_sync_pending = false;
+static bool     rb_armed     = false;
+static bool     rb_reverting = false;
+static uint32_t rb_deadline  = 0;
+static size_t   rb_rx_at_apply = 0;
+static uint32_t rb_freq = 0, rb_bw = 0;
+static int      rb_sf = 0, rb_cr = 0, rb_txp = 0;
+
+// A stable fingerprint of the parameters that must match for two nodes to hear
+// each other at all. Two nodes with the same value can talk; two with different
+// values cannot, no matter how strong the signal. Exposed in the [lora] log line
+// and on /page/device.mu so a mismatch can be spotted from any node that is
+// reachable by some other route -- which is exactly the check that would have
+// found the 2026-08-22 outage in seconds instead of a day.
+uint32_t lora_phy_hash() {
+  // Frequency, bandwidth and spreading factor only.
+  //
+  // Coding rate is deliberately EXCLUDED. In explicit-header mode the CR is
+  // carried in the header and the receiver adapts to it per packet, so two
+  // nodes on different coding rates interoperate perfectly well. Including it
+  // (as this did until 2026-08-23) raises a false "these nodes cannot hear each
+  // other" alarm for a difference that costs nothing -- the opposite of what
+  // this fingerprint is for.
+  const uint32_t vals[3] = { lora_freq, lora_bw, (uint32_t)lora_sf };
+  uint32_t h = 2166136261u;                 // FNV-1a
+  for (size_t i = 0; i < 3; i++) {
+    for (int b = 0; b < 4; b++) {
+      h ^= (uint8_t)((vals[i] >> (8*b)) & 0xFF);
+      h *= 16777619u;
+    }
+  }
+  return h;
+}
+
+// Which named preset the live configuration corresponds to, or
+// RADIO_PRESET_CUSTOM if bandwidth/SF/CR were set individually to something off
+// the ladder. Computed from the live values rather than stored, so the reported
+// preset can never drift out of step with the radio the way a cached copy would.
+uint8_t radio_preset_current() {
+  for (uint8_t i = 0; i < RADIO_PRESET_COUNT; i++) {
+    if (RADIO_PRESETS[i].bw == lora_bw &&
+        RADIO_PRESETS[i].sf == (uint8_t)lora_sf &&
+        RADIO_PRESETS[i].cr == (uint8_t)lora_cr) return i;
+  }
+  return RADIO_PRESET_CUSTOM;
+}
+
+const char* radio_preset_name() {
+  uint8_t i = radio_preset_current();
+  return (i == RADIO_PRESET_CUSTOM) ? "Custom" : RADIO_PRESETS[i].name;
+}
+
+// Adopt a preset. Rejects RADIO_PRESET_CUSTOM and any out-of-range index:
+// "custom" describes a configuration, it does not select one.
+//
+// Only the shadow values are written here. The consistency watch in loop()
+// notices they no longer match what the modem was programmed with, applies them
+// and arms the commit-confirm rollback -- so a preset that strands the link
+// unwinds itself exactly like any other PHY change.
+bool radio_preset_apply(uint8_t idx) {
+  if (idx >= RADIO_PRESET_COUNT) return false;
+  const RadioPreset& p = RADIO_PRESETS[idx];
+  lora_bw = p.bw; lora_sf = (int)p.sf; lora_cr = (int)p.cr;
+  printf("[radio] preset selected: %s (bw=%lu sf=%d cr=%d)\n",
+         p.name, (unsigned long)lora_bw, (int)lora_sf, (int)lora_cr);
+  // The individual Bandwidth/SF/CR fields persist independently of the preset,
+  // and are re-applied from storage at boot. Without pushing the preset's
+  // values back into them, a stale individual field silently overrides the
+  // preset on the next restart -- observed 2026-08-23, where a board booted
+  // with cr=6 from an earlier test while its preset field still read
+  // "ShortFast". Deferred to the loop rather than done here: this runs inside
+  // a provisioning commit, and re-entering commit from a field setter is not
+  // safe.
+  rc_preset_sync_pending = true;
+  // The namespace's on_commit hook persists EEPROM before field setters run, so
+  // a preset chosen in that same commit would otherwise not be saved.
+  if (hw_ready && radio_online) { eeprom_conf_save(); }
+  return true;
+}
+
+void radio_config_apply_live() {
+  if (!radio_online) { rc_armed = false; return; }
+  #if RADIO_CONFIG_CONFIRM_MS > 0
+    // Arm a rollback only when we are changing away from a configuration that
+    // was demonstrably carrying traffic. Applying config on a link that was
+    // already silent tells us nothing, and reverting to an equally silent
+    // previous setting would just add churn.
+    if (rc_armed && !rb_armed && !rb_reverting && lora_interface && rx_tracking &&
+        (millis() - rx_last_change_ms) < RADIO_CONFIG_CONFIRM_MS) {
+      rb_freq = rc_seen_freq; rb_bw  = rc_seen_bw;  rb_sf = rc_seen_sf;
+      rb_cr   = rc_seen_cr;   rb_txp = rc_seen_txp;
+      rb_rx_at_apply = lora_interface.rx();
+      rb_deadline    = millis() + RADIO_CONFIG_CONFIRM_MS;
+      rb_armed       = true;
+      printf("[radio] commit-confirm armed: revert to f=%lu bw=%lu sf=%d cr=%d txp=%d "
+             "in %lums unless traffic resumes\n",
+             (unsigned long)rb_freq, (unsigned long)rb_bw, rb_sf, rb_cr, rb_txp,
+             (unsigned long)RADIO_CONFIG_CONFIRM_MS);
+    }
+  #endif
+  // setFrequency() ends in getFrequency(), which writes the modem's quantised
+  // readback back into lora_freq. Re-applying an already-quantised value
+  // re-quantises it, so without this the configured frequency walks downward a
+  // couple of hundred Hz on every apply -- unbounded, and it would eventually
+  // matter. The configured value stays authoritative; the modem is within one
+  // frequency step of it either way.
+  const uint32_t requested_freq = lora_freq;
+  setFrequency();
+  lora_freq = requested_freq;
+  setBandwidth();
+  setSpreadingFactor();
+  setCodingRate();
+  setTXPower();
+  updateBitrate();      // setBandwidth() does not do this itself
+  lora_receive();       // back to RX after reprogramming
+  radio_config_snapshot();
+  printf("[radio] config applied live: f=%lu bw=%lu sf=%d cr=%d txp=%d bitrate=%lu\n",
+         (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
+         (int)lora_cr, (int)lora_txp, (unsigned long)lora_bitrate);
+}
+
+static void lora_config_consistency_watch() {
+  if (!radio_online) { rc_armed = false; return; }
+
+  #ifdef HAS_PROVISIONING
+    if (rc_preset_sync_pending) {
+      rc_preset_sync_pending = false;
+      extern void provisioning_sync_radio_from_runtime();
+      provisioning_sync_radio_from_runtime();
+      printf("[radio] preset written through to stored bw/sf/cr\n");
+    }
+  #endif
+  if (!rc_armed)     { radio_config_snapshot(); return; }
+
+  if (lora_freq != rc_seen_freq || lora_bw  != rc_seen_bw ||
+      lora_sf   != rc_seen_sf   || lora_cr  != rc_seen_cr ||
+      lora_txp  != rc_seen_txp) {
+    printf("[radio] shadow config changed without reaching the modem: "
+           "f %lu->%lu bw %lu->%lu sf %d->%d cr %d->%d txp %d->%d -- applying\n",
+           (unsigned long)rc_seen_freq, (unsigned long)lora_freq,
+           (unsigned long)rc_seen_bw,   (unsigned long)lora_bw,
+           rc_seen_sf, lora_sf, rc_seen_cr, lora_cr, rc_seen_txp, lora_txp);
+    radio_config_apply_live();
+  }
+
+  // LoRaInterface snapshots lora_bitrate in its constructor and never revisits
+  // it, so RNS quotes the boot-time rate forever. It is used for RNS timing
+  // estimates and is what /page/device.mu reports -- an interface claiming
+  // "spreading_factor: 7" beside "bitrate: 3125" (the SF8 rate) is what first
+  // exposed the bug above.
+  if (lora_interface && lora_bitrate != 0 &&
+      lora_interface.bitrate() != lora_bitrate) {
+    printf("[lora] interface bitrate stale: %lu -> %lu bps (sf=%d bw=%lu cr=%d)\n",
+           (unsigned long)lora_interface.bitrate(), (unsigned long)lora_bitrate,
+           (int)lora_sf, (unsigned long)lora_bw, (int)lora_cr);
+    lora_interface.bitrate(lora_bitrate);
+  }
+}
+
+// Confirm or roll back a PHY change. Any decoded packet is proof the new
+// settings work; silence for the whole window means they do not, and the node
+// puts itself back on the last configuration known to carry traffic.
+static void radio_commit_confirm_watch() {
+#if RADIO_CONFIG_CONFIRM_MS > 0
+  if (!rb_armed || !radio_online) return;
+
+  if (lora_interface && lora_interface.rx() != rb_rx_at_apply) {
+    rb_armed = false;
+    printf("[radio] config confirmed: traffic resumed on f=%lu bw=%lu sf=%d (phy=%08lx)\n",
+           (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
+           (unsigned long)lora_phy_hash());
+    return;
+  }
+
+  if ((int32_t)(millis() - rb_deadline) < 0) return;
+
+  printf("[radio] config NOT confirmed after %lums of silence -- reverting to "
+         "f=%lu bw=%lu sf=%d cr=%d txp=%d\n",
+         (unsigned long)RADIO_CONFIG_CONFIRM_MS, (unsigned long)rb_freq,
+         (unsigned long)rb_bw, rb_sf, rb_cr, rb_txp);
+
+  rb_armed     = false;
+  rb_reverting = true;                      // keep apply_live from re-arming
+  lora_freq = rb_freq; lora_bw = rb_bw; lora_sf = rb_sf;
+  lora_cr   = rb_cr;   lora_txp = rb_txp;
+  radio_config_apply_live();
+  // Persist, so a reboot does not resurrect the configuration that stranded us.
+  // Both stores must be corrected: EEPROM for the classic config path, and the
+  // provisioning store because its values are re-applied at boot and would
+  // otherwise strand the node again on the next restart.
+  if (hw_ready && radio_online) { eeprom_conf_save(); }
+  #ifdef HAS_PROVISIONING
+    extern void provisioning_sync_radio_from_runtime();
+    provisioning_sync_radio_from_runtime();
+  #endif
+  rb_reverting = false;
+#endif
+}
+#endif
+
+// Periodic heap report for headless operation. RNS_LOW_MEMORY_REBOOT resets the
+// board when free heap reaches <=2% of total; without a trend line there is no
+// way to tell a memory leak from a hang after the fact. Deliberately a plain
+// printf so it survives a low RNS_LOG_LEVEL.
+#if defined(ESP32) && defined(HAS_RNS)
+static void heap_watch() {
+  static uint32_t last_heap_report = 0;
+  if (millis() - last_heap_report < HEAP_REPORT_INTERVAL_MS) return;
+  last_heap_report = millis();
+  rtc_last_uptime_s = (uint32_t)(millis() / 1000);
+  // Duty-cycle headroom and BLE state. Both are otherwise invisible: a node
+  // silenced by airtime_lock looks exactly like one with nothing to say, and
+  // BLE has no status output at all.
+  printf("[duty] longterm=%.4f limit=%.4f locked=%d | [ble] state=%d\n",
+         (double)longterm_airtime, (double)lt_airtime_limit,
+         (int)airtime_lock, (int)bt_state);
+  size_t total = RNS::Utilities::Memory::heap_size();
+  size_t avail = RNS::Utilities::Memory::heap_available();
+  // Guarded on UDP_TRANSPORT, not HAS_WIFI: the counters are defined in
+  // Remote.h inside #if defined(UDP_TRANSPORT), so a Wi-Fi board built without
+  // UDP transport (heltec_wifi_lora_32_V2/V3) fails to LINK, not to compile --
+  // which is why building only the RAD-01 targets missed it.
+  #if HAS_WIFI == true && defined(UDP_TRANSPORT)
+    extern volatile uint32_t udp_rx_count; extern volatile uint32_t udp_tx_count;
+    printf("[udp] rx=%lu tx=%lu\n", (unsigned long)udp_rx_count, (unsigned long)udp_tx_count);
+  #endif
+  // Is the modem ever actually keyed? packets_sent only counts queueing, so a
+  // CSMA stall looks identical to a working transmitter from the RNS side.
+  {
+    extern volatile uint32_t tx_calls;
+    #if MODEM == SX1262
+      extern volatile uint32_t sx126x_preamble_count;
+      extern volatile uint32_t sx126x_header_count;
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d pre=%lu hdr=%lu "
+             "f=%lu bw=%lu sf=%d txp=%d phy=%08lx\n",
+             (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
+             (int)current_rssi, (int)noise_floor, (int)radio_online,
+             (unsigned long)sx126x_preamble_count, (unsigned long)sx126x_header_count,
+             (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
+             (int)lora_txp, (unsigned long)lora_phy_hash());
+    #elif MODEM == SX1276 || MODEM == SX1278
+      extern volatile uint32_t sx127x_sigdet_count;
+      extern volatile uint32_t sx127x_synced_count;
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d sig=%lu syn=%lu "
+             "locked=%d hwr=%d err=%d con=%d alock=%d f=%lu bw=%lu sf=%d txp=%d phy=%08lx\n",
+             (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
+             (int)current_rssi, (int)noise_floor, (int)radio_online,
+             (unsigned long)sx127x_sigdet_count, (unsigned long)sx127x_synced_count,
+             (int)radio_locked, (int)hw_ready, (int)radio_error, (int)console_active,
+             (int)airtime_lock, (unsigned long)lora_freq, (unsigned long)lora_bw,
+             (int)lora_sf, (int)lora_txp, (unsigned long)lora_phy_hash());
+    #else
+      printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d\n",
+             (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
+             (int)current_rssi, (int)noise_floor, (int)radio_online);
+    #endif
+  }
+  printf("[heap] free %u / %u bytes (%u%%), min-free %u, uptime %lus\n",
+         (unsigned)avail, (unsigned)total,
+         (unsigned)(total ? (avail * 100 / total) : 0),
+         (unsigned)ESP.getMinFreeHeap(), (unsigned long)(millis() / 1000));
+}
+#endif
+
 void loop() {
+#if defined(ESP32) && defined(HAS_RNS)
+  heap_watch();
+#endif
+#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+  nomadnet_announce_watch();
+#endif
+#if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+  radio_rx_watchdog();
+  lora_config_consistency_watch();
+  radio_commit_confirm_watch();
+#endif
 
   #if MCU_VARIANT == MCU_NATIVE
     // Deferred-reboot hook: a KISS-driven property change or CMD_RESET in

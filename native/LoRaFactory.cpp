@@ -23,7 +23,7 @@ namespace native_lora {
 ILoRaRadio* create_radio(uint8_t modem_id) {
     switch (modem_id) {
         case SX1262:
-            sx126x_modem.setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen);
+            sx126x_modem.setPins(pin_cs, pin_reset, pin_dio, pin_busy, pin_rxen, pin_txen);
             return &sx126x_modem;
         case SX1276:
         case SX1278:

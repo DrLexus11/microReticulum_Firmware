@@ -32,6 +32,8 @@
 #include <string>
 
 extern RNS::Interface lora_interface;
+extern uint32_t lora_phy_hash();
+extern const char* radio_preset_name();
 #if HAS_WIFI && defined(UDP_TRANSPORT)
 extern RNS::Interface udp_interface;
 extern IPAddress wr_device_ip;
@@ -112,6 +114,13 @@ RNS::Bytes serve_page(
 	}
 
 	VERBOSEF("Serving page %s with category \"%s\" to link <%s> with identity <%s>", path.toString().c_str(), category.c_str(), link_id.toHex().c_str(), (remote_identity ? remote_identity.hash().toHex().c_str() : RNS::Bytes{}.toHex().c_str()));
+	// Plain printf so it survives a low RNS_LOG_LEVEL: shows whether a browsing
+	// client identified at all, and with which hash. ALLOW_LIST pages are denied
+	// to unidentified peers no matter what the list contains, so "identity=<none>"
+	// and "identity=<hash not in list>" are very different problems.
+	printf("[page] %s cat=%s identity=%s\n", path.toString().c_str(),
+	       category.empty() ? "-" : category.c_str(),
+	       remote_identity ? remote_identity.hash().toHex().c_str() : "<NONE - client did not identify>");
 	MsgPack::Packer packer;
   {
     RNS::Bytes content;
@@ -275,6 +284,18 @@ RNS::Bytes serve_page(
         content << "    \"tx_power\": " << std::to_string(lora_txp) << ",\n";
         content << "    \"spreading_factor\": " << std::to_string(lora_sf) << ",\n";
         content << "    \"coding_rate\": " << std::to_string(lora_cr) << ",\n";
+        // Fingerprint of the parameters that must match for two nodes to hear
+        // each other. Comparing this between nodes reachable by any other route
+        // turns "the radios are mysteriously deaf" into a one-line diagnosis.
+        {
+          char phybuf[16];
+          snprintf(phybuf, sizeof(phybuf), "%08lx", (unsigned long)lora_phy_hash());
+          content << "    \"phy_hash\": \"" << phybuf << "\",\n";
+        }
+        // The named preset this configuration corresponds to, or "Custom".
+        // Reading it beside phy_hash answers both fleet questions at once:
+        // "are these two nodes on the same settings" and "which settings".
+        content << "    \"preset\": \"" << radio_preset_name() << "\",\n";
         content << "    \"current_rssi\": " << std::to_string(current_rssi) << ",\n";
         content << "    \"noise_floor\": " << std::to_string((int16_t)noise_floor) << ",\n";
         content << "    \"last_rssi\": " << std::to_string((int16_t)last_rssi) << ",\n";
