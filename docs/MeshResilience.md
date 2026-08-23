@@ -125,6 +125,45 @@ for resident attachment until it is understood. **SoftAP + `TCPServerInterface`
 looks like the more practical route**, since it needs no pairing, no passkey, and
 serves several phones at once.
 
+### BLE is DEFERRED (2026-08-23) — it can hang the firmware
+
+Testing BLE end to end produced a stop-the-line defect, and BLE is parked until
+someone deliberately picks it up again.
+
+**What happened.** A phone paired (the fixed passkey works), held a connection
+for ~43 seconds, then dropped -- probably Android suspending the app, possibly
+aggravated by WiFi/BLE coexistence, since the ESP32-S3 shares one 2.4 GHz radio
+and the node was running WiFi STA + TCP server + UDP + BLE at once. **The board
+then hung.** Not crashed: lwIP kept answering pings and accepting TCP
+connections, so it looked alive, while the application loop was dead -- no
+serial output for 75 s (the [heap]/[duty] reports run every 60 s), no
+advertising restart, no response to KISS commands, zero RNS bytes to a connected
+client. It needed a hard reset.
+
+**Why.** Every printf goes through `serial_write()`, which routes to
+`SerialBT.write()` whenever BLE reports connected, and BLE `notify()` can block
+on congestion. A half-open BLE link therefore blocks the main loop inside a log
+write. Note how misleading the symptom is: ping and open ports are served by
+lwIP's own task and prove nothing about the application.
+
+**Why this is not worth fixing yet.** BLE is a *host* transport, designed for a
+phone that owns an RNode. Our nodes are autonomous transport nodes in MODE_TNC.
+The two models fight, and the scoreboard is one-sided:
+
+| | BLE (KISS host) | TCP server |
+| --- | --- | --- |
+| Concurrent clients | 1 | 5 |
+| Pairing | needs a passkey workaround | none |
+| Console | takes it over; board goes mute on USB | untouched |
+| Half-open link | **hangs the firmware** | slot reaped |
+| Fits MODE_TNC | no -- the phone wants the radio | yes |
+| Reaches its own node | no | yes |
+
+**If BLE is ever picked up again**, the prerequisites are: bound or bypass the
+BLE write path so a congested link cannot block the loop; detect and tear down
+half-open links; and decide what BLE is actually *for*, given TCP already serves
+residents better on every axis above.
+
 **Recommendation: do not build a BLE backbone.** Through apartment walls BLE
 manages perhaps one room; LoRa at 868 MHz manages the building. Keep BLE for
 what it is already good at — a resident's phone attaching to the RAD in their
@@ -151,10 +190,21 @@ becomes useful once the firmware can accept RNS clients over IP, which today it
 cannot (see `docs/ResourceAPI.md` §"TCP interfaces" discussion and the note
 below).
 
-**Blocking dependency:** `UDPInterface.h` transmits only to a single
-compile-time `UDP_REMOTE_HOST`. A phone joining a node's SoftAP has nothing to
-talk to. An RNS `TCPServerInterface` in the firmware is a prerequisite for
-SoftAP client attachment to mean anything.
+**Blocking dependency — RESOLVED 2026-08-23.** `UDPInterface.h` transmits only
+to a single compile-time `UDP_REMOTE_HOST`, so a phone joining a node's SoftAP
+had nothing to talk to. `TCPServerInterface.h` now provides an RNS TCP listener
+(HDLC framed, five concurrent clients, enabled by default on both RAD-01
+variants). Verified on hardware: a client attached over TCP learns the node it
+is attached to at 1 hop and the far LoRa node at 2 hops, and Columba attaches to
+it as a real client.
+
+Note this also settles a question left open under BLE: a **TCP** client *can*
+reach the node it is attached to, which a KISS host over BLE cannot, because the
+board does not loop its own transmissions back to a KISS host. Another reason to
+prefer TCP for resident attachment.
+
+What remains for the disaster case is SoftAP itself — the interface works, but a
+node still only raises its own AP if configured to. That is the next step.
 
 ## 5. The orphan problem, and the stampede that must be avoided
 
@@ -264,10 +314,16 @@ it.
 
 ## 7. Build order
 
-1. **`TCPClientInterface`** (outbound) — lets a node anchor itself to an
-   always-on off-site transport through NAT, with no port forwarding.
-2. **`TCPServerInterface`** (inbound) — makes SoftAP and LAN client attachment
-   meaningful; turns a mains-powered node into the local hub.
+1. ~~**`TCPServerInterface`** (inbound)~~ — **done 2026-08-23.** Five clients,
+   default on for RAD-01. Sized to an average EU household (4-5 residents, one
+   Reticulum identity each), which is also roughly what the lwIP socket budget
+   allows alongside the UDP interface and KISS console.
+2. **SoftAP** — the node raises its own AP when building infrastructure is gone,
+   so residents can attach with no surviving router.
+3. **`TCPClientInterface`** (outbound) — lets a node anchor itself to an
+   always-on off-site transport through NAT, with no port forwarding. Useful for
+   remote monitoring in normal times; not part of the disaster path, since in an
+   earthquake there is no internet to dial out to.
 3. **Announce jitter + duty-cycle enforcement** — small, and required before any
    real deployment.
 4. **Orphan state machine with listen-only preset sweep.**

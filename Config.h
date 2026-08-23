@@ -36,6 +36,87 @@
 	#define BT_STATE_ON        0x01
 	#define BT_STATE_PAIRING   0x02
 	#define BT_STATE_CONNECTED 0x03
+
+	// Bluetooth pairing passkey used on boards with no display.
+	//
+	// The stock behaviour generates a random six-digit passkey and surfaces it
+	// two ways: on a display, or over a wired KISS link. A RAD-01 has neither in
+	// the field -- no screen, and no accessible UART once it is in a wall or on
+	// a roof -- so pairing was simply impossible for a resident. During bring-up
+	// on 2026-08-23 the only way to pair at all was to read the passkey off USB
+	// serial and type it in by hand.
+	//
+	// A fixed passkey is not a meaningful loss of security here, and it is worth
+	// being precise about why: BLE bonding protects the radio hop between phone
+	// and node. It is not what protects the traffic. Reticulum above it is
+	// already end-to-end encrypted and identity-authenticated, so a node cannot
+	// read its clients' messages whatever the BLE link does. What a fixed
+	// passkey concedes is protection against an attacker actively MITM-ing the
+	// BLE hop in the pairing window -- who would gain a transport-layer position
+	// and still not be able to read anything.
+	//
+	// 123456 matches the Meshtastic convention, so it is what users already
+	// expect to type.
+	//
+	// Boards WITH a display keep the random passkey: they can show it, so there
+	// is no reason to weaken them.
+	#ifndef BLE_FIXED_PASSKEY
+	#define BLE_FIXED_PASSKEY 123456
+	#endif
+
+	// --- SoftAP fallback -------------------------------------------------
+	//
+	// A node whose configured network is gone -- or which was never given one
+	// at flash time -- raises its own access point so residents can still
+	// reach it. This is the disaster case the project exists for: the
+	// building's router is down, and a phone needs *something* to join.
+	//
+	// Fallback, not permanent AP+STA: running both costs power and airtime on
+	// a node that may be on battery, and the uplink is worth having whenever
+	// it exists.
+	//
+	// How long to keep trying the configured station network before giving up
+	// and raising our own AP. Must be comfortably longer than a slow router's
+	// boot, or a node will desert a network that was merely restarting.
+	#ifndef WIFI_AP_FALLBACK_MS
+	#define WIFI_AP_FALLBACK_MS 120000             // 2 minutes
+	#endif
+
+	// While serving a fallback AP, how often to look for the configured
+	// network again. Retrying is only attempted when NO station is associated:
+	// dropping a resident mid-message to chase an uplink is the wrong trade.
+	#ifndef WIFI_AP_RETRY_STA_MS
+	#define WIFI_AP_RETRY_STA_MS 600000            // 10 minutes
+	#endif
+
+	// How long the station retry may be deferred by attached clients before it
+	// happens anyway.
+	//
+	// Deferring while someone is associated is right -- dropping a resident
+	// mid-message to chase an uplink is the wrong trade -- but unbounded
+	// deferral is a trap at scale: in a building with continuous occupancy, one
+	// phone left connected overnight keeps a node isolated from a router that
+	// came back hours ago. Long enough that nobody loses a conversation, short
+	// enough that a node rejoins within a working day.
+	#ifndef WIFI_AP_MAX_DEFER_MS
+	#define WIFI_AP_MAX_DEFER_MS 14400000          // 4 hours
+	#endif
+
+	// Pre-shared key for the fallback AP.
+	//
+	// Leave this UNSET (the default) to derive a per-node key from the MAC, the
+	// same source as the SSID suffix -- so IMPR-RAD-01-Rev1-C7A4 has its own
+	// password. A fleet-wide shared key is fine on a bench and a liability
+	// across a building: one resident's key opens every neighbour's node.
+	//
+	// The derivation is deterministic, so SSID and key can be printed on the
+	// enclosure label at build time, and both are logged when the AP comes up.
+	//
+	// Define it explicitly to force a fixed key, or to "" for an open network.
+	// Open is arguably right for a disaster -- someone on 3% battery in a
+	// stairwell should not be hunting for a password -- but that is a
+	// deployment policy decision, not a default.
+	//#define WIFI_AP_PSK "somefixedkey"
 	uint8_t bt_state = BT_STATE_NA;
 	uint32_t bt_ssp_pin = 0;
 	bool bt_ready = false;
