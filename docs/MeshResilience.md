@@ -125,6 +125,45 @@ for resident attachment until it is understood. **SoftAP + `TCPServerInterface`
 looks like the more practical route**, since it needs no pairing, no passkey, and
 serves several phones at once.
 
+### BLE is DEFERRED (2026-08-23) — it can hang the firmware
+
+Testing BLE end to end produced a stop-the-line defect, and BLE is parked until
+someone deliberately picks it up again.
+
+**What happened.** A phone paired (the fixed passkey works), held a connection
+for ~43 seconds, then dropped -- probably Android suspending the app, possibly
+aggravated by WiFi/BLE coexistence, since the ESP32-S3 shares one 2.4 GHz radio
+and the node was running WiFi STA + TCP server + UDP + BLE at once. **The board
+then hung.** Not crashed: lwIP kept answering pings and accepting TCP
+connections, so it looked alive, while the application loop was dead -- no
+serial output for 75 s (the [heap]/[duty] reports run every 60 s), no
+advertising restart, no response to KISS commands, zero RNS bytes to a connected
+client. It needed a hard reset.
+
+**Why.** Every printf goes through `serial_write()`, which routes to
+`SerialBT.write()` whenever BLE reports connected, and BLE `notify()` can block
+on congestion. A half-open BLE link therefore blocks the main loop inside a log
+write. Note how misleading the symptom is: ping and open ports are served by
+lwIP's own task and prove nothing about the application.
+
+**Why this is not worth fixing yet.** BLE is a *host* transport, designed for a
+phone that owns an RNode. Our nodes are autonomous transport nodes in MODE_TNC.
+The two models fight, and the scoreboard is one-sided:
+
+| | BLE (KISS host) | TCP server |
+| --- | --- | --- |
+| Concurrent clients | 1 | 5 |
+| Pairing | needs a passkey workaround | none |
+| Console | takes it over; board goes mute on USB | untouched |
+| Half-open link | **hangs the firmware** | slot reaped |
+| Fits MODE_TNC | no -- the phone wants the radio | yes |
+| Reaches its own node | no | yes |
+
+**If BLE is ever picked up again**, the prerequisites are: bound or bypass the
+BLE write path so a congested link cannot block the loop; detect and tear down
+half-open links; and decide what BLE is actually *for*, given TCP already serves
+residents better on every axis above.
+
 **Recommendation: do not build a BLE backbone.** Through apartment walls BLE
 manages perhaps one room; LoRa at 868 MHz manages the building. Keep BLE for
 what it is already good at — a resident's phone attaching to the RAD in their
