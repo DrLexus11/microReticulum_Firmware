@@ -2943,6 +2943,7 @@ static void radio_config_snapshot() {
 // these same variables, so a stopped radio needs nothing here.
 // Commit-confirm ("commit confirmed") state for PHY changes. See
 // RADIO_CONFIG_CONFIRM_MS in Config.h.
+static bool     rc_preset_sync_pending = false;
 static bool     rb_armed     = false;
 static bool     rb_reverting = false;
 static uint32_t rb_deadline  = 0;
@@ -2957,9 +2958,17 @@ static int      rb_sf = 0, rb_cr = 0, rb_txp = 0;
 // reachable by some other route -- which is exactly the check that would have
 // found the 2026-08-22 outage in seconds instead of a day.
 uint32_t lora_phy_hash() {
-  const uint32_t vals[4] = { lora_freq, lora_bw, (uint32_t)lora_sf, (uint32_t)lora_cr };
+  // Frequency, bandwidth and spreading factor only.
+  //
+  // Coding rate is deliberately EXCLUDED. In explicit-header mode the CR is
+  // carried in the header and the receiver adapts to it per packet, so two
+  // nodes on different coding rates interoperate perfectly well. Including it
+  // (as this did until 2026-08-23) raises a false "these nodes cannot hear each
+  // other" alarm for a difference that costs nothing -- the opposite of what
+  // this fingerprint is for.
+  const uint32_t vals[3] = { lora_freq, lora_bw, (uint32_t)lora_sf };
   uint32_t h = 2166136261u;                 // FNV-1a
-  for (size_t i = 0; i < 4; i++) {
+  for (size_t i = 0; i < 3; i++) {
     for (int b = 0; b < 4; b++) {
       h ^= (uint8_t)((vals[i] >> (8*b)) & 0xFF);
       h *= 16777619u;
@@ -2999,6 +3008,15 @@ bool radio_preset_apply(uint8_t idx) {
   lora_bw = p.bw; lora_sf = (int)p.sf; lora_cr = (int)p.cr;
   printf("[radio] preset selected: %s (bw=%lu sf=%d cr=%d)\n",
          p.name, (unsigned long)lora_bw, (int)lora_sf, (int)lora_cr);
+  // The individual Bandwidth/SF/CR fields persist independently of the preset,
+  // and are re-applied from storage at boot. Without pushing the preset's
+  // values back into them, a stale individual field silently overrides the
+  // preset on the next restart -- observed 2026-08-23, where a board booted
+  // with cr=6 from an earlier test while its preset field still read
+  // "ShortFast". Deferred to the loop rather than done here: this runs inside
+  // a provisioning commit, and re-entering commit from a field setter is not
+  // safe.
+  rc_preset_sync_pending = true;
   // The namespace's on_commit hook persists EEPROM before field setters run, so
   // a preset chosen in that same commit would otherwise not be saved.
   if (hw_ready && radio_online) { eeprom_conf_save(); }
@@ -3048,6 +3066,15 @@ void radio_config_apply_live() {
 
 static void lora_config_consistency_watch() {
   if (!radio_online) { rc_armed = false; return; }
+
+  #ifdef HAS_PROVISIONING
+    if (rc_preset_sync_pending) {
+      rc_preset_sync_pending = false;
+      extern void provisioning_sync_radio_from_runtime();
+      provisioning_sync_radio_from_runtime();
+      printf("[radio] preset written through to stored bw/sf/cr\n");
+    }
+  #endif
   if (!rc_armed)     { radio_config_snapshot(); return; }
 
   if (lora_freq != rc_seen_freq || lora_bw  != rc_seen_bw ||
