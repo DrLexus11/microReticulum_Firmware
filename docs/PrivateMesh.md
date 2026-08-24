@@ -3,8 +3,13 @@
 What "private" currently means on this firmware, what is missing, and how it
 relates to the NomadNet pages and the resource API in `docs/ResourceAPI.md`.
 
-Status: **IFAC is not implemented. This is the next substantial piece of work.**
-Written 2026-08-23.
+Status: **IFAC is not implemented.** Written 2026-08-23.
+
+**Priority revised 2026-08-24:** an ESP32 LXMF propagation node now ranks ahead
+of this. Messaging unreliability is a demonstrated hardware failure; IFAC is an
+anticipated requirement for talks still at the talking stage, and evidence
+should outrank anticipation. See `docs/Messaging.md`. Revisit this ordering if
+procurement conversations harden.
 
 ---
 
