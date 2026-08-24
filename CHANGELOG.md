@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **RAD-01 LXMF propagation node** — added bounded store-and-forward support for
+  packet and Resource ingest, identity-scoped retrieval and purge, deterministic
+  oldest-first eviction, and protocol-compatible propagation announcements.
+- **Propagation-node validation tools** — added Python LXMF interoperability,
+  size-limit, multi-message, full-store, real-client and two-board lab checks.
+
 ### Changed
 
 - **Provisioning wire format** — reworked the wire protocol for lower LoRa airtime and fewer round-trips. Breaking change from the previous format:
@@ -11,6 +19,12 @@
     - `COMMIT` requests use a `{NamespaceFilter?, IncludeState?, ReqCompress?}` map (was a bare `[ns_ids]` array). With `IncludeState: true`, the response carries post-commit `PostOpValues` and `PostOpHash` — Commit no longer needs a follow-up refresh.
     - `GET_CAPABILITIES` returns a namespace hierarchy map (`{NsId, NsName, NsParent, NsFieldCount, NsSchemaHash}`) instead of a bare id array; combined with `GET_SCHEMA`'s new `NamespaceFilter` support, this enables lazy per-namespace schema loading.
 - **Web console** — refactored to use the new wire protocol. Save and Commit each collapse from two transactions to one; namespace-panel refreshes cache-hit via `PriorHash` when state hasn't changed since the last poll.
+
+### Fixed
+
+- **RAD-01 UART flash recovery** — detect uploads that leave the board in the
+  bootloader, provide a `fixhash` target, and reboot automatically after storing
+  the running firmware hash so `hw_ready` and RF operation recover reliably.
 
 ## [1.86.4] - 2026-06-27
 
