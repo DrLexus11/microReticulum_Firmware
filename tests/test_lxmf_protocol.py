@@ -20,6 +20,7 @@ import unittest
 
 HEADER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "LXMFPropagation.h")
+PLATFORMIO = os.path.join(os.path.dirname(HEADER), "platformio.ini")
 
 try:
     from LXMF import LXStamper
@@ -61,6 +62,26 @@ def firmware_defines():
             except Exception:
                 pass
     return out
+
+
+class BuildConfigurationTests(unittest.TestCase):
+    """Production RAD builds must not silently compile the feature out."""
+
+    def test_propagation_node_enabled_for_both_rad_revisions(self):
+        with open(PLATFORMIO, "r", encoding="utf-8") as handle:
+            text = handle.read()
+
+        for environment in ("impr-rad01-rev1", "impr-rad01-rev2"):
+            with self.subTest(environment=environment):
+                section = re.search(
+                    rf"^\[env:{re.escape(environment)}\]\s*$"
+                    rf"(?P<body>.*?)(?=^\[|\Z)",
+                    text,
+                    re.M | re.S,
+                )
+                self.assertIsNotNone(section, f"missing environment {environment}")
+                self.assertIn("-DLXMF_PROPAGATION_NODE",
+                              section.group("body"))
 
 
 @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
