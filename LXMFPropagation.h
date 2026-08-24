@@ -200,6 +200,18 @@ inline RNS::Bytes lxmf_pn_app_data() {
 #define LXMF_PN_MAX_BYTES (512 * 1024)
 #endif
 
+// Both the advertised limits and the store caps are individually overridable at
+// build time, so the store's guarantee must not rest on the two happening to be
+// chosen sensibly. A single message that cannot fit inside the store, or a sync
+// allowed to exceed it outright, is a configuration that can never satisfy its
+// own cap -- catch that here rather than at run time on a deployed node.
+static_assert(LXMF_PN_TRANSFER_LIMIT_BYTES <= (size_t)LXMF_PN_MAX_BYTES,
+              "LXMF_PN_TRANSFER_LIMIT_KB exceeds the message store: a single "
+              "accepted message could not fit within LXMF_PN_MAX_BYTES");
+static_assert(LXMF_PN_SYNC_LIMIT_BYTES <= (size_t)LXMF_PN_MAX_BYTES,
+              "LXMF_PN_SYNC_LIMIT_KB exceeds the message store: one sync could "
+              "fill it outright");
+
 #define LXMF_TRANSIENT_ID_LEN 32
 #define LXMF_DESTINATION_LEN  16
 
@@ -292,6 +304,20 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 	while (lxmf_store_index.size() >= LXMF_PN_MAX_MESSAGES ||
 	       lxmf_store_bytes() + blob.size() > (size_t)LXMF_PN_MAX_BYTES) {
 		if (!lxmf_store_evict_oldest()) break;
+	}
+
+	// Eviction stops when there is nothing left to evict, which means the loop
+	// above can exit with the cap still unsatisfied. Writing anyway would put
+	// the store over a limit it is supposed to enforce, on a board where flash
+	// is the scarce resource. The static_asserts make this unreachable for any
+	// sane configuration; this is the backstop for one that is not.
+	if (lxmf_store_index.size() >= LXMF_PN_MAX_MESSAGES ||
+	    lxmf_store_bytes() + blob.size() > (size_t)LXMF_PN_MAX_BYTES) {
+		printf("[lxmf] cannot fit %u bytes within the store cap (%u held, "
+		       "%u bytes), rejecting\n",
+		       (unsigned)blob.size(), (unsigned)lxmf_store_index.size(),
+		       (unsigned)lxmf_store_bytes());
+		return false;
 	}
 
 	uint32_t received = (uint32_t)RNS::Utilities::OS::time();

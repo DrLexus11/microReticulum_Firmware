@@ -7,8 +7,23 @@ of any size, which is the one thing a stranger can make it allocate for.
 import os, sys, time
 import RNS
 
-PN = bytes.fromhex(sys.argv[1])
-SIZE = int(sys.argv[2]) if len(sys.argv) > 2 else 200_000
+USAGE = """usage: oversize.py <propagation_node_hash> [bytes]
+
+Push a Resource of a given size at the propagation destination. Used to check
+that the size guard refuses oversize transfers, and to measure what the board
+can actually receive. Default 200000 bytes, well over the advertised limit.
+"""
+
+if len(sys.argv) < 2:
+    sys.exit(USAGE)
+try:
+    PN = bytes.fromhex(sys.argv[1])
+except ValueError:
+    sys.exit("error: propagation node hash must be hex\n\n" + USAGE)
+try:
+    SIZE = int(sys.argv[2]) if len(sys.argv) > 2 else 200_000
+except ValueError:
+    sys.exit("error: size must be an integer number of bytes\n\n" + USAGE)
 RNS.loglevel = RNS.LOG_WARNING
 r = RNS.Reticulum()
 
@@ -17,7 +32,17 @@ if not RNS.Transport.has_path(PN):
     for _ in range(150):
         if RNS.Transport.has_path(PN): break
         time.sleep(0.2)
+if not RNS.Transport.has_path(PN):
+    sys.exit(f"no path to {PN.hex()} -- is the node up and announcing?")
+
+# A known path does not imply a known identity: the destination can be routable
+# while its public key is not cached, and passing None into Destination() fails
+# somewhere far less obvious than here.
 ident = RNS.Identity.recall(PN)
+if ident is None:
+    sys.exit(f"no identity cached for {PN.hex()} -- wait for an announce "
+             f"(tools/lxmf/watch_announces.py) and retry")
+
 dest = RNS.Destination(ident, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "propagation")
 
 state = {"link": None, "res": None, "done": False}

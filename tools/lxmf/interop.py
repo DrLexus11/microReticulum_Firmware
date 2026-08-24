@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 # Interop test: real Python LXMF clients against the ESP32 propagation node.
 # Sender A pushes a message for recipient B (never online), then B downloads it.
-import os, sys, time, threading
+import os, sys, time
 import RNS, LXMF
 
-PN_HASH = bytes.fromhex(sys.argv[1])
+USAGE = """usage: interop.py <propagation_node_hash>
+
+Full round trip against a propagation node: sender A pushes a message for
+recipient B while B is offline, then B syncs and reads it back.
+
+  LXBODY_PREFIX=<long string>   force the Resource path instead of the packet
+                                path (payloads over ~319 bytes of content)
+"""
+
+if len(sys.argv) < 2:
+    sys.exit(USAGE)
+try:
+    PN_HASH = bytes.fromhex(sys.argv[1])
+except ValueError:
+    sys.exit("error: propagation node hash must be hex\n\n" + USAGE)
 BASE    = os.path.dirname(os.path.abspath(__file__))
 
 RNS.loglevel = RNS.LOG_INFO

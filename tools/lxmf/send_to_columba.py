@@ -4,8 +4,19 @@
 import os, sys, time
 import RNS, LXMF
 
-PN   = bytes.fromhex(sys.argv[1])
-DEST = bytes.fromhex(sys.argv[2])
+USAGE = """usage: send_to_columba.py <propagation_node_hash> <delivery_dest_hash> [body]
+
+Push one message for a real client into a node's store and stop, so the client
+can sync it later. Both hashes are 16-byte hex.
+"""
+
+if len(sys.argv) < 3:
+    sys.exit(USAGE)
+try:
+    PN   = bytes.fromhex(sys.argv[1])
+    DEST = bytes.fromhex(sys.argv[2])
+except ValueError:
+    sys.exit("error: hashes must be hex\n\n" + USAGE)
 BODY = sys.argv[3] if len(sys.argv) > 3 else "stored while you were away"
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.abspath(os.path.join(BASE, "..", "..", "state", "lxmf-columba-sender"))

@@ -2,7 +2,19 @@
 import sys, time, RNS
 RNS.loglevel = RNS.LOG_WARNING
 r = RNS.Reticulum()
-H = bytes.fromhex(sys.argv[1]); PATH = sys.argv[2] if len(sys.argv)>2 else "/page/index.mu"
+USAGE = """usage: fetch_page.py <destination_hash> [page_path]
+
+Fetch a NomadNet page from a node. Useful for checking a board is alive over
+the network rather than over serial. Default page is /page/index.mu.
+"""
+
+if len(sys.argv) < 2:
+    sys.exit(USAGE)
+try:
+    H = bytes.fromhex(sys.argv[1])
+except ValueError:
+    sys.exit("error: destination hash must be hex\n\n" + USAGE)
+PATH = sys.argv[2] if len(sys.argv) > 2 else "/page/index.mu"
 if not RNS.Transport.has_path(H):
     RNS.Transport.request_path(H)
     for _ in range(100):
