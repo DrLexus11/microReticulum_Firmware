@@ -18,6 +18,9 @@
 #include <microReticulum.h>
 #include "Provisioning.h"
 #include "RadioPresets.h"
+#if defined(LXMF_PROPAGATION_NODE)
+#include "LXMFPropagation.h"
+#endif
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
 #endif
@@ -242,6 +245,10 @@ RNS::Interface udp_interface(RNS::Type::NONE);
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
+#endif
+#if defined(LXMF_PROPAGATION_NODE)
+RNS::Destination lxmf_propagation_destination(RNS::Type::NONE);
+std::vector<LXMFEntry> lxmf_store_index;
 #endif
 #if defined(RNS_USE_FS)
   // CBA microStore
@@ -821,7 +828,16 @@ void setup() {
           // Quick reboot
           #if HAS_CONSOLE
             if (rtc_get_reset_reason(0) == POWERON_RESET) {
+              // Deliberate: a quick power cycle is the gesture for "give me the
+              // console". But it also fires after a UART flash, because the
+              // radio keeps its register contents through download mode and the
+              // following power-on looks identical to a double tap. The radio is
+              // then held off for the whole session, which presents as a node
+              // that joins the network over WiFi and is simply deaf on RF. Say
+              // so, rather than leaving it to be inferred from a dead LED.
               console_active = true;
+              printf("[boot] quick-reboot detected: console activated, radio held "
+                     "OFF for this session (full power-down clears this)\r\n");
             }
           #endif
         } else {
@@ -1283,6 +1299,30 @@ printf("[init] op_mode: %U\n", op_mode);
         // node's default policy.
         //nomadnet_destination.register_request_handler("/page/index.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/index.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+
+#if defined(LXMF_PROPAGATION_NODE)
+        // LXMF propagation node: store-and-forward so a message survives its
+        // recipient being asleep. See LXMFPropagation.h for why this is worth
+        // doing on a microcontroller at all.
+        lxmf_propagation_destination = RNS::Destination(
+          RNS::Transport::identity(),
+          RNS::Type::Destination::IN,
+          RNS::Type::Destination::SINGLE,
+          LXMF_APP_NAME,
+          LXMF_PN_ASPECT
+        );
+        // ALLOW_ALL matches Python: a propagation node accepts offers from
+        // anyone. It cannot read what it stores, so there is nothing to gate --
+        // abuse is bounded by the stamp cost and the store limits instead.
+        lxmf_propagation_destination.register_request_handler(
+          LXMF_OFFER_PATH, lxmf_offer_request, RNS::Type::Destination::ALLOW_ALL);
+        lxmf_propagation_destination.register_request_handler(
+          LXMF_GET_PATH, lxmf_message_get_request, RNS::Type::Destination::ALLOW_ALL);
+        printf("[lxmf] propagation node destination <%s>\n",
+               lxmf_propagation_destination.hash().toHex().c_str());
+        lxmf_propagation_destination.set_link_established_callback(lxmf_link_established);
+        lxmf_store_load();
+#endif
         // These pages expose device telemetry (heap, flash, interfaces, transport
         // metrics). Gated to the remote-management allow list by default; a peer
         // that has not identified is refused before serve_page is ever called,
@@ -3206,10 +3246,13 @@ static void heap_watch() {
       extern volatile uint32_t sx126x_preamble_count;
       extern volatile uint32_t sx126x_header_count;
       printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d pre=%lu hdr=%lu "
+             "locked=%d hwr=%d err=%d con=%d alock=%d "
              "f=%lu bw=%lu sf=%d txp=%d phy=%08lx\n",
              (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
              (int)current_rssi, (int)noise_floor, (int)radio_online,
              (unsigned long)sx126x_preamble_count, (unsigned long)sx126x_header_count,
+             (int)radio_locked, (int)hw_ready, (int)radio_error, (int)console_active,
+             (int)airtime_lock,
              (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
              (int)lora_txp, (unsigned long)lora_phy_hash());
     #elif MODEM == SX1276 || MODEM == SX1278
@@ -3247,6 +3290,9 @@ void loop() {
   radio_rx_watchdog();
   lora_config_consistency_watch();
   radio_commit_confirm_watch();
+#if defined(LXMF_PROPAGATION_NODE)
+  lxmf_propagation_announce_watch();
+#endif
 #endif
 
   #if MCU_VARIANT == MCU_NATIVE
