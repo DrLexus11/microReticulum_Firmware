@@ -164,6 +164,13 @@ class AnnounceShapeTests(unittest.TestCase):
         self.assertLessEqual(d["LXMF_PN_TRANSFER_LIMIT_BYTES"], store // 8)
         self.assertLessEqual(d["LXMF_PN_SYNC_LIMIT_BYTES"], store)
 
+    def test_message_count_is_primary_and_byte_cap_is_defense_in_depth(self):
+        d = firmware_defines()
+        maximum_valid_store = (
+            d["LXMF_PN_MAX_MESSAGES"] * d["LXMF_PN_TRANSFER_LIMIT_BYTES"]
+        )
+        self.assertLessEqual(maximum_valid_store, d["LXMF_PN_MAX_BYTES"])
+
     def test_limit_bytes_match_lxmf_decimal_kilobytes(self):
         # LXMF's Python reference multiplies advertised KB values by 1000.
         d = firmware_defines()

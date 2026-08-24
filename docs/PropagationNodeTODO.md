@@ -14,10 +14,16 @@ have been exercised. On the final 4096-byte response build, the deterministic
 rounds, with no retries, missing, unexpected or duplicate bodies.
 
 Rev 1 is the primary development board and is flashed with the final response
-budget/hash/reboot changes. Rev 2 is healthy on UART, its hash was repaired, and
-it advertises `4 KB / 8 KB / [16,3,18]`; it has not been reflashed with the last
-Rev-1-only response-budget and upload-helper edits. The current Rev 2 UART env
-builds successfully, so update it only when a targeted two-board test needs it.
+budget/hash/reboot changes. Rev 2 is also on the final UART build: target and
+running hashes match, radio state is on, and it advertises
+`4 KB / 8 KB / [16,3,18]`.
+
+The final two-board acceptance is conclusive. Columba attached to Rev 1 over TCP
+retrieved the exact labelled message from Rev 2; Rev 2 logged `/get` list,
+serve and purge, explicit radio sends, and `tx_calls` increasing from 7 to 13.
+Both boards remained healthy afterward. The byte-cap contract is also settled:
+128 messages is the primary production cap and 512 KiB is defense-in-depth,
+with an invariant test preventing those semantics from drifting silently.
 
 Useful checks:
 
@@ -27,50 +33,39 @@ Useful checks:
   ba03aa75f8a136b1b6a74667c755727e --messages 30 --body-bytes 64
 ```
 
-## Must before the PR is reviewable
+## PR acceptance status
 
-1. **Reticchat on iOS.** This is the client whose failure started the work and
-   whose background suspension makes store-and-forward necessary. The protocol
-   is proven with Columba and Python, but this client remains untested.
-2. **Decide the 512 KiB byte-cap contract.** With valid messages capped at 4000
-   bytes, `128 × 4000` is below 512 KiB, so the message-count cap always triggers
-   first. Either document the byte cap as defense-in-depth, lower it in a test
-   build and exercise it, or choose a production value that is independently
-   reachable.
-3. **Reflash Rev 2 only for the final two-board/LoRa acceptance run.** Build is
-   already green. After UART upload, power-cycle out of download mode and run
-   `fixhash`; the target now writes the hash and reboots automatically.
-
-## Should in the same PR
-
-4. **Adopt wall time from the first client request.** Announce time is uptime
-   because the board has no RTC. Message expiry and peer sync need a stable
-   timebase.
-5. **Message expiry.** Python expires after 30 days; the firmware currently
-   evicts only on capacity. Depends on item 4.
-6. **Provisioning controls** for enable/disable, occupancy, limits and manual
-   purge. A deployed store is not operator-inspectable today.
-7. **NomadNet occupancy page** as the operator-visible surface.
-8. **State the no-peering deployment consequence explicitly.** `/offer`
-   deliberately declines, protecting the 512 KiB local store from a Linux
-   node's backlog, but a RAD cannot hand its backlog to a rooftop blackbox.
-9. **Prove the LoRa route.** Watch Rev 2 `tx_calls` during a client sync; an
-    increment proves the response crossed RF instead of an IP route.
+**Complete.** Packet and Resource ingest, Python/Columba interoperability,
+multi-message batching, maximum-count eviction, final-build full-store sync,
+UART hash recovery, and a real Rev 1↔Rev 2 LoRa retrieval are all verified.
+Reticchat is unavailable; it remains useful client-matrix coverage but is not a
+blocker after exact-body delivery through stock Columba over the RF path.
 
 ## Follow-up work
 
-10. **Validate propagation stamps.** The firmware strips the proof but does not
+1. **Reticchat on iOS**, when it becomes available. Repeat the offline-store and
+   reopen/sync test as additional client coverage.
+2. **Adopt wall time from the first client request.** Announce time is uptime
+   because the board has no RTC. Message expiry and peer sync need a stable
+   timebase.
+3. **Message expiry.** Python expires after 30 days; the firmware currently
+   evicts only on capacity. Depends on item 2.
+4. **Provisioning controls** for enable/disable, occupancy, limits and manual
+   purge. A deployed store is not operator-inspectable today.
+5. **NomadNet occupancy page** as the operator-visible surface.
+6. **Validate propagation stamps.** The firmware strips the proof but does not
     validate it, so the advertised anti-spam cost is not enforced. Gate this on
     a Python-generated vector; a one-byte mismatch silently rejects real mail.
-11. **Make `ACCEPT_APP` effective in microReticulum.** Its resource callback
+7. **Make `ACCEPT_APP` effective in microReticulum.** Its resource callback
     returns `void` and `Link.cpp` accepts afterwards, so the firmware currently
     cancels oversize Resources at transfer start instead.
-12. **Investigate Resource stalls.** More than ~8 KB reliably times out, and a
+8. **Investigate Resource stalls.** More than ~8 KB reliably times out, and a
     near-8 KB `/get` response also stalled with 128 index entries. The production
     limits now avoid both cases, but windowing/retry/memory behavior deserves a
     separate upstream diagnosis.
-13. **Peer sync**, if the blackbox tier ultimately requires it. Resolve items 4
-    and 8 first.
+9. **Peer sync**, if the blackbox tier ultimately requires it. Resolve item 2
+   first. A RAD deliberately declines `/offer`, so it cannot currently hand its
+   local backlog to a rooftop blackbox.
 
 ## Lab facts worth preserving
 

@@ -195,6 +195,10 @@ than for lack of implementation, because accepting means taking a Linux node's
 500 MB backlog into a 512 KB flash store, evicting the local residents' messages
 that are the entire point of the node.
 
+The deployment consequence is explicit: a RAD keeps its local backlog but
+cannot hand that backlog to a rooftop Linux blackbox. Adding that capability is
+peer sync, not an accidental extension of `/offer`, and remains follow-up work.
+
 ### What it does
 
 | | |
@@ -247,7 +251,9 @@ propagation node is capacity-limited in a way a WiFi one is not, and this
 interacts with the shipping reminder in `Config.h`.
 
 **Untested against Sideband and Reticchat specifically.** *Closed 2026-08-24 for
-Columba on Android -- see §8. Reticchat on iOS is still untested.*
+Columba on Android, including a conclusive LoRa-hop acceptance run -- see §8.
+Reticchat is not currently available and remains follow-up client coverage, not
+a blocker on the propagation-node protocol proven by stock Columba and LXMF.*
 
 ---
 
@@ -296,17 +302,26 @@ inferred from reading its source.
 accepts a message for an absent recipient, stores it across the recipient being
 offline, and serves it on demand to a phone running stock client software.
 
-**Strongly indicated but not conclusively proven:** that the retrieval crossed
-the LoRa hop. Columba reaches Rev 2 only through Rev 1, and Rev 1's shortest
-route to Rev 2 is the radio (one hop, versus two via the Deck), with Rev 2
-showing live preamble and header counts throughout. But the Deck cannot observe
-Rev 1's routing decision, so this is inference. **To prove it:** watch Rev 2's
-`tx_calls` during a sync -- that counter increments only on LoRa transmit, so if
-it moves while `/get` is being served, the response went out over the radio.
+**Conclusive LoRa-hop acceptance, 2026-08-24:** Rev 2 was UART-flashed with the
+final build, power-cycled, repaired with `fixhash`, and queried directly. Radio
+state was `1`; target and running hashes both equalled
+`577d00d8ece2c56ee2ad553114b81ebee85e9e6d71372fd08abc0f4b32ccb6dc`.
+The Deck then stored `PR-RF-ACCEPT REV2->LEXUS 2026-08-24 run-01` on Rev 2 for
+Lexus/Columba while Columba was attached to Rev 1 over TCP and configured to use
+Rev 2 as its relay.
 
-**Still untested:** Reticchat on iOS, which is the client that exhibited the
-original failure. Multi-message truncation and full-store eviction are now
-covered in §10.
+UART capture showed the complete transaction: `/get list ... 2 message(s)`,
+`/get serving 2 of 2`, multiple `[radio] Sent ...` frames, then `/get purged 2`.
+Across that retrieval Rev 2's driver-level `tx_calls` rose from 7 to 13 and its
+preamble/header counters rose to 17/10, while the radio stayed online with
+`hw_ready=1` and no error. Columba displayed the exact labelled body and its
+acknowledgement removed it from the store. This proves stock-client
+store-and-forward across the Rev 1↔Rev 2 RF hop rather than merely inferring the
+route from path length.
+
+**Still untested:** Reticchat on iOS, which is not currently available.
+Multi-message truncation and full-store eviction are covered in §10; Reticchat
+is retained as follow-up client-matrix coverage.
 
 ## 9. A flashing hazard worth knowing about
 
@@ -465,8 +480,9 @@ response-budget proofs under maximum index load.
 The nominal 512 KiB byte cap cannot currently be the first cap reached by valid
 traffic: `128 × 4000 = 512000`, below `512 × 1024 = 524288`. The count cap will
 always fire first. The byte guard remains defense-in-depth for build overrides
-or future limit changes; testing it independently requires a deliberately
-lower-capacity test build.
+or future limit changes. This is now an explicit contract, covered by an
+invariant test; testing the eviction branch independently would require a
+deliberately lower-capacity test build.
 
 ### Repeatable board and flash checks
 

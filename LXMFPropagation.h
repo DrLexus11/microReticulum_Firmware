@@ -188,8 +188,11 @@ inline RNS::Bytes lxmf_pn_app_data() {
 #endif
 
 // Hard caps. Flash is 1.6 MB free on this board and LittleFS slows down with
-// very large directories, so bound both count and bytes. Oldest is evicted
-// first when either is hit.
+// very large directories, so bound both count and bytes. With today's 4000-byte
+// per-message ceiling, 128 messages total at most 512000 bytes, so the count cap
+// deliberately fires before the 512 KiB cap. The byte cap is defense-in-depth
+// for build overrides or future transfer-limit changes. Oldest is evicted first
+// when either is hit.
 #ifndef LXMF_PN_MAX_MESSAGES
 #define LXMF_PN_MAX_MESSAGES 128
 #endif

@@ -8,11 +8,13 @@ PN   = bytes.fromhex(sys.argv[1])
 DEST = bytes.fromhex(sys.argv[2])
 BODY = sys.argv[3] if len(sys.argv) > 3 else "stored while you were away"
 BASE = os.path.dirname(os.path.abspath(__file__))
+STATE = os.path.abspath(os.path.join(BASE, "..", "..", "state", "lxmf-columba-sender"))
+os.makedirs(STATE, exist_ok=True)
 
 RNS.loglevel = RNS.LOG_WARNING
 r = RNS.Reticulum()
 
-p = f"{BASE}/sender.id"
+p = os.path.join(STATE, "sender.id")
 ident = RNS.Identity.from_file(p) if os.path.isfile(p) else RNS.Identity()
 if not os.path.isfile(p): ident.to_file(p)
 
@@ -28,7 +30,7 @@ if recipient_identity is None:
     print("FAIL: cannot recall recipient identity -- needs an announce from the phone")
     sys.exit(1)
 
-router = LXMF.LXMRouter(identity=ident, storagepath=f"{BASE}/sender")
+router = LXMF.LXMRouter(identity=ident, storagepath=os.path.join(STATE, "router"))
 router.register_delivery_identity(ident, display_name="Deck")
 router.set_outbound_propagation_node(PN)
 
