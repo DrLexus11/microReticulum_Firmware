@@ -71,20 +71,42 @@
 #define LXMF_ERROR_NOT_FOUND     0xfd
 #define LXMF_ERROR_TIMEOUT       0xfe
 
-// Per-message limit we advertise, in kilobytes.
+// Per-message and per-sync limits we advertise, in kilobytes.
 //
-// Python defaults to 256 KB. One such message would consume a sixth of this
-// board's entire message store, so we advertise far less and expect text. The
-// limit travels in the announce, so clients honour it -- this is a supported
-// knob, not a local fudge.
+// These are not guesses. Measured on RAD-01 Rev 1 on 2026-08-24 by pushing
+// Resources of increasing size at the propagation destination:
+//
+//     8 KB   -> COMPLETE in 2.0 s
+//     16 KB  -> FAILED after 103.5 s (transfer stalls, then times out)
+//     32 KB  -> FAILED after 104.5 s
+//
+// So the practical inbound Resource ceiling on this hardware is between 8 and
+// 16 KB. We previously advertised a 64 KB sync limit, which the board could not
+// honour: real traffic only worked because messages are small, and a client
+// batching toward the advertised limit would have stalled for a minute and a
+// half and then failed. Advertising what we can actually do is the difference
+// between a slow node and a broken one.
+//
+// Python defaults to 256 KB per message; one of those would consume half this
+// board's entire store, so text-sized limits are right on both counts.
+//
+// Why the stall above ~8 KB is not yet understood -- window sizing, retries, or
+// memory during reassembly -- is worth chasing, but advertising honestly does
+// not depend on the answer.
 #ifndef LXMF_PN_TRANSFER_LIMIT_KB
-#define LXMF_PN_TRANSFER_LIMIT_KB 8
+#define LXMF_PN_TRANSFER_LIMIT_KB 4
 #endif
 
-// Per-sync limit, in kilobytes. Python uses 40x the transfer limit.
+// One sync may carry several messages; keep the total inside the measured
+// ceiling. Larger than the per-message limit so a client can still batch, but
+// not so large that it exceeds what a transfer completes at.
 #ifndef LXMF_PN_SYNC_LIMIT_KB
-#define LXMF_PN_SYNC_LIMIT_KB 64
+#define LXMF_PN_SYNC_LIMIT_KB 8
 #endif
+
+// Derived, and deliberately outside the guard above: if a build overrides the
+// kilobyte form, this must follow it rather than disappear.
+#define LXMF_PN_SYNC_LIMIT_BYTES ((size_t)LXMF_PN_SYNC_LIMIT_KB * 1024)
 
 // Proof-of-work cost demanded of senders. LXMPeer's minimum is 13; Python
 // defaults to 16. We only ever *validate* a stamp, which is one hash.
@@ -372,11 +394,24 @@ inline LXMFIngestResult lxmf_ingest_container(const RNS::Bytes& data) {
 		return r;
 	}
 	size_t count = unpacker.unpackArraySize();
+	size_t cumulative = 0;
 	for (size_t i = 0; i < count; i++) {
 		if (!unpacker.isBin()) { r.malformed = true; break; }
 		MsgPack::bin_t<uint8_t> blob_bin = unpacker.unpackBinary<uint8_t>();
 		RNS::Bytes blob(blob_bin.data(), blob_bin.size());
 		r.offered++;
+
+		// The per-message limit is enforced in lxmf_store_put(); this is the
+		// per-sync total. Without it a sender could stay under the message
+		// limit and still fill the store in one request.
+		cumulative += blob.size();
+		if (cumulative > LXMF_PN_SYNC_LIMIT_BYTES) {
+			printf("[lxmf] sync exceeded the %u byte limit at message %u, "
+			       "ignoring the rest\n",
+			       (unsigned)LXMF_PN_SYNC_LIMIT_BYTES, (unsigned)(i + 1));
+			r.rejected += (unsigned)(count - i);
+			break;
+		}
 
 		RNS::Bytes transient_id = lxmf_transient_id(blob);
 		if (!transient_id) { r.rejected++; continue; }
@@ -425,11 +460,33 @@ inline void lxmf_resource_concluded(const RNS::Resource& resource) {
 	       (unsigned)resource.data().size(), r.offered, r.stored, r.duplicate, r.rejected);
 }
 
+// An inbound Resource is the one thing a stranger can make this node allocate
+// for, and we advertise a 64 KB sync limit that nothing was previously checking.
+// Resource::accept() does not preallocate -- parts accumulate as they arrive --
+// so cancelling at the start of the transfer bounds the memory a sender can
+// cost us to roughly one window rather than the whole advertised size.
+//
+// Note this is deliberately NOT done with ACCEPT_APP. That strategy exists for
+// exactly this purpose in Python, but in this C++ port the resource callback
+// returns void and Link.cpp accepts unconditionally afterwards regardless, so
+// ACCEPT_APP would read as a refusal that never refuses. Cancelling on start is
+// honest about what actually stops the transfer. Making the callback's verdict
+// count is an upstream change to microReticulum; see docs/Messaging.md.
+inline void lxmf_resource_started(const RNS::Resource& resource) {
+	size_t advertised = resource.total_size();
+	if (advertised > LXMF_PN_SYNC_LIMIT_BYTES) {
+		printf("[lxmf] refusing %u byte resource, over the %u byte sync limit\n",
+		       (unsigned)advertised, (unsigned)LXMF_PN_SYNC_LIMIT_BYTES);
+		const_cast<RNS::Resource&>(resource).cancel();
+	}
+}
+
 // Every inbound link to the propagation destination must be ready for both
 // shapes before the client sends anything, so both are wired at establishment.
 inline void lxmf_link_established(RNS::Link& link) {
 	link.set_packet_callback(lxmf_propagation_packet);
 	link.set_resource_strategy(RNS::Type::Link::ACCEPT_ALL);
+	link.set_resource_started_callback(lxmf_resource_started);
 	link.set_resource_concluded_callback(lxmf_resource_concluded);
 }
 

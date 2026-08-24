@@ -337,3 +337,75 @@ Three changes came out of it:
 - The SX126x `[lora]` diagnostic now prints `locked/hwr/err/con/alock`, which the
   SX1276 branch already did. Their absence is precisely why this took source
   reading rather than log reading.
+
+---
+
+## 10. Hardening pass, 2026-08-24
+
+Work done to take the feature from "demonstrated" to "defensible".
+
+### The advertised sync limit was a promise the board could not keep
+
+Testing the new size guard meant pushing oversized Resources at a node, which
+incidentally measured what it can actually receive:
+
+| Resource | Outcome |
+| --- | --- |
+| 8 KB | COMPLETE in 2.0 s |
+| 16 KB | FAILED after 103.5 s (stalls, then times out) |
+| 32 KB | FAILED after 104.5 s |
+| 200 KB | refused in 12.5 s by the new guard |
+
+The practical inbound ceiling is between 8 and 16 KB, against an advertised sync
+limit of **64 KB**. Real traffic worked only because messages are small; a client
+batching toward the advertised figure would have stalled for a minute and a half
+and failed. Limits are now **4 KB per message, 8 KB per sync**, taken from the
+measurement rather than from Python's defaults.
+
+Two lessons worth keeping. First, an advertised limit is a contract, and one
+nobody checks is a trap for whoever believes it. Second, this was found only
+because a defensive change was tested for whether it *fires*, not just for
+whether it breaks anything -- the oversize test was written to prove the guard
+worked and found a pre-existing bug instead.
+
+**Not yet understood:** why transfers stall above ~8 KB -- window sizing,
+retries, or memory during reassembly. Advertising honestly does not depend on
+the answer, but the ceiling is lower than the hardware ought to manage.
+
+### Inbound Resources are now bounded
+
+Previously the link used `ACCEPT_ALL`, so any peer could make the node allocate
+for a Resource of any size -- the one remotely-triggerable memory risk in the
+feature. A 200 KB push is now refused in ~12 s and the node stays reachable.
+
+This is done by cancelling on transfer start, **not** with `ACCEPT_APP`. That
+strategy exists for exactly this in Python, but in this C++ port the resource
+callback returns `void` and `Link.cpp` accepts unconditionally afterwards
+regardless:
+
+```c
+_object->_callbacks._resource(resource_advertisement);
+// Currently the resource() callback returns void on the
+// C++ port; accept unconditionally if a callback is set.
+Resource::accept(packet, ...);
+```
+
+So `ACCEPT_APP` would read as a refusal that never refuses. `Resource::accept()`
+does not preallocate, so cancelling at start bounds the cost to about one
+window. **Follow-up:** make the callback's verdict count in microReticulum, which
+is an upstream change to our own fork.
+
+### Also in this pass
+
+- **The feature is enabled by default** for both RAD environments. It previously
+  existed only behind a flag no environment set, so a normal build shipped none
+  of it. Flash is 84.9% (Rev 1) and 85.6% (Rev 2).
+- **Per-sync total is enforced** during ingest, not just the per-message limit --
+  otherwise a sender could stay under the message limit and still fill the store
+  in one request.
+- **Contract tests** in `tests/test_lxmf_protocol.py` (15 tests) parse the
+  firmware's own `#define`s and assert them against the LXMF reference library:
+  stamp size, destination length, message overhead, stamp costs, request paths
+  and every error code. Since the failure mode here is silence, this fails loudly
+  if we drift or if upstream changes. Run them under the RNS virtualenv; they
+  skip cleanly without it.
