@@ -4,8 +4,9 @@ Why NomadNet pages were rock solid overnight while messaging was not, what the
 missing component is, and whether to implement a propagation node on the ESP32.
 
 Status: **Linux propagation node running as of 2026-08-24. ESP32 propagation
-node implemented and interop-verified the same day** -- see §7. Findings below
-are from an overnight two-room test unless marked otherwise.
+node implemented the same day, and verified serving a real Android client** --
+see §7. Findings below are from an overnight two-room test unless marked
+otherwise.
 
 ---
 
@@ -244,6 +245,95 @@ before peering is ever implemented.
 propagation node is capacity-limited in a way a WiFi one is not, and this
 interacts with the shipping reminder in `Config.h`.
 
-**Untested against Sideband and Reticchat specifically.** The Python LXMF library
-is the same protocol implementation those clients use, so the risk is low, but
-"low" is not "measured" -- and the phones are the actual product.
+**Untested against Sideband and Reticchat specifically.** *Closed 2026-08-24 for
+Columba on Android -- see §8. Reticchat on iOS is still untested.*
+
+---
+
+## 8. Verified against a real client
+
+2026-08-24. Columba on Android retrieved a message that had been stored on an
+ESP32 propagation node while the recipient was offline. This is the deliverable
+the whole exercise was for, tested against the client a resident would actually
+use rather than a Python stand-in.
+
+The run that mattered: a message addressed to the phone was pushed into **Rev 2**
+(`41fc2ab5...`) with the phone not fetching, then Columba -- attached to **Rev 1**
+over TCP -- was pointed at Rev 2 and synced, and the message arrived.
+
+### The control that made the result readable
+
+An earlier sync returned nothing, which looked like our node failing. It was not.
+Two messages were queued, one on our node and one on the Linux `lxmd`, with
+distinct bodies; the phone received only the `lxmd` one. That isolated the cause
+to **client configuration** -- Columba was still pointed at the Deck -- rather
+than to the store-and-forward implementation, which had never been asked for
+anything.
+
+Worth keeping as a habit: when a client reports "nothing", the useful question is
+not "is our node broken" but "which node did it actually ask". A second labelled
+message through a known-good node answers it in one round trip.
+
+### Independent confirmation of wire format
+
+The Linux `lxmd` message store was inspected directly while holding a message
+for the same phone:
+
+```
+b4243d19536572f5aec5b5f41a31638c  272 bytes  cc5d5c33..._1787...
+```
+
+The filename is the transient id and the first 16 bytes of the blob are the
+destination hash -- exactly what our implementation derives, with the transient
+id matching what the sending client computed. The stamp-stripping split in §7 is
+therefore confirmed against Python's own on-disk representation, not just
+inferred from reading its source.
+
+### What this does and does not establish
+
+**Established:** an ESP32 node announces itself so a real client will use it,
+accepts a message for an absent recipient, stores it across the recipient being
+offline, and serves it on demand to a phone running stock client software.
+
+**Strongly indicated but not conclusively proven:** that the retrieval crossed
+the LoRa hop. Columba reaches Rev 2 only through Rev 1, and Rev 1's shortest
+route to Rev 2 is the radio (one hop, versus two via the Deck), with Rev 2
+showing live preamble and header counts throughout. But the Deck cannot observe
+Rev 1's routing decision, so this is inference. **To prove it:** watch Rev 2's
+`tx_calls` during a sync -- that counter increments only on LoRa transmit, so if
+it moves while `/get` is being served, the response went out over the radio.
+
+**Still untested:** Reticchat on iOS, which is the client that exhibited the
+original failure, and multi-message and eviction behaviour under a full store.
+
+## 9. A flashing hazard worth knowing about
+
+Found the hard way, and fixed in `extra_script.py` on 2026-08-24.
+
+After an upload the build script writes the firmware's SHA-256 into EEPROM over
+KISS. `device_init()` compares that against the running partition, and a mismatch
+means `hw_ready = 0` and **the radio never starts**. The `-uart` environments
+upload with `--after=no_reset`, so the board is still in the bootloader when that
+write happens: it never lands, and the stored hash stays at the *previous*
+firmware's value.
+
+The failure is nasty because it does not look like a radio failure. The node
+boots, joins over WiFi, announces, and serves NomadNet pages perfectly, while
+being completely deaf and mute on RF -- with nothing in the log to say why. It
+cost most of an afternoon, and the thing that finally identified it was forcing
+`startRadio()` to explain itself over KISS:
+
+```
+[radio] startRadio BLOCKED locked=0 hwr=0
+```
+
+Three changes came out of it:
+
+- The post-upload step now **detects** an env that leaves the board in the
+  bootloader and refuses to pretend it wrote the hash, printing what will happen
+  and the exact command to fix it.
+- A `fixhash` target writes the built firmware's hash to an already-running
+  board, for use after power-cycling out of download mode.
+- The SX126x `[lora]` diagnostic now prints `locked/hwr/err/con/alock`, which the
+  SX1276 branch already did. Their absence is precisely why this took source
+  reading rather than log reading.

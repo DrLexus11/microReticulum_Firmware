@@ -86,7 +86,10 @@ def post_upload(source, target, env):
         # device provisioning is incomplete and only currently appropriate for 915MHz T-Beam
         #device_wipe(env)
         device_provision(env)
-        firmware_hash(source, env)
+        if upload_leaves_device_in_bootloader(env):
+            firmware_hash_write_notice(None, env)
+        else:
+            firmware_hash(source, env)
         # firmware pacakaging is incomplete due to missing console image
         #firmware_package(env)
     elif ("nordicnrf52" in platform):
@@ -122,6 +125,40 @@ def device_wipe(env):
     print("--- Wiping Device ---")
     env.Execute("rnodeconf --eeprom-wipe " + env.subst("$UPLOAD_PORT"))
 
+def upload_leaves_device_in_bootloader(env):
+    """True when the upload flags stop the board rebooting into the app.
+
+    The hash below is written over KISS, which only the running firmware
+    answers. An env that uploads with --after=no_reset leaves the ROM
+    bootloader on the port instead, so the write goes nowhere -- silently.
+    """
+    try:
+        flags = env.GetProjectOption("upload_flags")
+    except Exception:
+        return False
+    if not flags:
+        return False
+    if isinstance(flags, str):
+        flags = flags.split()
+    return any("--after" in f and "no_reset" in f for f in flags)
+
+def firmware_hash_write_notice(hex_hash, env):
+    port_path = env.subst("$UPLOAD_PORT")
+    print("")
+    print("*** FIRMWARE HASH NOT WRITTEN ***")
+    print("This environment uploads with --after=no_reset, so the board is still")
+    print("in the bootloader and cannot receive the hash over KISS.")
+    print("")
+    print("Until the hash is stored, device_init() fails its firmware check,")
+    print("hw_ready stays 0 and the radio WILL NOT START. The node still joins")
+    print("over WiFi and serves pages, so it looks healthy while being deaf on RF.")
+    print("")
+    print("Power-cycle the board out of download mode, then run:")
+    print("")
+    print("    pio run -e %s -t fixhash --upload-port %s"
+          % (env.subst("$PIOENV"), port_path))
+    print("")
+
 def device_set_firmware_hash(firmware_hash, env):
     import serial
 
@@ -137,6 +174,31 @@ def device_set_firmware_hash(firmware_hash, env):
         port.write(frame)
         port.flush()
         time.sleep(1)
+
+def target_fixhash(target, source, env):
+    """Write the built firmware's hash to a board that is already running.
+
+    The companion to the notice above: use it after power-cycling a board that
+    was flashed over UART.
+    """
+    build_dir = env.subst("$BUILD_DIR")
+    prog = env.subst("$PROGNAME")
+    source_file = "%s/%s.bin" % (build_dir, prog)
+    print("--- Writing Firmware Hash to a running device ---")
+    print("source_file:", source_file)
+    firmware_data = open(source_file, "rb").read()
+    try:
+        calc_hash = esp_image_sha256(firmware_data)
+    except ValueError as error:
+        print("Unable to calculate firmware hash: %s" % error)
+        return
+    print("firmware_hash:", calc_hash.hex())
+    print("NOTE: this must be the same build that is actually on the board. If the")
+    print("      sources changed since the flash, re-flash rather than running this,")
+    print("      or the stored hash will not match the running image and hw_ready")
+    print("      will stay 0 for a different reason.")
+    device_set_firmware_hash(calc_hash, env)
+    print("Hash written. Reboot the board for device_init() to re-validate it.")
 
 def device_provision(env):
     # Device provision
@@ -365,6 +427,15 @@ else:
         ],
         title="Package",
         description="Package native daemon for delivery"
+    )
+
+if platform == "espressif32":
+    env.AddCustomTarget(
+        name="fixhash",
+        dependencies="$BUILD_DIR/${PROGNAME}.bin",
+        actions=[target_fixhash],
+        title="Write Firmware Hash",
+        description="Write the built firmware's hash to an already-running board"
     )
 
 if env.GetProjectOption("custom_variant") in ("impr_rad01_rev1", "impr_rad01_rev2"):
