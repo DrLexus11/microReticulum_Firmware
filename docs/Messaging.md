@@ -4,8 +4,8 @@ Why NomadNet pages were rock solid overnight while messaging was not, what the
 missing component is, and whether to implement a propagation node on the ESP32.
 
 Status: **Linux propagation node running as of 2026-08-24. ESP32 propagation
-node recommended but not started.** Findings below are from an overnight
-two-room test unless marked otherwise.
+node implemented and interop-verified the same day** -- see §7. Findings below
+are from an overnight two-room test unless marked otherwise.
 
 ---
 
@@ -145,7 +145,8 @@ other if the blackbox dies rather than the building going silent.
 1. **Prove the architecture** with the Linux propagation node now running.
    Specifically: send to the iOS device with Reticchat closed, then open it. If
    the message arrives on open, the diagnosis is confirmed.
-2. **ESP32 propagation node**, scoped as §5.
+2. **ESP32 propagation node**, scoped as §5. *Done -- see §7 for what the scope
+   got wrong and how it was verified.*
 3. **IFAC**, unless procurement talks harden first.
 
 Step 1 exists to de-risk step 2. If store-and-forward turns out not to be the
@@ -155,3 +156,94 @@ fix, an ESP propagation node would have been the wrong thing to build.
 both phones, so tonight tests the LXMF layer but *not* propagation across the
 LoRa hop. Testing that needs the node on the far side of the radio -- which is
 what a rooftop blackbox will be, and deserves a deliberate test once one exists.
+
+---
+
+## 7. The ESP32 propagation node, as built
+
+Implemented 2026-08-24 behind `-DLXMF_PROPAGATION_NODE`, in `LXMFPropagation.h`.
+A client can push a message to a RAD and a different client can collect it
+later, with neither online at the same moment.
+
+### What reading the Python changed
+
+The scope in §5 was close but wrong in three places, each found by reading
+`LXMRouter.py` rather than inferring the protocol from the announce format. All
+three would have produced silent failures rather than errors.
+
+**Short messages are not Resources.** LXMF promotes a message to a Resource only
+above 319 bytes of content; below that it goes as a plain packet on the link.
+Ordinary texts are therefore *not* on the path §5 assumed was already done, and
+a node handling only Resources would appear to work while quietly ignoring most
+real traffic. Worse, the packet path must `prove()` the packet -- that proof is
+what turns the sender's "sent" into "delivered", so omitting it reproduces
+exactly the not-delivered symptom of §1. Both paths are now implemented and
+share one ingest routine.
+
+**Every message carries a stamp.** The sender appends a 32-byte proof-of-work
+stamp sized to the cost we advertise. The transient id is the hash of the
+message *without* the stamp, while the stored blob keeps it and `/get` strips it
+again on the way out. Hash the wrong span and every id the node advertises is
+one no client recognises -- messages that sync but never arrive.
+
+**`/offer` is peer-to-peer only.** Clients never call it; they push straight onto
+the link. §5 was right that peering could be dropped from v1, but the reason
+matters more than expected: the node now *declines* offers deliberately rather
+than for lack of implementation, because accepting means taking a Linux node's
+500 MB backlog into a 512 KB flash store, evicting the local residents' messages
+that are the entire point of the node.
+
+### What it does
+
+| | |
+| --- | --- |
+| Announce | `lxmf.propagation`, advertising 8 KB per transfer, 64 KB per sync, stamp costs 16/3/18 |
+| Receive | link packet **and** Resource, both proving or storing as appropriate |
+| Store | LittleFS, capped at 128 messages / 512 KB, oldest evicted first |
+| `/get` | list, download, and purge, all scoped to the requesting identity |
+| `/offer` | declines -- no peer sync in v1 |
+
+Ownership on `/get` is checked against the delivery destination derived from the
+identity proved on the link, not from anything in the request, so one client
+cannot read or delete another's mail.
+
+### Verification
+
+Against **real Python LXMF clients**, which is what §5's risk list demanded --
+node-to-node testing would have proven nothing about bit-compatibility. Sender A
+pushes a message for recipient B while B is offline; B then syncs and reads it.
+
+- Five round trips on the packet path (270-byte payloads), all delivered and
+  read back with matching content.
+- Two round trips on the Resource path (782-byte payloads). A payload that size
+  cannot arrive as a link packet, so a successful round trip is itself proof the
+  Resource handler ran.
+- Node-side log confirms the full sequence: `client packet: 1 offered, 1 stored`
+  -> `/get list ... 1 message(s)` -> `/get serving 1 of 1` -> `/get purged 1 ...
+  0 held`.
+- The announce parses as a valid propagation node under LXMF's own validator.
+
+### Known gaps
+
+**Stamps are stripped but not validated.** The node does not check the
+proof-of-work. This is deliberately the permissive direction -- it never rejects
+a legitimate message -- but it means the anti-spam cost we advertise is not
+enforced, and a sender could append 32 arbitrary bytes. Validating costs one
+1000-round HKDF workblock (256 KB, streamable) plus one hash per message, which
+is affordable on an S3; the reason to defer it is that a one-byte divergence
+from Python would silently reject real messages, so it wants a cross-checked
+test vector before it goes in.
+
+**The announce timebase is uptime, not wall time.** The board has no RTC. Nothing
+observed depends on it -- clients accept the announce and sync correctly -- but
+peer sync would, and it should be fixed by adopting time from a client request
+before peering is ever implemented.
+
+**No duty-cycle accounting for sync traffic.** Syncing over LoRa is expensive and
+`RADIO_DUTY_CYCLE_LONGTERM` is still `0.0` for lab use. A LoRa-reachable
+propagation node is capacity-limited in a way a WiFi one is not, and this
+interacts with the shipping reminder in `Config.h`.
+
+**Untested against Sideband and Reticchat specifically.** The Python LXMF library
+is the same protocol implementation those clients use, so the risk is low, but
+"low" is not "measured" -- and the phones are the actual product.
