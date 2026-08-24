@@ -52,6 +52,8 @@
 
 #include <microReticulum.h>
 #include <MsgPack.h>
+#include <algorithm>
+#include <vector>
 
 #define LXMF_APP_NAME    "lxmf"
 #define LXMF_PN_ASPECT   "propagation"
@@ -157,6 +159,12 @@ inline RNS::Bytes lxmf_pn_app_data() {
 #define LXMF_TRANSIENT_ID_LEN 32
 #define LXMF_DESTINATION_LEN  16
 
+// Every propagated message carries a proof-of-work stamp appended to the end,
+// sized as one full hash. LXMF_OVERHEAD is Python's minimum plausible message:
+// 2 destination hashes + a signature + a timestamp + msgpack structure.
+#define LXMF_STAMP_SIZE 32
+#define LXMF_OVERHEAD   112
+
 struct LXMFEntry {
 	RNS::Bytes transient_id;      // sha256 of the blob
 	RNS::Bytes destination_hash;  // blob[0:16] -- who it is for
@@ -208,11 +216,22 @@ inline bool lxmf_store_evict_oldest() {
 	return true;
 }
 
-// Store one message blob. Returns false if it was rejected or already held.
+// The transient id is the hash of the message *without* its stamp, while the
+// stored blob keeps the stamp -- /get strips it again on the way out. This split
+// is the single most consequential detail in this file: hash the wrong span and
+// every id we advertise is one no client recognises, which presents as messages
+// that sync but never arrive rather than as an error.
+inline RNS::Bytes lxmf_transient_id(const RNS::Bytes& blob) {
+	if (blob.size() <= LXMF_STAMP_SIZE) return RNS::Bytes();
+	return RNS::Identity::full_hash(blob.left(blob.size() - LXMF_STAMP_SIZE));
+}
+
+// Store one message blob, stamp included. Returns false if it was rejected or
+// already held.
 inline bool lxmf_store_put(const RNS::Bytes& blob) {
-	if (blob.size() < LXMF_DESTINATION_LEN) {
-		printf("[lxmf] rejecting %u-byte blob: shorter than a destination hash\n",
-		       (unsigned)blob.size());
+	if (blob.size() <= LXMF_OVERHEAD + LXMF_STAMP_SIZE) {
+		printf("[lxmf] rejecting %u-byte blob: below the %d-byte minimum message\n",
+		       (unsigned)blob.size(), LXMF_OVERHEAD + LXMF_STAMP_SIZE);
 		return false;
 	}
 	if (blob.size() > (size_t)LXMF_PN_TRANSFER_LIMIT_KB * 1024) {
@@ -223,7 +242,7 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 		return false;
 	}
 
-	RNS::Bytes transient_id = RNS::Identity::full_hash(blob);
+	RNS::Bytes transient_id = lxmf_transient_id(blob);
 	if (lxmf_store_has(transient_id)) return false;   // already held; not an error
 
 	while (lxmf_store_index.size() >= LXMF_PN_MAX_MESSAGES ||
@@ -302,42 +321,263 @@ inline RNS::Bytes lxmf_pn_error(uint8_t code) {
 
 // /offer -- a client (or peer node) lists transient ids it holds, and we reply
 // with which of them we want. Phase 1 stub: accept nothing.
+// --- Ingest ----------------------------------------------------------------
+//
+// Both inbound paths carry the same payload: msgpack [timestamp, [blobs]].
+// A client sends it as a plain link packet when it fits (LXMF caps that at 319
+// bytes of content, so most short texts take this path) and as a Resource when
+// it does not. Only the framing differs, so both funnel through here.
+//
+// The timestamp is the *sender's* clock. We deliberately do not adopt it: a node
+// with no RTC that trusted any client's clock would let one misconfigured phone
+// rewrite the age of every stored message. Entries are aged by our own receive
+// time instead.
+
+struct LXMFIngestResult {
+	unsigned offered    = 0;
+	unsigned stored     = 0;
+	unsigned duplicate  = 0;
+	unsigned rejected   = 0;
+	bool     malformed  = false;
+	// Accepted means "this message is now held here", which includes one we
+	// already had. That distinction decides whether we acknowledge to the
+	// sender, and a duplicate is emphatically not a failure to deliver.
+	unsigned accepted() const { return stored + duplicate; }
+};
+
+inline LXMFIngestResult lxmf_ingest_container(const RNS::Bytes& data) {
+	LXMFIngestResult r;
+	MsgPack::Unpacker unpacker;
+	unpacker.feed(data.data(), data.size());
+
+	if (!unpacker.isArray() || unpacker.unpackArraySize() < 2) {
+		r.malformed = true;
+		return r;
+	}
+	// Element 0 is the sender's timebase; step past it whatever its numeric type.
+	if      (unpacker.isFloat32()) { (void)unpacker.unpackFloat32(); }
+	else if (unpacker.isFloat64()) { (void)unpacker.unpackFloat64(); }
+	else if (unpacker.isUInt())    { (void)unpacker.unpackUInt64(); }
+	else if (unpacker.isInt())     { (void)unpacker.unpackInt64(); }
+	else                           { (void)unpacker.unpackNil(); }
+
+	if (!unpacker.isArray()) {
+		r.malformed = true;
+		return r;
+	}
+	size_t count = unpacker.unpackArraySize();
+	for (size_t i = 0; i < count; i++) {
+		if (!unpacker.isBin()) { r.malformed = true; break; }
+		MsgPack::bin_t<uint8_t> blob_bin = unpacker.unpackBinary<uint8_t>();
+		RNS::Bytes blob(blob_bin.data(), blob_bin.size());
+		r.offered++;
+
+		RNS::Bytes transient_id = lxmf_transient_id(blob);
+		if (!transient_id) { r.rejected++; continue; }
+		if (lxmf_store_has(transient_id)) { r.duplicate++; continue; }
+		if (lxmf_store_put(blob)) r.stored++; else r.rejected++;
+	}
+	return r;
+}
+
+// --- Inbound message transfer ----------------------------------------------
+
+// The packet path. This is the one that carries ordinary short messages from a
+// phone, and proving the packet is what turns the sender's "sent" into
+// "delivered" -- an unproven packet is exactly the silent non-delivery seen in
+// the overnight test, so the acknowledgement matters as much as the storing.
+inline void lxmf_propagation_packet(const RNS::Bytes& plaintext, const RNS::Packet& packet) {
+	LXMFIngestResult r = lxmf_ingest_container(plaintext);
+	if (r.malformed && r.offered == 0) {
+		printf("[lxmf] malformed propagation packet (%u bytes), ignoring\n",
+		       (unsigned)plaintext.size());
+		return;
+	}
+	printf("[lxmf] client packet: %u offered, %u stored, %u duplicate, %u rejected\n",
+	       r.offered, r.stored, r.duplicate, r.rejected);
+
+	if (r.offered > 0 && r.accepted() == r.offered) {
+		// const_cast mirrors the callback contract: RNS hands the packet in as
+		// const, but proving is the documented response to a delivery.
+		const_cast<RNS::Packet&>(packet).prove();
+	}
+	else {
+		printf("[lxmf] not proving: %u of %u message(s) could not be stored\n",
+		       r.offered - r.accepted(), r.offered);
+	}
+}
+
+// The resource path, for messages too large for a single link packet.
+inline void lxmf_resource_concluded(const RNS::Resource& resource) {
+	if (resource.status() != RNS::Type::Resource::COMPLETE) {
+		printf("[lxmf] inbound resource ended in status %u, discarding\n",
+		       (unsigned)resource.status());
+		return;
+	}
+	LXMFIngestResult r = lxmf_ingest_container(resource.data());
+	printf("[lxmf] client resource (%u bytes): %u offered, %u stored, %u duplicate, %u rejected\n",
+	       (unsigned)resource.data().size(), r.offered, r.stored, r.duplicate, r.rejected);
+}
+
+// Every inbound link to the propagation destination must be ready for both
+// shapes before the client sends anything, so both are wired at establishment.
+inline void lxmf_link_established(RNS::Link& link) {
+	link.set_packet_callback(lxmf_propagation_packet);
+	link.set_resource_strategy(RNS::Type::Link::ACCEPT_ALL);
+	link.set_resource_concluded_callback(lxmf_resource_concluded);
+}
+
+// --- Request handlers ------------------------------------------------------
+
+// /offer is the peer-to-peer sync path: another propagation node offering us its
+// message backlog. Clients never call it -- they push messages straight onto the
+// link -- so declining costs us nothing a phone depends on.
+//
+// We decline deliberately rather than for lack of implementation. Accepting
+// means taking a Linux node's 500 MB backlog into a 512 KB flash store, where it
+// would immediately evict the local residents' messages that are the entire
+// point of this node. `false` is the protocol's "I want none of these", so the
+// offering peer keeps them and stays free to retry.
 inline RNS::Bytes lxmf_offer_request(
 	const RNS::Bytes& path, const RNS::Bytes& data, const RNS::Bytes& request_id,
 	const RNS::Bytes& link_id, const RNS::Identity& remote_identity, double requested_at
 ) {
-	// Python returns ERROR_NO_IDENTITY when the peer has not identified. The
-	// caller's identity is what keys the message store, so this is not optional.
-	if (!remote_identity) {
-		printf("[lxmf] /offer from unidentified peer, refusing\n");
-		return lxmf_pn_error(LXMF_ERROR_NO_IDENTITY);
-	}
-	printf("[lxmf] /offer from <%s> (%u bytes)\n",
-	       remote_identity.hash().toHex().c_str(), (unsigned)data.size());
-
-	// Phase 1: the store is not implemented, so want nothing. `false` is a
-	// legitimate protocol response ("I want none of these"), which leaves the
-	// client's messages queued with it rather than failing -- the honest
-	// behaviour for a node that cannot yet hold them.
+	if (!remote_identity) return lxmf_pn_error(LXMF_ERROR_NO_IDENTITY);
+	printf("[lxmf] /offer from a peer declined: this node does not accept peer sync\n");
 	MsgPack::Packer packer;
 	packer.serialize(false);
 	return RNS::Bytes(packer.data(), packer.size());
 }
 
-// /get -- a client asks what we are holding for it, collects, and purges.
-// Phase 1 stub: we hold nothing, so return an empty list.
+// /get serves a client its own waiting messages. Request is [want, have] with an
+// optional third element giving the client's transfer limit in kilobytes:
+//
+//   want == nil and have == nil  ->  reply with the list of ids we hold for them
+//   have = [ids]                 ->  the client has these; delete them
+//   want = [ids]                 ->  reply with those messages
+//
+// A message belongs to whoever owns the matching *delivery* destination, which
+// is derived from the identity the client proved on this link. Deriving it here
+// rather than trusting anything in the request is what stops one client
+// downloading another's mail.
 inline RNS::Bytes lxmf_message_get_request(
 	const RNS::Bytes& path, const RNS::Bytes& data, const RNS::Bytes& request_id,
 	const RNS::Bytes& link_id, const RNS::Identity& remote_identity, double requested_at
 ) {
-	if (!remote_identity) {
-		printf("[lxmf] /get from unidentified peer, refusing\n");
-		return lxmf_pn_error(LXMF_ERROR_NO_IDENTITY);
+	if (!remote_identity) return lxmf_pn_error(LXMF_ERROR_NO_IDENTITY);
+
+	RNS::Bytes client = RNS::Destination::hash(remote_identity, LXMF_APP_NAME, "delivery");
+
+	MsgPack::Unpacker unpacker;
+	unpacker.feed(data.data(), data.size());
+	if (!unpacker.isArray()) return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
+	size_t fields = unpacker.unpackArraySize();
+	if (fields < 2) return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
+
+	// --- element 0: wanted ids (or nil) ---
+	bool want_is_nil = unpacker.isNil();
+	std::vector<RNS::Bytes> wanted;
+	if (want_is_nil) { (void)unpacker.unpackNil(); }
+	else if (unpacker.isArray()) {
+		size_t n = unpacker.unpackArraySize();
+		for (size_t i = 0; i < n && unpacker.isBin(); i++) {
+			MsgPack::bin_t<uint8_t> id = unpacker.unpackBinary<uint8_t>();
+			wanted.push_back(RNS::Bytes(id.data(), id.size()));
+		}
 	}
-	printf("[lxmf] /get from <%s>\n", remote_identity.hash().toHex().c_str());
+	else return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
+
+	// --- element 1: ids the client already holds, to be purged ---
+	bool have_is_nil = unpacker.isNil();
+	std::vector<RNS::Bytes> have;
+	if (have_is_nil) { (void)unpacker.unpackNil(); }
+	else if (unpacker.isArray()) {
+		size_t n = unpacker.unpackArraySize();
+		for (size_t i = 0; i < n && unpacker.isBin(); i++) {
+			MsgPack::bin_t<uint8_t> id = unpacker.unpackBinary<uint8_t>();
+			have.push_back(RNS::Bytes(id.data(), id.size()));
+		}
+	}
+	else return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
+
+	// --- element 2 (optional): the client's transfer limit, in kilobytes ---
+	size_t client_limit = (size_t)LXMF_PN_SYNC_LIMIT_KB * 1000;
+	if (fields >= 3) {
+		double kb = 0;
+		if      (unpacker.isFloat32()) kb = unpacker.unpackFloat32();
+		else if (unpacker.isFloat64()) kb = unpacker.unpackFloat64();
+		else if (unpacker.isUInt())    kb = (double)unpacker.unpackUInt64();
+		else if (unpacker.isInt())     kb = (double)unpacker.unpackInt64();
+		if (kb > 0) client_limit = (size_t)(kb * 1000);
+	}
+
+	// A listing request: both fields nil.
+	if (want_is_nil && have_is_nil) {
+		std::vector<const LXMFEntry*> mine;
+		for (const auto& e : lxmf_store_index) {
+			if (e.destination_hash == client) mine.push_back(&e);
+		}
+		// Python sorts smallest first so a constrained client gets the most
+		// messages it can rather than stalling on one large one.
+		std::sort(mine.begin(), mine.end(),
+		          [](const LXMFEntry* a, const LXMFEntry* b) { return a->size < b->size; });
+
+		printf("[lxmf] /get list for <%s>: %u message(s)\n",
+		       client.toHex().c_str(), (unsigned)mine.size());
+
+		MsgPack::Packer packer;
+		packer.serialize(MsgPack::arr_size_t(mine.size()));
+		for (const LXMFEntry* e : mine) {
+			packer.serialize(MsgPack::bin_t<uint8_t>(
+				e->transient_id.data(), e->transient_id.data() + e->transient_id.size()));
+		}
+		return RNS::Bytes(packer.data(), packer.size());
+	}
+
+	// Purge what the client confirms it already has. Ownership is checked here
+	// too, so a client cannot delete someone else's mail.
+	unsigned purged = 0;
+	for (const RNS::Bytes& tid : have) {
+		for (size_t i = 0; i < lxmf_store_index.size(); i++) {
+			const LXMFEntry& e = lxmf_store_index[i];
+			if (e.transient_id != tid || e.destination_hash != client) continue;
+			RNS::Utilities::OS::remove_file(lxmf_entry_path(e.transient_id, e.received).c_str());
+			lxmf_store_index.erase(lxmf_store_index.begin() + i);
+			purged++;
+			break;
+		}
+	}
+	if (purged) {
+		printf("[lxmf] /get purged %u message(s) for <%s>, %u held\n",
+		       purged, client.toHex().c_str(), (unsigned)lxmf_store_index.size());
+	}
+
+	// Serve the wanted messages, stamps stripped, honouring the client's limit.
+	std::vector<RNS::Bytes> out;
+	size_t cumulative = 24;             // highest reasonable structure overhead
+	const size_t per_message_overhead = 16;
+	for (const RNS::Bytes& tid : wanted) {
+		for (const auto& e : lxmf_store_index) {
+			if (e.transient_id != tid || e.destination_hash != client) continue;
+			RNS::Bytes blob;
+			std::string fp = lxmf_entry_path(e.transient_id, e.received);
+			if (RNS::Utilities::OS::read_file(fp.c_str(), blob) <= LXMF_STAMP_SIZE) break;
+			size_t next = cumulative + blob.size() + per_message_overhead;
+			if (next > client_limit) break;     // client re-requests the rest
+			out.push_back(blob.left(blob.size() - LXMF_STAMP_SIZE));
+			cumulative = next;
+			break;
+		}
+	}
+
+	printf("[lxmf] /get serving %u of %u requested message(s) to <%s>\n",
+	       (unsigned)out.size(), (unsigned)wanted.size(), client.toHex().c_str());
 
 	MsgPack::Packer packer;
-	packer.serialize(MsgPack::arr_size_t(0));
+	packer.serialize(MsgPack::arr_size_t(out.size()));
+	for (const RNS::Bytes& m : out) {
+		packer.serialize(MsgPack::bin_t<uint8_t>(m.data(), m.data() + m.size()));
+	}
 	return RNS::Bytes(packer.data(), packer.size());
 }
 

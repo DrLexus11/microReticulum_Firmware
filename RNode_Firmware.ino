@@ -1311,6 +1311,7 @@ printf("[init] op_mode: %U\n", op_mode);
           LXMF_GET_PATH, lxmf_message_get_request, RNS::Type::Destination::ALLOW_ALL);
         printf("[lxmf] propagation node destination <%s>\n",
                lxmf_propagation_destination.hash().toHex().c_str());
+        lxmf_propagation_destination.set_link_established_callback(lxmf_link_established);
         lxmf_store_load();
 #endif
         // These pages expose device telemetry (heap, flash, interfaces, transport
