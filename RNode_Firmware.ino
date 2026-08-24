@@ -18,6 +18,9 @@
 #include <microReticulum.h>
 #include "Provisioning.h"
 #include "RadioPresets.h"
+#if defined(LXMF_PROPAGATION_NODE)
+#include "LXMFPropagation.h"
+#endif
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
 #endif
@@ -242,6 +245,10 @@ RNS::Interface udp_interface(RNS::Type::NONE);
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
+#endif
+#if defined(LXMF_PROPAGATION_NODE)
+RNS::Destination lxmf_propagation_destination(RNS::Type::NONE);
+std::vector<LXMFEntry> lxmf_store_index;
 #endif
 #if defined(RNS_USE_FS)
   // CBA microStore
@@ -1283,6 +1290,29 @@ printf("[init] op_mode: %U\n", op_mode);
         // node's default policy.
         //nomadnet_destination.register_request_handler("/page/index.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/index.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+
+#if defined(LXMF_PROPAGATION_NODE)
+        // LXMF propagation node: store-and-forward so a message survives its
+        // recipient being asleep. See LXMFPropagation.h for why this is worth
+        // doing on a microcontroller at all.
+        lxmf_propagation_destination = RNS::Destination(
+          RNS::Transport::identity(),
+          RNS::Type::Destination::IN,
+          RNS::Type::Destination::SINGLE,
+          LXMF_APP_NAME,
+          LXMF_PN_ASPECT
+        );
+        // ALLOW_ALL matches Python: a propagation node accepts offers from
+        // anyone. It cannot read what it stores, so there is nothing to gate --
+        // abuse is bounded by the stamp cost and the store limits instead.
+        lxmf_propagation_destination.register_request_handler(
+          LXMF_OFFER_PATH, lxmf_offer_request, RNS::Type::Destination::ALLOW_ALL);
+        lxmf_propagation_destination.register_request_handler(
+          LXMF_GET_PATH, lxmf_message_get_request, RNS::Type::Destination::ALLOW_ALL);
+        printf("[lxmf] propagation node destination <%s>\n",
+               lxmf_propagation_destination.hash().toHex().c_str());
+        lxmf_store_load();
+#endif
         // These pages expose device telemetry (heap, flash, interfaces, transport
         // metrics). Gated to the remote-management allow list by default; a peer
         // that has not identified is refused before serve_page is ever called,
@@ -3247,6 +3277,9 @@ void loop() {
   radio_rx_watchdog();
   lora_config_consistency_watch();
   radio_commit_confirm_watch();
+#if defined(LXMF_PROPAGATION_NODE)
+  lxmf_propagation_announce_watch();
+#endif
 #endif
 
   #if MCU_VARIANT == MCU_NATIVE
