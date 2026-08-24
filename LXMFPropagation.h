@@ -106,6 +106,12 @@
 // five minutes.
 #ifndef LXMF_PN_ANNOUNCE_INTERVAL_MS
 #define LXMF_PN_ANNOUNCE_INTERVAL_MS 1800000   // 30 minutes
+
+// A propagation node is useless until it has announced, so the first one comes
+// shortly after boot rather than one full interval later. Matches the NomadNet
+// announce, which learned the same lesson about the DHCP race.
+#define LXMF_PN_FIRST_ANNOUNCE_MS 60000        // 1 minute
+#define LXMF_PN_ANNOUNCE_JITTER_MS 60000       // up to 1 minute
 #endif
 
 extern RNS::Destination lxmf_propagation_destination;
@@ -584,13 +590,31 @@ inline RNS::Bytes lxmf_message_get_request(
 // Announce the propagation node periodically so clients can discover it.
 inline void lxmf_propagation_announce_watch() {
 	static uint32_t last = 0;
+	static uint32_t jitter = 0;
 	static bool armed = false;
+	static bool first_done = false;
 	if (!lxmf_propagation_destination) return;
-	// Jittered like the NomadNet announce, and for the same reason: a block of
-	// nodes restored to mains power must not transmit in lockstep.
-	if (!armed) { armed = true; last = millis(); return; }
-	if (millis() - last < LXMF_PN_ANNOUNCE_INTERVAL_MS) return;
+	// Jitter is rolled when arming as well as after each announce, for the same
+	// reason as the NomadNet announce: a block of nodes restored to mains power
+	// all reach this point together and must not transmit in lockstep.
+	if (!armed) {
+		armed = true; last = millis();
+		jitter = (uint32_t)random(LXMF_PN_ANNOUNCE_JITTER_MS);
+		return;
+	}
+	// The first announce cannot wait for the full interval. Until a node
+	// announces, clients cannot discover it *or* learn the stamp cost they must
+	// pay to use it -- so a node that stays quiet for half an hour after boot is
+	// simply not a propagation node yet. That is worst precisely when it matters
+	// most: after a power restore, when every node in a building is silent at
+	// once. Announce shortly after boot, once the network is definitely up, then
+	// settle into the normal interval.
+	uint32_t due = first_done ? LXMF_PN_ANNOUNCE_INTERVAL_MS : LXMF_PN_FIRST_ANNOUNCE_MS;
+	due += jitter;
+	if (millis() - last < due) return;
 	last = millis();
+	jitter = (uint32_t)random(LXMF_PN_ANNOUNCE_JITTER_MS);
+	first_done = true;
 	RNS::Bytes app_data = lxmf_pn_app_data();
 	lxmf_propagation_destination.announce(app_data);
 	printf("[lxmf] announced propagation node (%u byte app_data)\n",

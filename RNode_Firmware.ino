@@ -828,7 +828,16 @@ void setup() {
           // Quick reboot
           #if HAS_CONSOLE
             if (rtc_get_reset_reason(0) == POWERON_RESET) {
+              // Deliberate: a quick power cycle is the gesture for "give me the
+              // console". But it also fires after a UART flash, because the
+              // radio keeps its register contents through download mode and the
+              // following power-on looks identical to a double tap. The radio is
+              // then held off for the whole session, which presents as a node
+              // that joins the network over WiFi and is simply deaf on RF. Say
+              // so, rather than leaving it to be inferred from a dead LED.
               console_active = true;
+              printf("[boot] quick-reboot detected: console activated, radio held "
+                     "OFF for this session (full power-down clears this)\r\n");
             }
           #endif
         } else {
@@ -3237,10 +3246,13 @@ static void heap_watch() {
       extern volatile uint32_t sx126x_preamble_count;
       extern volatile uint32_t sx126x_header_count;
       printf("[lora] tx_calls=%lu queue=%u dcd=%d rssi=%d nf=%d online=%d pre=%lu hdr=%lu "
+             "locked=%d hwr=%d err=%d con=%d alock=%d "
              "f=%lu bw=%lu sf=%d txp=%d phy=%08lx\n",
              (unsigned long)tx_calls, (unsigned)queue_height, (int)dcd,
              (int)current_rssi, (int)noise_floor, (int)radio_online,
              (unsigned long)sx126x_preamble_count, (unsigned long)sx126x_header_count,
+             (int)radio_locked, (int)hw_ready, (int)radio_error, (int)console_active,
+             (int)airtime_lock,
              (unsigned long)lora_freq, (unsigned long)lora_bw, (int)lora_sf,
              (int)lora_txp, (unsigned long)lora_phy_hash());
     #elif MODEM == SX1276 || MODEM == SX1278
