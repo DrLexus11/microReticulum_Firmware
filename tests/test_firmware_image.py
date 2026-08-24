@@ -1,7 +1,11 @@
 import hashlib
 import unittest
 
-from firmware_image import esp_image_sha256, firmware_hash_kiss_frame
+from firmware_image import (
+    esp_image_sha256,
+    firmware_hash_kiss_frame,
+    firmware_reset_kiss_frame,
+)
 
 
 def make_image(payload: bytes, *, hash_appended: bool) -> bytes:
@@ -50,6 +54,9 @@ class FirmwareHashKissFrameTests(unittest.TestCase):
     def test_rejects_incorrect_hash_length(self):
         with self.assertRaisesRegex(ValueError, "exactly 32 bytes"):
             firmware_hash_kiss_frame(bytes(31))
+
+    def test_reset_frame_matches_rnode_protocol(self):
+        self.assertEqual(firmware_reset_kiss_frame(), bytes([0xC0, 0x55, 0xF8, 0xC0]))
 
 
 if __name__ == "__main__":

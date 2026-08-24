@@ -3,7 +3,11 @@ import hashlib
 import shutil
 import platform as platformlib
 
-from firmware_image import esp_image_sha256, firmware_hash_kiss_frame
+from firmware_image import (
+    esp_image_sha256,
+    firmware_hash_kiss_frame,
+    firmware_reset_kiss_frame,
+)
 
 #
 # Helpier functions
@@ -159,7 +163,7 @@ def firmware_hash_write_notice(hex_hash, env):
           % (env.subst("$PIOENV"), port_path))
     print("")
 
-def device_set_firmware_hash(firmware_hash, env):
+def device_set_firmware_hash(firmware_hash, env, reboot_after=False):
     import serial
 
     port_path = env.subst("$UPLOAD_PORT")
@@ -174,6 +178,11 @@ def device_set_firmware_hash(firmware_hash, env):
         port.write(frame)
         port.flush()
         time.sleep(1)
+        if reboot_after:
+            print("Rebooting device so device_init() validates the new hash...")
+            port.write(firmware_reset_kiss_frame())
+            port.flush()
+            time.sleep(0.2)
 
 def target_fixhash(target, source, env):
     """Write the built firmware's hash to a board that is already running.
@@ -197,8 +206,8 @@ def target_fixhash(target, source, env):
     print("      sources changed since the flash, re-flash rather than running this,")
     print("      or the stored hash will not match the running image and hw_ready")
     print("      will stay 0 for a different reason.")
-    device_set_firmware_hash(calc_hash, env)
-    print("Hash written. Reboot the board for device_init() to re-validate it.")
+    device_set_firmware_hash(calc_hash, env, reboot_after=True)
+    print("Hash written and reboot requested; device_init() will re-validate it.")
 
 def device_provision(env):
     # Device provision
@@ -277,7 +286,12 @@ def firmware_hash(source, env):
                 print(f"Unable to calculate firmware hash: {error}")
                 return
             print("firmware_hash:", calc_hash.hex())
-            device_set_firmware_hash(calc_hash, env)
+            variant = env.GetProjectOption("custom_variant")
+            device_set_firmware_hash(
+                calc_hash,
+                env,
+                reboot_after=variant in ("impr_rad01_rev1", "impr_rad01_rev2"),
+            )
         else:
             calc_hash = hashlib.sha256(firmware_data[0:-32]).digest()
             part_hash = firmware_data[-32:]

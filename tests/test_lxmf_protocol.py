@@ -161,13 +161,25 @@ class AnnounceShapeTests(unittest.TestCase):
         # able to fill it outright.
         d = firmware_defines()
         store = d["LXMF_PN_MAX_BYTES"]
-        self.assertLessEqual(d["LXMF_PN_TRANSFER_LIMIT_KB"] * 1024, store // 8)
-        self.assertLessEqual(d["LXMF_PN_SYNC_LIMIT_KB"] * 1024, store)
+        self.assertLessEqual(d["LXMF_PN_TRANSFER_LIMIT_BYTES"], store // 8)
+        self.assertLessEqual(d["LXMF_PN_SYNC_LIMIT_BYTES"], store)
 
-    def test_sync_limit_bytes_matches_its_kilobyte_form(self):
-        # Both forms exist and are enforced in different places; they must agree.
+    def test_limit_bytes_match_lxmf_decimal_kilobytes(self):
+        # LXMF's Python reference multiplies advertised KB values by 1000.
         d = firmware_defines()
-        self.assertEqual(d["LXMF_PN_SYNC_LIMIT_BYTES"], d["LXMF_PN_SYNC_LIMIT_KB"] * 1024)
+        self.assertEqual(d["LXMF_PN_TRANSFER_LIMIT_BYTES"],
+                         d["LXMF_PN_TRANSFER_LIMIT_KB"] * 1000)
+        self.assertEqual(d["LXMF_PN_SYNC_LIMIT_BYTES"],
+                         d["LXMF_PN_SYNC_LIMIT_KB"] * 1000)
+
+    def test_response_budget_can_serve_one_maximum_message(self):
+        d = firmware_defines()
+        conservative_response_overhead = 24 + 16
+        self.assertGreaterEqual(d["LXMF_PN_RESPONSE_LIMIT_BYTES"],
+                                d["LXMF_PN_TRANSFER_LIMIT_BYTES"] +
+                                conservative_response_overhead)
+        self.assertLessEqual(d["LXMF_PN_RESPONSE_LIMIT_BYTES"],
+                             d["LXMF_PN_SYNC_LIMIT_BYTES"])
 
 
 @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")

@@ -4,9 +4,10 @@ Why NomadNet pages were rock solid overnight while messaging was not, what the
 missing component is, and whether to implement a propagation node on the ESP32.
 
 Status: **Linux propagation node running as of 2026-08-24. ESP32 propagation
-node implemented the same day, and verified serving a real Android client** --
-see §7. Findings below are from an overnight two-room test unless marked
-otherwise.
+node implemented the same day, verified serving a real Android client, and
+hardware-tested through multi-message sync and the 128-message eviction
+boundary** -- see §§7–10. Findings below are from an overnight two-room test
+unless marked otherwise.
 
 ---
 
@@ -198,7 +199,7 @@ that are the entire point of the node.
 
 | | |
 | --- | --- |
-| Announce | `lxmf.propagation`, advertising 8 KB per transfer, 64 KB per sync, stamp costs 16/3/18 |
+| Announce | `lxmf.propagation`, advertising 4 KB per transfer, 8 KB per sync, stamp costs 16/3/18 |
 | Receive | link packet **and** Resource, both proving or storing as appropriate |
 | Store | LittleFS, capped at 128 messages / 512 KB, oldest evicted first |
 | `/get` | list, download, and purge, all scoped to the requesting identity |
@@ -304,7 +305,8 @@ Rev 1's routing decision, so this is inference. **To prove it:** watch Rev 2's
 it moves while `/get` is being served, the response went out over the radio.
 
 **Still untested:** Reticchat on iOS, which is the client that exhibited the
-original failure, and multi-message and eviction behaviour under a full store.
+original failure. Multi-message truncation and full-store eviction are now
+covered in §10.
 
 ## 9. A flashing hazard worth knowing about
 
@@ -333,7 +335,8 @@ Three changes came out of it:
   bootloader and refuses to pretend it wrote the hash, printing what will happen
   and the exact command to fix it.
 - A `fixhash` target writes the built firmware's hash to an already-running
-  board, for use after power-cycling out of download mode.
+  board, for use after power-cycling out of download mode, and now issues the
+  KISS reboot itself so `device_init()` immediately re-validates the hash.
 - The SX126x `[lora]` diagnostic now prints `locked/hwr/err/con/alock`, which the
   SX1276 branch already did. Their absence is precisely why this took source
   reading rather than log reading.
@@ -403,9 +406,74 @@ is an upstream change to our own fork.
 - **Per-sync total is enforced** during ingest, not just the per-message limit --
   otherwise a sender could stay under the message limit and still fill the store
   in one request.
-- **Contract tests** in `tests/test_lxmf_protocol.py` (15 tests) parse the
+- **Contract tests** in `tests/test_lxmf_protocol.py` (16 tests) parse the
   firmware's own `#define`s and assert them against the LXMF reference library:
   stamp size, destination length, message overhead, stamp costs, request paths
   and every error code. Since the failure mode here is silence, this fails loudly
   if we drift or if upstream changes. Run them under the RNS virtualenv; they
   skip cleanly without it.
+
+### Multi-message sync and client-limit clamping
+
+The first multi-message run exposed a protocol trap in `/get`. Stock Python
+LXMF sends its own default delivery limit of **1000 KB** in the request. The
+firmware treated that as a replacement for the node's 8 KB ceiling, so a client
+could accidentally raise the limit and provoke the same oversized Resource
+stall the announce was meant to prevent. The client value is now a one-way
+constraint: it may lower the node limit, never raise it.
+
+LXMF's reference code also defines the advertised kilobyte fields as decimal
+kilobytes (`value * 1000`). Two firmware guards used 1024. The guards and their
+contract tests now use 1000, so the on-wire promise and enforced byte count are
+identical.
+
+Hardware results on Rev 1:
+
+| Run | Retrieval rounds | Result |
+| --- | --- | --- |
+| 3 messages, ordinary client | `3, 0` | PASS |
+| 16 messages, client limit 2 KB | `6, 6, 4, 0` | PASS |
+| 30 messages, stock 1000 KB client after final fix | `12, 12, 6, 0` | PASS |
+
+All comparisons use deterministic bodies and require exact count and contents,
+with no missing, unexpected or duplicate deliveries. The reusable harness is
+`tools/lxmf/propagation_stress.py`.
+
+### Full-store eviction and the outbound response budget
+
+Rev 1 was filled with 129 deterministic 302-byte propagated messages. All 129
+were acknowledged. Retrieval returned exactly messages 2 through 129: **128
+expected, 128 received, oldest absent, zero missing/unexpected/duplicates**.
+That proves the 128-message cap, oldest-first eviction, repeated `/get`, and
+purge behavior on hardware.
+
+The test also found a load-dependent edge. With all 128 index entries present,
+stock-client retrieval packed near the 8 KB ceiling and three consecutive links
+stalled while the board itself stayed reachable. Resuming the same preserved
+identity at a 2 KB client limit completed in `6 × 21, 2, 0` rounds. The node now
+caps outbound message responses at **4096 bytes**. This is large enough for one
+maximum 4000-byte stored blob plus the conservative response overhead, but
+leaves Resource and full-store memory headroom. Returning a partial wanted set
+is normal LXMF behavior; the client requests the remainder in later rounds.
+
+The complete 129-message test was then repeated on that final build with the
+stock client's 1000 KB request. It passed without a retry as
+`13 × 9, 11, 0`: exactly the newest 128 messages, with the oldest absent and no
+missing, unexpected or duplicate bodies. This combines the eviction and
+response-budget proofs under maximum index load.
+
+The nominal 512 KiB byte cap cannot currently be the first cap reached by valid
+traffic: `128 × 4000 = 512000`, below `512 × 1024 = 524288`. The count cap will
+always fire first. The byte guard remains defense-in-depth for build overrides
+or future limit changes; testing it independently requires a deliberately
+lower-capacity test build.
+
+### Repeatable board and flash checks
+
+`tools/rad01/lab_status.py` records the lab mapping and checks both stable serial
+paths, port ownership, ICMP, TCP 4242 and recalled LXMF announce data without
+opening either board's serial port. Rev 2's UART recovery was completed with
+`fixhash`; its radio started, RNS/Transport became ready, and it announced the
+current `4/8/[16,3,18]` contract. Rev 1's normal native-USB upload path was also
+exercised through image verification, direct hash write, automatic KISS reboot,
+and return to healthy RNS service.

@@ -104,9 +104,22 @@
 #define LXMF_PN_SYNC_LIMIT_KB 8
 #endif
 
-// Derived, and deliberately outside the guard above: if a build overrides the
-// kilobyte form, this must follow it rather than disappear.
-#define LXMF_PN_SYNC_LIMIT_BYTES ((size_t)LXMF_PN_SYNC_LIMIT_KB * 1024)
+// LXMF's reference implementation converts all advertised kilobyte limits with
+// *1000 (not KiB's *1024). Keep the wire promise and the enforced byte ceilings
+// identical. These stay outside the guards so build-time KB overrides propagate.
+#define LXMF_PN_TRANSFER_LIMIT_BYTES ((size_t)LXMF_PN_TRANSFER_LIMIT_KB * 1000)
+#define LXMF_PN_SYNC_LIMIT_BYTES     ((size_t)LXMF_PN_SYNC_LIMIT_KB * 1000)
+
+// Outbound /get responses need additional headroom on a full store. An 8 KB
+// response worked with a lightly loaded node but repeatedly stalled once the
+// index held 128 entries; the same dataset completed cleanly in 2 KB batches.
+// 4096 bytes is the lowest useful node cap: it still accommodates one maximum
+// 4000-byte stored blob plus the conservative 40-byte response allowance below.
+// This does not change the advertised inbound sync limit. Returning fewer
+// wanted messages is supported by LXMF; the client asks again for the rest.
+#ifndef LXMF_PN_RESPONSE_LIMIT_BYTES
+#define LXMF_PN_RESPONSE_LIMIT_BYTES 4096
+#endif
 
 // Proof-of-work cost demanded of senders. LXMPeer's minimum is 13; Python
 // defaults to 16. We only ever *validate* a stamp, which is one hash.
@@ -262,7 +275,7 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 		       (unsigned)blob.size(), LXMF_OVERHEAD + LXMF_STAMP_SIZE);
 		return false;
 	}
-	if (blob.size() > (size_t)LXMF_PN_TRANSFER_LIMIT_KB * 1024) {
+	if (blob.size() > LXMF_PN_TRANSFER_LIMIT_BYTES) {
 		// We advertised this limit in the announce, so a well-behaved client
 		// will not send anything larger; enforce it anyway.
 		printf("[lxmf] rejecting %u-byte blob: over the %d KB advertised limit\n",
@@ -461,7 +474,7 @@ inline void lxmf_resource_concluded(const RNS::Resource& resource) {
 }
 
 // An inbound Resource is the one thing a stranger can make this node allocate
-// for, and we advertise a 64 KB sync limit that nothing was previously checking.
+// for, and even the advertised 8 KB sync limit must be checked before accepting.
 // Resource::accept() does not preallocate -- parts accumulate as they arrive --
 // so cancelling at the start of the transfer bounds the memory a sender can
 // cost us to roughly one window rather than the whole advertised size.
@@ -564,14 +577,23 @@ inline RNS::Bytes lxmf_message_get_request(
 	else return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
 
 	// --- element 2 (optional): the client's transfer limit, in kilobytes ---
-	size_t client_limit = (size_t)LXMF_PN_SYNC_LIMIT_KB * 1000;
+	// The client advertises what *it* can receive; it does not get to raise the
+	// node's own advertised ceiling. Python LXMF currently sends its 1000 KB
+	// default here even when the propagation announce says 8 KB. Replacing our
+	// limit with that value silently defeats the bound and recreates the >8 KB
+	// Resource stalls this ceiling was introduced to avoid. A smaller client
+	// value is honoured; a larger one is clamped to the node limit.
+	size_t client_limit = LXMF_PN_RESPONSE_LIMIT_BYTES;
 	if (fields >= 3) {
 		double kb = 0;
 		if      (unpacker.isFloat32()) kb = unpacker.unpackFloat32();
 		else if (unpacker.isFloat64()) kb = unpacker.unpackFloat64();
 		else if (unpacker.isUInt())    kb = (double)unpacker.unpackUInt64();
 		else if (unpacker.isInt())     kb = (double)unpacker.unpackInt64();
-		if (kb > 0) client_limit = (size_t)(kb * 1000);
+		if (kb > 0) {
+			size_t requested = (size_t)(kb * 1000);
+			if (requested < client_limit) client_limit = requested;
+		}
 	}
 
 	// A listing request: both fields nil.

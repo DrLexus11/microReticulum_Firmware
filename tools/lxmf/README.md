@@ -14,6 +14,7 @@ Run them under the RNS virtualenv:
 | `interop.py <pn_hash>` | Full round trip: sender A pushes a message for recipient B while B is offline, then B syncs and reads it. Set `LXBODY_PREFIX` to a long string to force the Resource path instead of the packet path. |
 | `send_to_columba.py <pn_hash> <dest_hash> [body]` | Push one message for a real client (a phone) into a node's store and stop, so the client can sync it later. |
 | `oversize.py <pn_hash> [bytes]` | Push a Resource of a given size at the propagation destination. Used to verify the size guard refuses oversize transfers, and to measure the board's real ceiling. |
+| `propagation_stress.py <pn_hash> [--messages N]` | Push deterministic messages while an isolated recipient is offline, then sync repeatedly and verify exact contents. Use `--client-limit-kb 2` to force truncation/repeated `/get` rounds. More than 128 messages requires `--confirm-eviction` because it deliberately tests oldest-first eviction and can remove pre-existing mail. Add `--keep-state`; if retrieval later stalls, reuse the exact identities without resending via `--resume-run <run-id>` with the same message/body arguments, and optionally `--rns-log-level debug`. |
 | `watch_announces.py` | Print `lxmf.delivery` and `lxmf.propagation` announces as they arrive. How to learn a phone's address without reading a hash off its screen. |
 | `fetch_page.py <hash> [path]` | Fetch a NomadNet page from a node, for checking a board is alive over the network rather than over serial. |
 

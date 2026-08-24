@@ -10,6 +10,8 @@ KISS_FESC = 0xDB
 KISS_TFEND = 0xDC
 KISS_TFESC = 0xDD
 KISS_CMD_FIRMWARE_HASH = 0x58
+KISS_CMD_RESET = 0x55
+KISS_RESET_BYTE = 0xF8
 
 
 def esp_image_sha256(image: bytes) -> bytes:
@@ -45,3 +47,8 @@ def firmware_hash_kiss_frame(firmware_hash: bytes) -> bytes:
         bytes([KISS_FEND]), bytes([KISS_FESC, KISS_TFEND])
     )
     return bytes([KISS_FEND, KISS_CMD_FIRMWARE_HASH]) + escaped_hash + bytes([KISS_FEND])
+
+
+def firmware_reset_kiss_frame() -> bytes:
+    """Return the RNode reset command used after changing the stored hash."""
+    return bytes([KISS_FEND, KISS_CMD_RESET, KISS_RESET_BYTE, KISS_FEND])
