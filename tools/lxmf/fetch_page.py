@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import os, sys, time, RNS
-RNS.loglevel = RNS.LOG_WARNING
-r = RNS.Reticulum(configdir=os.environ.get("RNS_CONFIGDIR"))
 USAGE = """usage: fetch_page.py <destination_hash> [page_path]
 
 Fetch a NomadNet page from a node. Useful for checking a board is alive over
@@ -15,6 +13,8 @@ try:
 except ValueError:
     sys.exit("error: destination hash must be hex\n\n" + USAGE)
 PATH = sys.argv[2] if len(sys.argv) > 2 else "/page/index.mu"
+RNS.loglevel = RNS.LOG_WARNING
+r = RNS.Reticulum(configdir=os.environ.get("RNS_CONFIGDIR"))
 if not RNS.Transport.has_path(H):
     RNS.Transport.request_path(H)
     for _ in range(100):

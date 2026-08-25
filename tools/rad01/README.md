@@ -19,7 +19,7 @@ The expected lab mapping is:
 
 The command fails if a serial device is missing or busy, a board does not answer
 ICMP/TCP, or recalled propagation app data does not advertise the current
-`4 KB / 8 KB / 16,3,18` contract.
+`4 KB / 8 KB / [16,3,18]` contract.
 
 LXMF packet, Resource, multi-message and capacity exercises live beside the
 existing protocol tools in `tools/lxmf/`. See its README before running a test
