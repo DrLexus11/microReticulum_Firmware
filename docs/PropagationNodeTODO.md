@@ -47,7 +47,8 @@ blocker after exact-body delivery through stock Columba over the RF path.
    reopen/sync test as additional client coverage.
 2. **Adopt wall time from the first client request.** Announce time is uptime
    because the board has no RTC. Message expiry and peer sync need a stable
-   timebase.
+   timebase. Rev3 should solve the hardware side with a battery-backed RTC; see
+   `docs/Rev3Suggestions.md`.
 3. **Message expiry.** Python expires after 30 days; the firmware currently
    evicts only on capacity. Depends on item 2.
 4. **Provisioning controls** for enable/disable, occupancy, limits and manual
