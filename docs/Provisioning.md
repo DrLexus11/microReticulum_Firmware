@@ -36,6 +36,13 @@ The Console manipulates a node through **three layers**:
 2. **Provisioning subsystem** — a typed, namespaced configuration engine running inside the embedded microReticulum stack. Each field has a declared type, flags (`LIVE_APPLY`, `REBOOT_REQUIRED`, `READ_ONLY`, `WRITE_ONLY`, `SECRET`), and a setter/getter. Drafts are staged with `SetState` and applied with `Commit` (or thrown away with `Discard`). This is the **Transport Config** tab.
 3. **Live metrics** — read-only fields exposed through the same Provisioning namespace tree (radio link, channel utilisation, RNS destination hashes, WiFi info). These drive the **Node Status** tab together with KISS `CMD_STAT_*` frames.
 
+The **LoRa Access Control** namespace configures Reticulum IFAC for the radio
+backbone. Its Enabled, Network Name and Passphrase fields are reboot-required;
+set and commit the same name/passphrase on every peer before rebooting them.
+Enabled configurations require both strings. The passphrase is excluded from
+GetState responses, but is not encrypted at rest in LittleFS, so protect physical
+access to provisioned nodes.
+
 A node's identity in the RNS sense is a long-lived Ed25519 keypair generated on first boot. The Console never asks you to manage that directly — it reads identity hashes through the Metrics namespace and uses them when establishing remote links.
 
 ## Opening the Console

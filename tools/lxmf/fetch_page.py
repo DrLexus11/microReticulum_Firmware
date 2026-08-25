@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-import sys, time, RNS
+import os, sys, time, RNS
 RNS.loglevel = RNS.LOG_WARNING
-r = RNS.Reticulum()
+r = RNS.Reticulum(configdir=os.environ.get("RNS_CONFIGDIR"))
 USAGE = """usage: fetch_page.py <destination_hash> [page_path]
 
 Fetch a NomadNet page from a node. Useful for checking a board is alive over

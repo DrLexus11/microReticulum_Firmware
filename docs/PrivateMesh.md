@@ -1,15 +1,14 @@
 # Private Meshes, IFAC, and How Authorisation Layers
 
-What "private" currently means on this firmware, what is missing, and how it
+What "private" currently means on this firmware, what is implemented, and how it
 relates to the NomadNet pages and the resource API in `docs/ResourceAPI.md`.
 
-Status: **IFAC is not implemented.** Written 2026-08-23.
+Status: **implemented and hardware-verified on `feature/IFAC-interop`.**
+Originally written 2026-08-23; acceptance completed 2026-08-25.
 
-**Priority revised 2026-08-24:** an ESP32 LXMF propagation node now ranks ahead
-of this. Messaging unreliability is a demonstrated hardware failure; IFAC is an
-anticipated requirement for talks still at the talking stage, and evidence
-should outrank anticipation. See `docs/Messaging.md`. Revisit this ordering if
-procurement conversations harden.
+**Priority history:** on 2026-08-24 the ESP32 LXMF propagation node ranked ahead
+of this work. That acceptance run is now complete (see `docs/Messaging.md`), so
+IFAC became the next branch on 2026-08-25.
 
 ---
 
@@ -23,7 +22,7 @@ mechanisms, and two of the three already work.
 | --- | --- | --- | --- |
 | Who may **read** my traffic? | end-to-end | Reticulum encryption | **works, always on** |
 | Who may **call** my services? | application | identity + `ALLOW_LIST` | **works** |
-| Who may **join and relay** on my network? | interface | **IFAC** | **not implemented** |
+| Who may **join and relay** on my network? | interface | **IFAC** | **implemented and hardware-verified** |
 
 Getting this straight matters commercially as much as technically: "the network
 is open" and "the traffic is readable" are very different statements, and the
@@ -44,14 +43,14 @@ This is what restricts the management pages today
 (`RNS::Transport::remote_management_allowed()`). It is real authorisation
 against a cryptographic identity, not a shared secret.
 
-### Membership is open
+### Membership is configurable
 
-Anyone with a radio on the same PHY can join, announce, be routed, **use your
-nodes as transport**, and observe announce metadata -- which destinations exist,
-hop counts, rough topology -- even though content stays opaque. There is
-currently no admission control at all.
+With LoRa IFAC disabled (the factory default), anyone with a radio on the same
+PHY can join, announce, be routed, **use your nodes as transport**, and observe
+announce metadata. Enabling the provisioned LoRa access code drops frames that
+are open, use the wrong key, or have been modified.
 
-## 2. IFAC is the mechanism, and it is not implemented
+## 2. IFAC implementation
 
 Reticulum's answer to closed membership is **IFAC** (Interface Access Codes).
 Each interface carries a network name and passphrase; frames are signed and
@@ -67,21 +66,21 @@ In Python RNS it is configured per interface:
   passphrase   = <secret>      # or: pass_phrase
 ```
 
-**microReticulum does not implement it.** `Interface.h` declares
-`Bytes _ifac_identity` and an accessor, but nothing ever assigns it, and the
-enforcement path in `Transport.cpp` is a `// TODO` with the original Python
-commented out:
+The `feature/IFAC-interop` branches implement the complete per-interface path:
 
-```c
-if (interface.ifac_identity()) {
-// TODO
-/*p
-    ifac = interface.ifac_identity.sign(raw)[-interface.ifac_size:]
-    ...
-```
+- Python-compatible SHA-256/HKDF key derivation from `network_name` and
+  `passphrase`;
+- Ed25519 access-code signing, header flagging and masking on transmit;
+- unmasking and constant-time access-code comparison before receive counters,
+  callbacks or packet parsing;
+- rejection of protected frames on open interfaces and open frames on protected
+  interfaces; and
+- a fail-closed state for a radio whose persisted configuration says IFAC is
+  required but whose key cannot be derived.
 
-So the branch is dead code. Any claim that this firmware supports private
-networks is false today.
+The firmware provisions an 8-byte IFAC on the **LoRa interface only**. TCP and
+UDP remain open local attachment paths. The library also supports other valid
+sizes and is covered by both 8-byte and 16-byte Python-generated wire vectors.
 
 ## 3. The property that makes both use cases work
 
@@ -91,7 +90,7 @@ another, because it holds the key and re-signs when relaying:
 
 ```
 LoRa backbone        ->  IFAC (network_name + passphrase)   closed
-SoftAP + TCP local   ->  no IFAC, or a per-building code    open to residents
+SoftAP + TCP local   ->  no IFAC                            open to residents
 ```
 
 A resident's phone never needs the backbone key. An unauthorised radio on the
@@ -108,11 +107,12 @@ definition rather than being discovered later:
   attachment. Residents attach with no secret. Note this deliberately lets
   anyone who reaches the SoftAP inject traffic into the backbone -- that *is*
   the product: a resident's message reaching responders.
-- **Secure node (inter-agency).** IFAC on **every** interface, no open
+- **Secure node (inter-agency, future).** IFAC on **every** interface, no open
   attachment. Nothing enters without the code.
 
-Same firmware, same board, different configuration. Deciding which a given unit
-is should be a provisioning-time choice, not an accident of which build it got.
+The current branch implements the public-node posture: protected LoRa plus open
+local attachment. Making the secure posture another provisioning choice remains
+outstanding; it must not be implied merely because the radio is protected.
 
 ## 5. Two risks worth naming before committing
 
@@ -120,8 +120,9 @@ is should be a provisioning-time choice, not an accident of which build it got.
 -- signature, HKDF derivation, masking, and the header flag. Any divergence
 means our nodes silently cannot talk to a Python `rnsd` peer on an IFAC
 interface, and the symptom will look like a broken mesh rather than a crypto
-mismatch. That is the same silent-failure signature that has cost this project
-the most time. **Test against a real `rnsd` peer, not only node to node.**
+mismatch. Deterministic frames generated by installed Python RNS 1.4.2 match
+byte-for-byte in both directions. Python RNS and Rev 1↔Rev 2 radio acceptance
+are recorded in §7.
 
 **Key distribution is the operational risk, and it is the larger one.** The
 algorithm is bounded work; getting a passphrase onto every authorised node,
@@ -174,15 +175,54 @@ fallback AP is ever expected to carry sensitive traffic, that work is a
 prerequisite -- and note it should not have to, since Reticulum above it is
 already end-to-end encrypted.
 
-## 7. What implementing IFAC involves
+## 7. Configuration and acceptance
 
-1. Port the sign/derive/mask path in `Transport.cpp` from the commented Python,
-   and the inverse on receive.
-2. Assign `_ifac_identity` from a configured network name and passphrase, per
-   interface.
-3. Expose `network_name` and `passphrase` per interface -- via provisioning, so
-   a deployed node can be configured without a reflash.
-4. Interop-test against Python `rnsd` before trusting node-to-node results.
-5. Decide the key distribution and rotation story.
+The Console exposes a root **LoRa Access Control** namespace with three
+reboot-required fields: **Enabled**, **Network Name**, and **Passphrase**. Set
+both strings, enable IFAC, commit, and reboot only after every radio peer has
+the same values staged. An enabled commit without both strings is rejected.
+The passphrase is marked `SECRET`, so it is omitted from GetState responses,
+but it is currently stored as MsgPack on LittleFS without encryption at rest.
+Physical possession of a node therefore still exposes the shared credential.
 
-Steps 4 and 5 are where the project risk lives, not steps 1 to 3.
+Acceptance on 2026-08-25 used the two physical IMPR-RAD-01 boards and installed
+Python RNS 1.4.2:
+
+- Rev 1 and the Rev 2 UART build compiled, flashed and passed their required
+  post-upload hash writes. The running firmware hashes were
+  `0138bd05f08651b8240e283d1aa7514b4094d5d6dc513d9b1f63c71903b4d293`
+  and `37578c931d113f72164a387815999c52d358d5578c334ef77878a4139af91919`.
+- With the Deck `rnsd`/UDP shortcuts stopped, a Python TCP client attached only
+  to Rev 1 completed two exact LXMF store-and-fetch round trips against Rev 2
+  over the two-hop LoRa path with matching IFAC.
+- A wrong Rev 2 passphrase and an open Rev 2 against protected Rev 1 each timed
+  out at link establishment with no acknowledgement. The host unit suite also
+  rejects a modified frame before receive counters or callbacks.
+- Disabling IFAC on both boards restored an open two-hop store-and-fetch. Both
+  boards were then returned to matching protected operation and TNC mode; the
+  normal lab health check passed.
+- Rev 1 was temporarily placed in host mode and opened by Python as a native
+  `RNodeInterface` with Python-side IFAC. Python obtained a one-hop path from
+  Rev 2 and received Rev 2's delivery acknowledgement for a real LXMF upload,
+  proving protected packets in both directions between Python and firmware.
+- The complete microReticulum native suite passed 19/19 tests, including the
+  8-byte and 16-byte Python wire vectors, mismatch/tamper drops and secret-state
+  omission.
+
+One higher-layer observation is deliberately not hidden: an immediate LXMF
+download on the direct Python RNode fixture returned `PR_NO_IDENTITY_RCVD`, and
+a later NomadNet link attempt timed out. Both happen after IFAC acceptance; the
+path response and delivery acknowledgement above already prove bidirectional
+IFAC interoperability. Track the link/identity behaviour separately instead of
+conflating it with access-code compatibility.
+
+Remaining product work:
+
+1. Define fleet key distribution, rotation, and lost-unit revocation. The
+   firmware provides configuration mechanics, not an operational key ceremony.
+2. If the inter-agency posture is required, add provisioning for IFAC on the
+   remaining attachment interfaces; this branch deliberately implements the
+   public-node posture first.
+3. Confirm whether the deployed Columba/Sideband interface editor exposes
+   `network_name` and `passphrase` before relying on phone-side IFAC.
+4. Follow up the direct-RNode LXMF identity/download instability independently.

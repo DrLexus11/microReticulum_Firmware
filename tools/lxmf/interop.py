@@ -19,10 +19,17 @@ try:
     PN_HASH = bytes.fromhex(sys.argv[1])
 except ValueError:
     sys.exit("error: propagation node hash must be hex\n\n" + USAGE)
-BASE    = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE = os.environ.get(
+    "LXMF_STATE_DIR",
+    os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "state", "lxmf-interop")),
+)
+os.makedirs(BASE, exist_ok=True)
+SEND_TIMEOUT = float(os.environ.get("LXMF_SEND_TIMEOUT", "240"))
+SYNC_TIMEOUT = float(os.environ.get("LXMF_SYNC_TIMEOUT", "180"))
 
 RNS.loglevel = RNS.LOG_INFO
-r = RNS.Reticulum()
+r = RNS.Reticulum(configdir=os.environ.get("RNS_CONFIGDIR"))
 
 def mkid(name):
     p = f"{BASE}/{name}.id"
@@ -45,6 +52,21 @@ if not RNS.Transport.has_path(PN_HASH):
 print(f"path ok, {RNS.Transport.hops_to(PN_HASH)} hop(s)")
 
 app_data = RNS.Identity.recall_app_data(PN_HASH)
+seeded_app_data = os.environ.get("LXMF_PN_APP_DATA_HEX")
+if app_data is None and seeded_app_data:
+    try:
+        app_data = bytes.fromhex(seeded_app_data)
+        known = RNS.Identity.known_destinations[PN_HASH]
+        RNS.Identity.remember(known[1], PN_HASH, known[2], app_data)
+        print("using supplied propagation announce metadata")
+    except (ValueError, KeyError, TypeError) as error:
+        print(f"FAIL: invalid LXMF_PN_APP_DATA_HEX: {error}"); sys.exit(1)
+if app_data is None:
+    print("path has no cached announce data; waiting for a fresh propagation announce...")
+    deadline = time.time() + 90
+    while app_data is None and time.time() < deadline:
+        time.sleep(0.5)
+        app_data = RNS.Identity.recall_app_data(PN_HASH)
 if app_data is None:
     print("FAIL: no announce app_data recalled -- cannot learn stamp cost"); sys.exit(1)
 from RNS.vendor import umsgpack as msgpack
@@ -74,7 +96,7 @@ print(f"\n--- sending propagated message: {body!r} ---")
 ra.handle_outbound(msg)
 
 t0 = time.time()
-while state["done"] is None and time.time()-t0 < 240:
+while state["done"] is None and time.time()-t0 < SEND_TIMEOUT:
     time.sleep(0.5)
 rep = {1: "PACKET", 2: "RESOURCE"}.get(msg.representation, msg.representation)
 print(f"representation: {rep}  packed size: {len(msg.propagation_packed) if msg.propagation_packed else '?'}")
@@ -93,7 +115,7 @@ rb.set_outbound_propagation_node(PN_HASH)
 rb.request_messages_from_propagation_node(id_b)
 
 t0 = time.time()
-while not got and time.time()-t0 < 180:
+while not got and time.time()-t0 < SYNC_TIMEOUT:
     time.sleep(0.5)
     if rb.propagation_transfer_state == LXMF.LXMRouter.PR_COMPLETE and not got:
         time.sleep(3); break

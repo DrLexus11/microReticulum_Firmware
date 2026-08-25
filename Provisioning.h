@@ -49,6 +49,7 @@
 #define PROV_NS_IFACE_UDP       106
 #define PROV_NS_METRICS_ADDRS   107
 #define PROV_NS_METRICS_DEV     108
+#define PROV_NS_IFAC_LORA       109
 
 #define PROV_GENERAL_KISS_LOG        1
 #define PROV_GENERAL_LORA_MODE       2
@@ -99,6 +100,10 @@
 #define PROV_NET_PORT           2
 #define PROV_NET_SSID           3
 #define PROV_NET_MODE           4
+
+#define PROV_IFAC_LORA_ENABLED     1
+#define PROV_IFAC_LORA_NETNAME     2
+#define PROV_IFAC_LORA_PASSPHRASE  3
 
 // Set true once Provisioning::Provisioner::begin() has run.
 extern bool provisioning_started;
