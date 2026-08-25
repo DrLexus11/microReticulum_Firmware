@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Push an oversize Resource at the propagation node and check it is refused.
 
-The node advertises a 64 KB sync limit. Before the guard, it accepted a Resource
-of any size, which is the one thing a stranger can make it allocate for.
+Before the guard, the node accepted a Resource of any size, which is the one
+thing a stranger can make it allocate for. The current default advertised sync
+limit is 8 KB, but this tool also supports builds that override it.
 """
 import os, sys, time
 import RNS
@@ -20,10 +21,14 @@ try:
     PN = bytes.fromhex(sys.argv[1])
 except ValueError:
     sys.exit("error: propagation node hash must be hex\n\n" + USAGE)
+if len(PN) != 16:
+    sys.exit("error: propagation node hash must be 16 bytes\n\n" + USAGE)
 try:
     SIZE = int(sys.argv[2]) if len(sys.argv) > 2 else 200_000
 except ValueError:
     sys.exit("error: size must be an integer number of bytes\n\n" + USAGE)
+if SIZE <= 0:
+    sys.exit("error: size must be greater than zero\n\n" + USAGE)
 RNS.loglevel = RNS.LOG_WARNING
 r = RNS.Reticulum()
 
@@ -49,7 +54,7 @@ state = {"link": None, "res": None, "done": False}
 def established(link):
     state["link"] = link
     payload = os.urandom(SIZE)          # incompressible, so no size cheating
-    print(f"sending a {len(payload)} byte resource (limit is 64 KB)...", flush=True)
+    print(f"sending a {len(payload)} byte resource as an oversize probe...", flush=True)
     def concluded(res):
         state["res"] = res.status; state["done"] = True
     state["r"] = RNS.Resource(payload, link, callback=concluded, auto_compress=False)

@@ -266,7 +266,11 @@ inline bool lxmf_store_evict_oldest() {
 	}
 	const LXMFEntry& e = lxmf_store_index[oldest];
 	std::string path = lxmf_entry_path(e.transient_id, e.received);
-	RNS::Utilities::OS::remove_file(path.c_str());
+	if (!RNS::Utilities::OS::remove_file(path.c_str())) {
+		printf("[lxmf] FAILED to evict %s; store cap remains unchanged\n",
+		       e.transient_id.toHex().substr(0, 16).c_str());
+		return false;
+	}
 	printf("[lxmf] store full, evicted %s\n", e.transient_id.toHex().substr(0, 16).c_str());
 	lxmf_store_index.erase(lxmf_store_index.begin() + oldest);
 	return true;
@@ -655,7 +659,12 @@ inline RNS::Bytes lxmf_message_get_request(
 		for (size_t i = 0; i < lxmf_store_index.size(); i++) {
 			const LXMFEntry& e = lxmf_store_index[i];
 			if (e.transient_id != tid || e.destination_hash != client) continue;
-			RNS::Utilities::OS::remove_file(lxmf_entry_path(e.transient_id, e.received).c_str());
+			if (!RNS::Utilities::OS::remove_file(
+			        lxmf_entry_path(e.transient_id, e.received).c_str())) {
+				printf("[lxmf] FAILED to purge %s; keeping it in the store index\n",
+				       e.transient_id.toHex().substr(0, 16).c_str());
+				break;
+			}
 			lxmf_store_index.erase(lxmf_store_index.begin() + i);
 			purged++;
 			break;

@@ -115,6 +115,40 @@ extern void escaped_serial_write(uint8_t byte);
 bool provisioning_started = false;
 RNS::Bytes provision_rx_buf;
 
+#if defined(LORA_TRANSPORT)
+static bool lora_ifac_enabled = false;
+static std::string lora_ifac_netname;
+static std::string lora_ifac_passphrase;
+
+// IFAC protects only the radio backbone. Local TCP/UDP attachment remains
+// open so a nearby client does not need the mesh passphrase.
+static void apply_lora_ifac_configuration() {
+  if (!lora_interface) return;
+
+  if (!lora_ifac_enabled) {
+    lora_interface.disable_ifac();
+    INFO("LoRa IFAC disabled");
+    return;
+  }
+
+  // A provisioned-but-incomplete access-control configuration must never
+  // silently turn the radio into an open interface.
+  lora_interface.disable_ifac();
+  lora_interface.require_ifac(true);
+  if (lora_ifac_netname.empty() || lora_ifac_passphrase.empty()) {
+    ERROR("LoRa IFAC configuration is incomplete; radio is fail-closed");
+    return;
+  }
+  if (!lora_interface.enable_ifac(lora_ifac_netname.c_str(),
+                                  lora_ifac_passphrase.c_str(), 8)) {
+    ERROR("LoRa IFAC key derivation failed; radio is fail-closed");
+    return;
+  }
+  INFOF("LoRa IFAC enabled for network '%s' (8-byte access code)",
+        lora_ifac_netname.c_str());
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Register Provisioning namespaces. Called from init_provisioning()
 // before Provisioner::begin().
@@ -262,6 +296,41 @@ static void register_provisioning_namespaces() {
 
   general
     .end();   // close "General"
+
+#if defined(LORA_TRANSPORT)
+  // ----- LoRa access-control namespace -----
+  // Changes are deliberately reboot-required. This prevents the two ends of
+  // a live radio path from changing key state midway through a Provisioning
+  // exchange and stranding the response.
+  Provisioner::instance()
+    .register_namespace("LoRa Access Control", PROV_NS_IFAC_LORA)
+      .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { lora_ifac_enabled = v.as_bool(); return true; },
+        []() { return lora_ifac_enabled; })
+      .field_string("Network Name", PROV_IFAC_LORA_NETNAME,
+        FF_REBOOT_REQUIRED, "", 64,
+        [](const Value& v) { lora_ifac_netname = v.as_string(); return true; },
+        []() { return lora_ifac_netname; })
+      .field_string("Passphrase", PROV_IFAC_LORA_PASSPHRASE,
+        (fflags_t)(FF_REBOOT_REQUIRED | FF_SECRET), "", 128,
+        [](const Value& v) { lora_ifac_passphrase = v.as_string(); return true; },
+        []() { return lora_ifac_passphrase; })
+      .on_commit([](Namespace& ns) {
+        Value v;
+        bool enabled = ns.draft(PROV_IFAC_LORA_ENABLED, v)
+          ? v.as_bool() : ns.working(PROV_IFAC_LORA_ENABLED).as_bool();
+        std::string netname = ns.draft(PROV_IFAC_LORA_NETNAME, v)
+          ? v.as_string() : ns.working(PROV_IFAC_LORA_NETNAME).as_string();
+        std::string passphrase = ns.draft(PROV_IFAC_LORA_PASSPHRASE, v)
+          ? v.as_string() : ns.working(PROV_IFAC_LORA_PASSPHRASE).as_string();
+        if (enabled && (netname.empty() || passphrase.empty())) {
+          ERROR("Rejected LoRa IFAC commit: network name and passphrase are required");
+          ns.clear_draft();
+        }
+      })
+      .end();
+#endif
 
   // ----- Metrics namespace -----
   //
@@ -473,7 +542,9 @@ static void register_provisioning_namespaces() {
 // ---------------------------------------------------------------------------
 void init_provisioning() {
   RNS::Provisioning::Provisioner::instance().on_factory_reset([]() {
-    // Not currently implemented
+#if defined(LORA_TRANSPORT)
+    apply_lora_ifac_configuration();
+#endif
   });
   RNS::Provisioning::Provisioner::instance().on_reboot_required([]() {
     // Host orchestrates reboot via CMD_RESET. Provisioner::needs_reboot()
@@ -485,6 +556,11 @@ void init_provisioning() {
   });
   register_provisioning_namespaces();
   RNS::Provisioning::Provisioner::instance().begin();
+#if defined(LORA_TRANSPORT)
+  // begin() has loaded persistent state and replayed its setters. Apply the
+  // complete tuple once, before the LoRa interface is registered with RNS.
+  apply_lora_ifac_configuration();
+#endif
   provisioning_started = true;
 }
 

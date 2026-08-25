@@ -36,6 +36,13 @@ The Console manipulates a node through **three layers**:
 2. **Provisioning subsystem** — a typed, namespaced configuration engine running inside the embedded microReticulum stack. Each field has a declared type, flags (`LIVE_APPLY`, `REBOOT_REQUIRED`, `READ_ONLY`, `WRITE_ONLY`, `SECRET`), and a setter/getter. Drafts are staged with `SetState` and applied with `Commit` (or thrown away with `Discard`). This is the **Transport Config** tab.
 3. **Live metrics** — read-only fields exposed through the same Provisioning namespace tree (radio link, channel utilisation, RNS destination hashes, WiFi info). These drive the **Node Status** tab together with KISS `CMD_STAT_*` frames.
 
+The **LoRa Access Control** namespace configures Reticulum IFAC for the radio
+backbone. Its Enabled, Network Name and Passphrase fields are reboot-required;
+set and commit the same name/passphrase on every peer before rebooting them.
+Enabled configurations require both strings. The passphrase is excluded from
+GetState responses, but is not encrypted at rest in LittleFS, so protect physical
+access to provisioned nodes.
+
 A node's identity in the RNS sense is a long-lived Ed25519 keypair generated on first boot. The Console never asks you to manage that directly — it reads identity hashes through the Metrics namespace and uses them when establishing remote links.
 
 ## Opening the Console
@@ -222,6 +229,12 @@ This is by far the highest-leverage feature — and the easiest to underestimate
 - The KISS-over-WebSocket endpoint on `native` and the KISS-over-TCP endpoint on `native` (port 7633) default to **loopback only**. Setting `kiss_ws_public = true` or `kiss_tcp_public = true` in `rnoded.conf` binds them on `0.0.0.0`, with no auth — only do this on a trusted network.
 - The RNS transport authenticates Link peers cryptographically (Reticulum Identity) and supports an allow-list via `RNS::Transport::remote_management_allowed()`. Configure this if your management destination is reachable over public mesh paths.
 - The `SECRET` field flag means a field's value is never returned in `GET_STATE` responses. PSKs and similar belong here. The Console displays "(secret — not exposed)" for these on read; you can still write a new value.
+- LoRa IFAC protects only Reticulum frames on the radio interface. It does not
+  protect the WiFi KISS control listener on TCP port 7633 or Bluetooth KISS;
+  both feed the same privileged command path as physical serial. Do not expose
+  them on an untrusted network. A follow-up secure-node PR will add TCP/UDP IFAC
+  and close those non-RNS wireless management paths as one recoverable posture;
+  its investigated design and acceptance plan are in `docs/PrivateMesh.md` §8.
 
 ### WiFi and AP mode
 

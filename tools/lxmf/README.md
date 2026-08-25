@@ -9,6 +9,15 @@ Run them under the RNS virtualenv:
 
     ~/.local/share/rnode-rns-venv/bin/python tools/lxmf/<script> ...
 
+`interop.py` honours `RNS_CONFIGDIR`, which is useful for an isolated test
+instance that must not attach to the workstation's shared `rnsd`. If a path
+response supplies the identity but no propagation announce data, a previously
+verified MsgPack announce payload can be supplied as `LXMF_PN_APP_DATA_HEX`.
+`LXMF_SEND_TIMEOUT` and `LXMF_SYNC_TIMEOUT` shorten the default 240- and
+180-second bounds when testing an expected failure. Persistent test identities
+and router state live under ignored `state/lxmf-interop/`; override that with
+`LXMF_STATE_DIR` when a separate fixture is required.
+
 | Script | What it does |
 | --- | --- |
 | `interop.py <pn_hash>` | Full round trip: sender A pushes a message for recipient B while B is offline, then B syncs and reads it. Set `LXBODY_PREFIX` to a long string to force the Resource path instead of the packet path. |
