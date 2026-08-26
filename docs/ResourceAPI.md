@@ -145,8 +145,9 @@ not invent its own answer to a question already answered elsewhere:
   Sideband/Columba. Already implemented.
 - **This resource API** — the machine-facing surface. MsgPack, typed schema,
   validation, transactional commit.
-- **IFAC** — who may exchange packets on an interface at all. Not implemented;
-  see `docs/PrivateMesh.md`, which is the next substantial piece of work.
+- **IFAC** — who may exchange packets on an interface at all. LoRa, TCP and UDP
+  IFAC plus the secure-node posture are implemented and hardware-verified; see
+  `docs/PrivateMesh.md`.
 
 **Authorisation must be shared, not duplicated.** NomadNet pages gate access by
 proven identity against `ALLOW_LIST`
@@ -159,11 +160,11 @@ as being authorised to reconfigure a radio, and on a public mesh anyone can
 reach the node anyway. IFAC reduces exposure; identity authorisation is what
 actually decides who may act.
 
-**Ordering.** If government adoption progresses, IFAC is likely a hard
-procurement requirement and blocks; the resource API is a differentiator for the
-industrial thread but blocks nothing. That argues for IFAC first, with the API's
-Stage 1 (host-side schema to OpenAPI, zero firmware cost) running alongside it
-since the two do not touch the same code.
+**Ordering.** The original IFAC prerequisite is complete. Current cross-feature
+priority is maintained in `docs/FeatureRoadmap.md`: RRC group chat and automatic
+disaster SoftAP now rank ahead of the Resource API. When Resource API work
+starts, Stage 1 remains the correct first increment because it is host-side,
+costs no firmware space and tests the product premise before protocol expansion.
 
 ## 6. Non-goals
 
