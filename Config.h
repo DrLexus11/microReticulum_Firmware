@@ -123,6 +123,18 @@
 	bool bt_enabled = false;
 	bool bt_allow_pairing = false;
 
+	// Network/Bluetooth KISS bypasses RNS IFAC. Provisioning is loaded from
+	// LittleFS late in setup(), so hold these transports closed until the
+	// persisted secure-node policy is known. Non-Provisioning builds retain the
+	// historical open behaviour.
+	#if defined(HAS_PROVISIONING)
+	bool wireless_kiss_policy_ready = false;
+	bool wireless_kiss_allowed = false;
+	#else
+	bool wireless_kiss_policy_ready = true;
+	bool wireless_kiss_allowed = true;
+	#endif
+
 	#define WR_CHANNEL_DEFAULT 1
 	#define WR_WIFI_OFF        0x00
 	#define WR_WIFI_STA        0x01

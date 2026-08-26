@@ -26,9 +26,9 @@
 #endif
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
+#endif
 #if defined(TCP_SERVER_TRANSPORT)
 #include "TCPServerInterface.h"
-#endif
 #endif
 #ifdef URTN_STATS_PAGES
 #include "Pages.h"
@@ -924,7 +924,12 @@ void setup() {
     // page served by `server` connects back to this with `new WebSocket(
     // "ws://" + location.hostname + ":81")`. Single client at a time —
     // same model as Remote.h's KISS-over-TCP.
-    ws_console::init(81);
+    // Provisioning-backed builds start this only after the secure-node policy
+    // has loaded. Otherwise an enabled secure posture would still expose KISS
+    // briefly during boot.
+    #if !defined(HAS_PROVISIONING)
+      ws_console::init(81);
+    #endif
   #endif
 
   #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52 || MCU_VARIANT == MCU_NATIVE

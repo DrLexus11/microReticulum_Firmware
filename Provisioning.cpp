@@ -14,6 +14,7 @@
 
 #include "Provisioning.h"
 #include "RadioPresets.h"
+#include "WebSocketConsole.h"
 
 //#include "Config.h"
 
@@ -83,6 +84,21 @@ extern uint16_t udp_port;
 extern uint8_t wifi_mode;
 extern char wr_ssid[33];
 #endif
+#if defined(TCP_SERVER_TRANSPORT)
+extern RNS::Interface tcp_server_interface;
+#endif
+#if HAS_WIFI
+extern void wifi_remote_apply_kiss_policy();
+#endif
+#if HAS_BLUETOOTH || HAS_BLE == true
+extern bool bt_init_ran;
+extern bool bt_enabled;
+extern void bt_start();
+extern void bt_stop();
+#endif
+extern bool console_active;
+extern bool wireless_kiss_policy_ready;
+extern bool wireless_kiss_allowed;
 extern bool kiss_framed_logs;
 extern bool nomadnet_enabled;
 extern RNS::Destination nomadnet_destination;
@@ -115,39 +131,99 @@ extern void escaped_serial_write(uint8_t byte);
 bool provisioning_started = false;
 RNS::Bytes provision_rx_buf;
 
-#if defined(LORA_TRANSPORT)
 static bool lora_ifac_enabled = false;
 static std::string lora_ifac_netname;
 static std::string lora_ifac_passphrase;
+static bool tcp_ifac_enabled = false;
+static std::string tcp_ifac_netname;
+static std::string tcp_ifac_passphrase;
+static bool udp_ifac_enabled = false;
+static std::string udp_ifac_netname;
+static std::string udp_ifac_passphrase;
+static bool secure_node_enabled = false;
 
-// IFAC protects only the radio backbone. Local TCP/UDP attachment remains
-// open so a nearby client does not need the mesh passphrase.
-static void apply_lora_ifac_configuration() {
-  if (!lora_interface) return;
-
-  if (!lora_ifac_enabled) {
-    lora_interface.disable_ifac();
-    INFO("LoRa IFAC disabled");
+static void apply_ifac_configuration(RNS::Interface& interface,
+                                     bool enabled,
+                                     const std::string& netname,
+                                     const std::string& passphrase,
+                                     uint8_t access_code_bytes,
+                                     const char* label) {
+  if (!interface) return;
+  if (!enabled) {
+    interface.disable_ifac();
+    INFOF("%s IFAC disabled", label);
     return;
   }
 
   // A provisioned-but-incomplete access-control configuration must never
-  // silently turn the radio into an open interface.
-  lora_interface.disable_ifac();
-  lora_interface.require_ifac(true);
-  if (lora_ifac_netname.empty() || lora_ifac_passphrase.empty()) {
-    ERROR("LoRa IFAC configuration is incomplete; radio is fail-closed");
+  // silently turn the interface into an open one.
+  interface.disable_ifac();
+  interface.require_ifac(true);
+  if (netname.empty() || passphrase.empty()) {
+    ERRORF("%s IFAC configuration is incomplete; interface is fail-closed", label);
     return;
   }
-  if (!lora_interface.enable_ifac(lora_ifac_netname.c_str(),
-                                  lora_ifac_passphrase.c_str(), 8)) {
-    ERROR("LoRa IFAC key derivation failed; radio is fail-closed");
+  if (!interface.enable_ifac(netname.c_str(), passphrase.c_str(),
+                             access_code_bytes)) {
+    ERRORF("%s IFAC key derivation failed; interface is fail-closed", label);
     return;
   }
-  INFOF("LoRa IFAC enabled for network '%s' (8-byte access code)",
-        lora_ifac_netname.c_str());
+  INFOF("%s IFAC enabled for network '%s' (%u-byte access code)",
+        label, netname.c_str(), (unsigned)access_code_bytes);
 }
+
+static void apply_all_ifac_configuration() {
+#if defined(LORA_TRANSPORT)
+  apply_ifac_configuration(lora_interface,
+                           lora_ifac_enabled || secure_node_enabled,
+                           lora_ifac_netname, lora_ifac_passphrase, 8, "LoRa");
 #endif
+#if defined(TCP_SERVER_TRANSPORT)
+  apply_ifac_configuration(tcp_server_interface,
+                           tcp_ifac_enabled || secure_node_enabled,
+                           tcp_ifac_netname, tcp_ifac_passphrase, 16, "TCP");
+#endif
+#if defined(UDP_TRANSPORT)
+  apply_ifac_configuration(udp_interface,
+                           udp_ifac_enabled || secure_node_enabled,
+                           udp_ifac_netname, udp_ifac_passphrase, 16, "UDP");
+#endif
+}
+
+static void apply_secure_node_configuration() {
+  wireless_kiss_policy_ready = true;
+  wireless_kiss_allowed = !secure_node_enabled;
+#if HAS_WIFI
+  wifi_remote_apply_kiss_policy();
+#endif
+#if defined(ENABLE_WEBSOCKETS) && __has_include(<WiFi.h>)
+  if (secure_node_enabled) ws_console::shutdown();
+  else ws_console::init(81);
+#endif
+#if HAS_BLUETOOTH || HAS_BLE == true
+  if (secure_node_enabled) {
+    if (bt_init_ran) bt_stop();
+  } else if (bt_init_ran && bt_enabled && !console_active) {
+    bt_start();
+  }
+#endif
+  INFOF("Secure-node posture %s; wireless KISS management %s",
+        secure_node_enabled ? "enabled" : "disabled",
+        wireless_kiss_allowed ? "enabled" : "disabled");
+}
+
+static void validate_ifac_commit(RNS::Provisioning::Namespace& ns,
+                                 const char* label) {
+  using namespace RNS::Provisioning;
+  Value v;
+  bool enabled = ns.draft(1, v) ? v.as_bool() : ns.working(1).as_bool();
+  std::string netname = ns.draft(2, v) ? v.as_string() : ns.working(2).as_string();
+  std::string passphrase = ns.draft(3, v) ? v.as_string() : ns.working(3).as_string();
+  if (enabled && (netname.empty() || passphrase.empty())) {
+    ERRORF("Rejected %s IFAC commit: network name and passphrase are required", label);
+    ns.clear_draft();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Register Provisioning namespaces. Called from init_provisioning()
@@ -317,20 +393,61 @@ static void register_provisioning_namespaces() {
         [](const Value& v) { lora_ifac_passphrase = v.as_string(); return true; },
         []() { return lora_ifac_passphrase; })
       .on_commit([](Namespace& ns) {
-        Value v;
-        bool enabled = ns.draft(PROV_IFAC_LORA_ENABLED, v)
-          ? v.as_bool() : ns.working(PROV_IFAC_LORA_ENABLED).as_bool();
-        std::string netname = ns.draft(PROV_IFAC_LORA_NETNAME, v)
-          ? v.as_string() : ns.working(PROV_IFAC_LORA_NETNAME).as_string();
-        std::string passphrase = ns.draft(PROV_IFAC_LORA_PASSPHRASE, v)
-          ? v.as_string() : ns.working(PROV_IFAC_LORA_PASSPHRASE).as_string();
-        if (enabled && (netname.empty() || passphrase.empty())) {
-          ERROR("Rejected LoRa IFAC commit: network name and passphrase are required");
-          ns.clear_draft();
-        }
+        validate_ifac_commit(ns, "LoRa");
       })
       .end();
 #endif
+
+#if defined(TCP_SERVER_TRANSPORT)
+  // ----- TCP RNS access-control namespace -----
+  Provisioner::instance()
+    .register_namespace("TCP Access Control", PROV_NS_IFAC_TCP)
+      .field_bool("Enabled", PROV_IFAC_TCP_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { tcp_ifac_enabled = v.as_bool(); return true; },
+        []() { return tcp_ifac_enabled; })
+      .field_string("Network Name", PROV_IFAC_TCP_NETNAME,
+        FF_REBOOT_REQUIRED, "", 64,
+        [](const Value& v) { tcp_ifac_netname = v.as_string(); return true; },
+        []() { return tcp_ifac_netname; })
+      .field_string("Passphrase", PROV_IFAC_TCP_PASSPHRASE,
+        (fflags_t)(FF_REBOOT_REQUIRED | FF_SECRET), "", 128,
+        [](const Value& v) { tcp_ifac_passphrase = v.as_string(); return true; },
+        []() { return tcp_ifac_passphrase; })
+      .on_commit([](Namespace& ns) { validate_ifac_commit(ns, "TCP"); })
+      .end();
+#endif
+
+#if defined(UDP_TRANSPORT)
+  // ----- UDP RNS access-control namespace -----
+  Provisioner::instance()
+    .register_namespace("UDP Access Control", PROV_NS_IFAC_UDP)
+      .field_bool("Enabled", PROV_IFAC_UDP_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { udp_ifac_enabled = v.as_bool(); return true; },
+        []() { return udp_ifac_enabled; })
+      .field_string("Network Name", PROV_IFAC_UDP_NETNAME,
+        FF_REBOOT_REQUIRED, "", 64,
+        [](const Value& v) { udp_ifac_netname = v.as_string(); return true; },
+        []() { return udp_ifac_netname; })
+      .field_string("Passphrase", PROV_IFAC_UDP_PASSPHRASE,
+        (fflags_t)(FF_REBOOT_REQUIRED | FF_SECRET), "", 128,
+        [](const Value& v) { udp_ifac_passphrase = v.as_string(); return true; },
+        []() { return udp_ifac_passphrase; })
+      .on_commit([](Namespace& ns) { validate_ifac_commit(ns, "UDP"); })
+      .end();
+#endif
+
+  // One switch controls all non-RNS wireless management surfaces. It is
+  // intentionally not split into independent toggles: a partially closed
+  // posture is too easy to mistake for a private node.
+  Provisioner::instance()
+    .register_namespace("Secure Node", PROV_NS_SECURE_NODE)
+      .field_bool("Enabled", PROV_SECURE_NODE_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { secure_node_enabled = v.as_bool(); return true; },
+        []() { return secure_node_enabled; })
+      .end();
 
   // ----- Metrics namespace -----
   //
@@ -542,9 +659,8 @@ static void register_provisioning_namespaces() {
 // ---------------------------------------------------------------------------
 void init_provisioning() {
   RNS::Provisioning::Provisioner::instance().on_factory_reset([]() {
-#if defined(LORA_TRANSPORT)
-    apply_lora_ifac_configuration();
-#endif
+    apply_all_ifac_configuration();
+    apply_secure_node_configuration();
   });
   RNS::Provisioning::Provisioner::instance().on_reboot_required([]() {
     // Host orchestrates reboot via CMD_RESET. Provisioner::needs_reboot()
@@ -556,11 +672,10 @@ void init_provisioning() {
   });
   register_provisioning_namespaces();
   RNS::Provisioning::Provisioner::instance().begin();
-#if defined(LORA_TRANSPORT)
   // begin() has loaded persistent state and replayed its setters. Apply the
-  // complete tuple once, before the LoRa interface is registered with RNS.
-  apply_lora_ifac_configuration();
-#endif
+  // complete tuples once, before interfaces are registered with Transport.
+  apply_all_ifac_configuration();
+  apply_secure_node_configuration();
   provisioning_started = true;
 }
 
