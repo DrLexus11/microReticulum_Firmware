@@ -120,14 +120,61 @@ class ProvisioningToolTests(unittest.TestCase):
         commit_requests = [entry for entry in client.calls if entry[0] == self.tool.OP_COMMIT]
         self.assertEqual(commit_requests[0][1][1][-1], self.tool.NS_SECURE_NODE)
 
+    def test_secure_operation_uses_only_advertised_interfaces(self):
+        client = FakeClient(self.tool, available_interfaces=("lora",))
+        administrator = bytes.fromhex("41" * 16)
+
+        self.tool.provision_secure(
+            client,
+            {"lora": "field-net"},
+            {"lora": "field-secret"},
+            administrator,
+        )
+
+        set_request = next(
+            payload for operation, payload in client.calls
+            if operation == self.tool.OP_SET_STATE
+        )
+        changes = set_request[3]
+        self.assertIn(self.tool.NS_IFAC_LORA, changes)
+        self.assertNotIn(self.tool.NS_IFAC_TCP, changes)
+        self.assertNotIn(self.tool.NS_IFAC_UDP, changes)
+        commit_request = next(
+            payload for operation, payload in client.calls
+            if operation == self.tool.OP_COMMIT
+        )
+        self.assertEqual(commit_request[1], [
+            self.tool.NS_SECURE_NODE,
+            self.tool.NS_GENERAL,
+            self.tool.NS_IFAC_LORA,
+        ])
+
+    def test_individual_disable_is_rejected_while_secure(self):
+        client = FakeClient(self.tool)
+        client.state[self.tool.NS_SECURE_NODE][
+            self.tool.FIELD_SECURE_NODE_ENABLED] = True
+
+        with self.assertRaisesRegex(RuntimeError, "use the open operation"):
+            self.tool.provision(client, "tcp", False, clear=True)
+
+        self.assertFalse(any(
+            operation == self.tool.OP_SET_STATE for operation, _ in client.calls
+        ))
+
 
 class FakeClient:
     """Minimal Provisioning wire model used to inspect the tool's transaction."""
 
-    def __init__(self, tool):
+    def __init__(self, tool, available_interfaces=None):
         self.tool = tool
         self.calls = []
         self.pending = {}
+        self.available_interfaces = tuple(
+            available_interfaces or tool.IFAC_NAMESPACES.keys())
+        self.available_namespace_ids = {
+            tool.IFAC_NAMESPACES[interface][0]
+            for interface in self.available_interfaces
+        }
         self.state = {
             tool.NS_GENERAL: {
                 tool.FIELD_REMOTE_MANAGEMENT_ENABLED: True,
@@ -135,7 +182,7 @@ class FakeClient:
             },
             tool.NS_SECURE_NODE: {tool.FIELD_SECURE_NODE_ENABLED: False},
         }
-        for namespace_id, _ in tool.IFAC_NAMESPACES.values():
+        for namespace_id in self.available_namespace_ids:
             self.state[namespace_id] = {
                 tool.FIELD_ENABLED: False,
                 tool.FIELD_NETNAME: "",
@@ -149,18 +196,24 @@ class FakeClient:
             ]
         elif namespace_id == self.tool.NS_SECURE_NODE:
             fields = [{1: self.tool.FIELD_SECURE_NODE_ENABLED, 4: 0}]
-        else:
+        elif namespace_id in self.available_namespace_ids:
             fields = [
                 {1: self.tool.FIELD_ENABLED, 4: 0},
                 {1: self.tool.FIELD_NETNAME, 4: 0},
                 {1: self.tool.FIELD_PASSPHRASE, 4: self.tool.FF_SECRET},
             ]
+        else:
+            return None
         return [namespace_id, "namespace-%d" % namespace_id, 0, fields]
 
     def request(self, operation, payload=None):
         self.calls.append((operation, payload))
         if operation == self.tool.OP_GET_SCHEMA:
-            return [self._schema(namespace_id) for namespace_id in payload[1]]
+            return [
+                schema for schema in (
+                    self._schema(namespace_id) for namespace_id in payload[1]
+                ) if schema is not None
+            ]
         if operation == self.tool.OP_SET_STATE:
             self.pending = payload[3]
             visible = {}

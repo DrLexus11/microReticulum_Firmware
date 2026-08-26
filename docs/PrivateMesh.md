@@ -230,9 +230,9 @@ Remaining product work:
 
 ## 8. Follow-up PR: TCP/UDP IFAC and the secure-node posture
 
-Status: **implemented on `feature/tcp-udp-ifac-secure-node`; host tests and
-Rev1/Rev2 builds pass, hardware acceptance pending.** Kept separate from the
-merged LoRa IFAC PR so each security boundary remains reviewable.
+Status: **implemented on `feature/tcp-udp-ifac-secure-node`; host tests,
+Rev1/Rev2 builds and hardware acceptance pass.** Kept separate from the merged
+LoRa IFAC PR so each security boundary remains reviewable.
 
 ### 8.1 Conclusion and boundary
 
@@ -319,15 +319,23 @@ forces every RNS interface into protected or fail-closed operation even if an
 individual Enabled flag is missing or corrupt.
 
 `tools/ifac/provision.py` now addresses each interface independently. Its
-`secure` operation stages all three credentials, the administrator allow-list,
+`secure` operation discovers the IFAC namespaces compiled into the connected
+board, then stages their credentials, the administrator allow-list,
 remote-management enablement and secure posture in one SetState/Commit
 transition. Provisioning persists namespaces as separate files, so this is not
 a power-loss-atomic database transaction. The secure flag is deliberately
 committed first: interruption can leave the node isolated, but not falsely
 secure with wireless KISS open; physical serial remains the recovery path.
-Passphrases remain prompt-only and are checked for omission from both draft and
-committed responses. The inverse `open` transition disables secure mode last,
-after all IFACs, preserving fail-closed behaviour if recovery is interrupted.
+The microReticulum wire commit reports and stops on persistent-storage failure,
+and the host treats that response as failure instead of verifying only the
+updated RAM state. The failed namespace remains dirty so the commit can be
+retried after storage recovers. Passphrases remain prompt-only and are checked
+for omission from both draft and committed responses. The inverse `open`
+transition disables secure mode last, after every advertised IFAC, preserving
+fail-closed behaviour if recovery is interrupted. Individual IFAC disable
+operations are rejected while secure mode is committed because secure mode
+would otherwise continue requiring that IFAC and cleared credentials would
+strand the interface.
 
 ### 8.4 Closing management paths
 

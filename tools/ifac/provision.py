@@ -139,6 +139,27 @@ def require_ifac_schema(client, interface="lora"):
     return namespace[1]
 
 
+def available_ifac_schemas(client):
+    """Return the IFACs compiled into this firmware after validating schemas."""
+    requested = [namespace_id for namespace_id, _ in IFAC_NAMESPACES.values()]
+    schema = client.request(OP_GET_SCHEMA, {1: requested})
+    if not isinstance(schema, list):
+        raise RuntimeError("unexpected IFAC schema response")
+    advertised = {
+        entry[0] for entry in schema
+        if isinstance(entry, list) and entry and entry[0] in requested
+    }
+    available = tuple(
+        interface for interface, (namespace_id, _) in IFAC_NAMESPACES.items()
+        if namespace_id in advertised
+    )
+    for interface in available:
+        require_ifac_schema(client, interface)
+    if not available:
+        raise RuntimeError("firmware does not advertise any RNS IFAC interfaces")
+    return available
+
+
 def stage_ifac(client, interface, enabled, network_name="", passphrase="", clear=False):
     namespace_id, _ = IFAC_NAMESPACES[interface]
     require_ifac_schema(client, interface)
@@ -163,6 +184,11 @@ def stage_ifac(client, interface, enabled, network_name="", passphrase="", clear
 
 
 def provision(client, interface, enabled, network_name="", passphrase="", clear=False):
+    if not enabled and secure_node_enabled(client):
+        raise RuntimeError(
+            "cannot disable an individual IFAC while secure-node posture is enabled; "
+            "use the open operation"
+        )
     namespace_id = stage_ifac(
         client, interface, enabled, network_name, passphrase, clear)
 
@@ -194,6 +220,16 @@ def require_secure_schema(client):
             raise RuntimeError("remote-management field %d is unavailable" % field)
 
 
+def secure_node_enabled(client):
+    """Read committed secure-node state; absent schemas are legacy/open."""
+    schema = client.request(OP_GET_SCHEMA, {1: [NS_SECURE_NODE]})
+    if not isinstance(schema, list) or not schema:
+        return False
+    state = client.request(OP_GET_STATE, {1: [NS_SECURE_NODE]})
+    return bool(state.get(1, {}).get(NS_SECURE_NODE, {}).get(
+        FIELD_SECURE_NODE_ENABLED, False))
+
+
 def parse_administrator(value):
     try:
         decoded = bytes.fromhex(value)
@@ -204,10 +240,11 @@ def parse_administrator(value):
     return decoded
 
 
-def provision_secure(client, networks, passphrases, administrator):
+def provision_secure(client, networks, passphrases, administrator, interfaces=None):
     """Stage all IFACs, the admin allow-list, and fail-closed secure posture."""
     require_secure_schema(client)
-    for interface in IFAC_NAMESPACES:
+    interfaces = tuple(interfaces or available_ifac_schemas(client))
+    for interface in interfaces:
         require_ifac_schema(client, interface)
 
     changes = {
@@ -217,7 +254,8 @@ def provision_secure(client, networks, passphrases, administrator):
         },
         NS_SECURE_NODE: {FIELD_SECURE_NODE_ENABLED: True},
     }
-    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+    for interface in interfaces:
+        namespace_id, _ = IFAC_NAMESPACES[interface]
         changes[namespace_id] = {
             FIELD_ENABLED: True,
             FIELD_NETNAME: networks[interface],
@@ -228,15 +266,17 @@ def provision_secure(client, networks, passphrases, administrator):
     # can then isolate the RNS interfaces, but can never reboot into a posture
     # that was reported as secure while wireless KISS remains open. Physical
     # serial is deliberately retained for recovery.
-    namespace_ids = [NS_SECURE_NODE, NS_GENERAL, NS_IFAC_LORA,
-                     NS_IFAC_TCP, NS_IFAC_UDP]
+    namespace_ids = [NS_SECURE_NODE, NS_GENERAL] + [
+        IFAC_NAMESPACES[interface][0] for interface in interfaces
+    ]
     response = client.request(OP_SET_STATE, {3: changes, 5: True})
     errors = response.get(3, []) if isinstance(response, dict) else []
     if errors:
         client.request(OP_DISCARD, namespace_ids)
         raise RuntimeError("secure-node SetState field errors: %r" % (errors,))
     drafts = response.get(5, {}) if isinstance(response, dict) else {}
-    for namespace_id in (NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP):
+    for interface in interfaces:
+        namespace_id = IFAC_NAMESPACES[interface][0]
         if FIELD_PASSPHRASE in drafts.get(namespace_id, {}):
             client.request(OP_DISCARD, namespace_ids)
             raise RuntimeError("firmware exposed a SECRET draft; changes discarded")
@@ -249,7 +289,8 @@ def provision_secure(client, networks, passphrases, administrator):
     admins = values.get(NS_GENERAL, {}).get(FIELD_REMOTE_MANAGEMENT_ALLOWED, [])
     if administrator not in admins:
         raise RuntimeError("administrator allow-list did not verify")
-    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+    for interface in interfaces:
+        namespace_id, _ = IFAC_NAMESPACES[interface]
         iface = values.get(namespace_id, {})
         if not iface.get(FIELD_ENABLED, False):
             raise RuntimeError("%s IFAC Enabled value did not verify" % interface)
@@ -260,12 +301,15 @@ def provision_secure(client, networks, passphrases, administrator):
     return committed
 
 
-def provision_open(client, clear=False):
+def provision_open(client, clear=False, interfaces=None):
     """Stage the fail-closed transition back to an open-node posture."""
     require_secure_schema(client)
+    interfaces = tuple(interfaces or available_ifac_schemas(client))
     changes = {NS_SECURE_NODE: {FIELD_SECURE_NODE_ENABLED: False}}
-    namespace_ids = [NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP, NS_SECURE_NODE]
-    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+    namespace_ids = [IFAC_NAMESPACES[interface][0] for interface in interfaces]
+    namespace_ids.append(NS_SECURE_NODE)
+    for interface in interfaces:
+        namespace_id, _ = IFAC_NAMESPACES[interface]
         require_ifac_schema(client, interface)
         changes[namespace_id] = {FIELD_ENABLED: False}
         if clear:
@@ -276,7 +320,8 @@ def provision_open(client, clear=False):
         client.request(OP_DISCARD, namespace_ids)
         raise RuntimeError("open-node SetState field errors: %r" % (errors,))
     drafts = response.get(5, {}) if isinstance(response, dict) else {}
-    for namespace_id in (NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP):
+    for interface in interfaces:
+        namespace_id = IFAC_NAMESPACES[interface][0]
         if FIELD_PASSPHRASE in drafts.get(namespace_id, {}):
             client.request(OP_DISCARD, namespace_ids)
             raise RuntimeError("firmware exposed a SECRET draft; changes discarded")
@@ -286,7 +331,8 @@ def provision_open(client, clear=False):
     values = state.get(1, {})
     if values.get(NS_SECURE_NODE, {}).get(FIELD_SECURE_NODE_ENABLED, True):
         raise RuntimeError("secure-node Enabled value did not verify as disabled")
-    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+    for interface in interfaces:
+        namespace_id, _ = IFAC_NAMESPACES[interface]
         iface = values.get(namespace_id, {})
         if iface.get(FIELD_ENABLED, True):
             raise RuntimeError("%s IFAC did not verify as disabled" % interface)
@@ -367,7 +413,8 @@ def main():
     client = KissProvisioner(args.port, boot_wait=args.boot_wait)
     try:
         if args.action == "schema":
-            selected = IFAC_NAMESPACES if args.interface == "all" else (args.interface,)
+            selected = (available_ifac_schemas(client)
+                        if args.interface == "all" else (args.interface,))
             names = [require_ifac_schema(client, interface) for interface in selected]
             if args.interface == "all":
                 require_secure_schema(client)
@@ -393,27 +440,31 @@ def main():
             client.reboot()
             print("reboot requested")
         elif args.action == "secure":
+            interfaces = available_ifac_schemas(client)
             networks = {}
-            for interface in IFAC_NAMESPACES:
+            for interface in interfaces:
                 networks[interface] = getattr(args, "%s_network" % interface) or args.network
                 if not networks[interface]:
                     raise RuntimeError("--%s-network or --network is required" % interface)
             administrator = parse_administrator(args.administrator)
             if args.shared_passphrase:
                 shared = prompt_passphrase("Shared")
-                passphrases = {interface: shared for interface in IFAC_NAMESPACES}
+                passphrases = {interface: shared for interface in interfaces}
             else:
                 passphrases = {
-                    interface: prompt_passphrase(label)
-                    for interface, (_, label) in IFAC_NAMESPACES.items()
+                    interface: prompt_passphrase(IFAC_NAMESPACES[interface][1])
+                    for interface in interfaces
                 }
-            result = provision_secure(client, networks, passphrases, administrator)
+            result = provision_secure(
+                client, networks, passphrases, administrator, interfaces)
             print("secure-node posture committed; reboot required: %s" %
                   bool(result.get(2, False)))
             print("recovery after reboot: physical KISS serial on %s" % args.port)
             print("wireless KISS TCP 7633 and Bluetooth KISS will be disabled")
         elif args.action == "open":
-            result = provision_open(client, clear=args.clear_credentials)
+            interfaces = available_ifac_schemas(client)
+            result = provision_open(
+                client, clear=args.clear_credentials, interfaces=interfaces)
             print("open-node posture committed; reboot required: %s" %
                   bool(result.get(2, False)))
             print("physical KISS serial on %s remains the recovery path until reboot" % args.port)

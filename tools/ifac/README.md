@@ -1,9 +1,9 @@
 # IFAC and secure-node provisioning
 
-`provision.py` configures LoRa, TCP and UDP interface access codes and the
-fully private secure-node posture over a board's **physical** KISS serial
-connection. Run it with the repository's RNS virtualenv so `pyserial` and
-MsgPack are available:
+`provision.py` configures the LoRa, TCP and UDP interface access codes compiled
+into a board and the fully private secure-node posture over its **physical**
+KISS serial connection. Run it with the repository's RNS virtualenv so
+`pyserial` and MsgPack are available:
 
 ```sh
 ~/.local/share/rnode-rns-venv/bin/python tools/ifac/provision.py \
@@ -48,11 +48,17 @@ python tools/ifac/provision.py --port /dev/ttyACM1 \
   disable --interface tcp --clear-credentials
 ```
 
+Individual disable operations are rejected while Secure Node is enabled,
+because secure mode deliberately forces every compiled RNS interface to remain
+protected or fail-closed. Use the atomic `open` operation below when returning
+a secure node to an open posture.
+
 ## Fully private secure-node posture
 
-The `secure` operation stages one transaction containing:
+The `secure` operation discovers the IFAC namespaces advertised by the board
+and stages one transaction containing:
 
-- LoRa, TCP and UDP IFAC enabled with complete credentials;
+- every compiled RNS interface IFAC enabled with complete credentials;
 - remote management enabled with the supplied administrator identity hash;
 - the administrator allow-list; and
 - the secure-node switch that disables WiFi KISS on TCP 7633, the optional
@@ -72,9 +78,11 @@ python tools/ifac/provision.py --port /dev/ttyACM1 secure \
   --administrator 0123456789abcdef0123456789abcdef
 ```
 
-If an installation deliberately uses one name for every interface, `--network`
-provides the common fallback. `--shared-passphrase` prompts only once and reuses
-that secret explicitly:
+Options for interfaces not compiled into the connected board are ignored by
+the secure transaction and do not require values. If an installation
+deliberately uses one name for every available interface, `--network` provides
+the common fallback. `--shared-passphrase` prompts only once and reuses that
+secret explicitly:
 
 ```sh
 python tools/ifac/provision.py --port /dev/ttyACM1 secure \
@@ -96,7 +104,7 @@ python tools/ifac/provision.py --port /dev/ttyUSB0 --boot-wait 0 reboot
 ## Physical recovery and factory reset
 
 To return a reachable unit to the open posture, connect its physical USB/UART
-and disable secure mode plus all three IFACs in one staged transition:
+and disable secure mode plus every advertised IFAC in one staged transition:
 
 ```sh
 python tools/ifac/provision.py --port /dev/ttyACM1 \
@@ -107,6 +115,10 @@ python tools/ifac/provision.py --port /dev/ttyACM1 --boot-wait 0 reboot
 Factory reset restores the same open defaults. Never perform the first secure
 transition on a remotely mounted node until the physical recovery port and the
 administrator identity have both been exercised on the bench.
+
+Commit responses include persistent-storage failures. The tool treats one as a
+failed operation and does not claim that the secure posture was stored; correct
+the storage fault and repeat the operation before rebooting.
 
 Opening Rev1's native USB serial port resets that board. Rev2's external UART
 bridge normally does not. A Rev2 UART firmware upload still requires the
