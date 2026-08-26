@@ -509,16 +509,27 @@ void wifi_update_status() {
 void update_wifi() {
 #if defined(UDP_TRANSPORT)
   if (wifi_initialized) {
-    if (udp.parsePacket() > 0) {
+    int packet_len = udp.parsePacket();
+    if (packet_len > 0) {
       udp_rx_count++;
-      size_t len = udp.read(udp_buffer.writable(MTU), MTU);
-    if (len > 0) {
-        udp_buffer.resize(len);
+      if (packet_len > UDP_RX_CAPACITY) {
+        // Reading into a smaller buffer returns a truncated prefix. Drain and
+        // reject the whole datagram so Transport never sees partial input.
+        uint8_t discard[64];
+        while (udp.available() > 0) udp.read(discard, sizeof(discard));
+        WARNINGF("Dropped oversized UDP datagram (%d > %u bytes)",
+                 packet_len, (unsigned)UDP_RX_CAPACITY);
+      } else {
+        int len = udp.read(udp_buffer.writable(UDP_RX_CAPACITY), UDP_RX_CAPACITY);
+        if (len > 0 && len == packet_len) {
+          udp_buffer.resize((size_t)len);
 #if defined(HAS_RNS)
-        if (udp_interface) {
-          udp_interface.handle_incoming(udp_buffer);
-        }
+          if (udp_interface) udp_interface.handle_incoming(udp_buffer);
 #endif
+        } else if (len >= 0) {
+          WARNINGF("Dropped incomplete UDP datagram (%d of %d bytes)",
+                   len, packet_len);
+        }
       }
     }
   }
