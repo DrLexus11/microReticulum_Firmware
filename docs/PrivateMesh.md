@@ -230,9 +230,9 @@ Remaining product work:
 
 ## 8. Follow-up PR: TCP/UDP IFAC and the secure-node posture
 
-Status: **investigated and feasible; deliberately not implemented on
-`feature/IFAC-interop`.** Implement this as a separate secure-node PR so the
-already accepted LoRa work remains small and reviewable.
+Status: **implemented on `feature/tcp-udp-ifac-secure-node`; host tests and
+Rev1/Rev2 builds pass, hardware acceptance pending.** Kept separate from the
+merged LoRa IFAC PR so each security boundary remains reviewable.
 
 ### 8.1 Conclusion and boundary
 
@@ -273,7 +273,7 @@ multiplexes every connected TCP client as a shared segment. Consequently all
 clients on that listener share one access-code configuration; per-client keys
 would require separate interface instances and are outside the proposed scope.
 
-UDP has a concrete truncation bug to fix before enabling IFAC. Although
+UDP had a concrete truncation bug before this branch. Although
 `UDPInterface` advertises a 1064-byte hardware MTU, `update_wifi()` in
 `Remote.h` reads each datagram with the radio/KISS `MTU` limit of 508 bytes:
 
@@ -282,13 +282,12 @@ udp.read(udp_buffer.writable(MTU), MTU)
 ```
 
 A maximum Reticulum packet protected by Python's 16-byte UDP IFAC is 516
-bytes, so the current receive path truncates it before authentication. Do not
-raise the global 508-byte radio/KISS constant: introduce a UDP-specific receive
-capacity. Use **564 bytes** (500-byte RNS MTU plus microReticulum's maximum
-64-byte IFAC), rather than fixing only today's 516-byte case. Reject an
-oversized datagram explicitly instead of passing truncated data to Transport.
-The UDP send path already writes the complete `RNS::Bytes` object and needs no
-equivalent size change.
+bytes, so the old path truncated it before authentication. `UDP_RX_CAPACITY` is
+now **564 bytes** (500-byte RNS MTU plus microReticulum's maximum 64-byte IFAC)
+without changing the radio/KISS MTU. The receive path compares the announced
+datagram length first and drains/rejects oversized or incomplete datagrams
+instead of passing truncated data to Transport. The UDP send path already
+writes the complete `RNS::Bytes` object and needed no equivalent change.
 
 ### 8.3 Provisioning design
 
@@ -313,11 +312,22 @@ so it fails closed. Reject incomplete commits as the current LoRa namespace
 does. Keep all access-control fields reboot-required so a provisioning response
 cannot be stranded by changing protection midway through the exchange.
 
-Extend `tools/ifac/provision.py` to address LoRa, TCP and UDP independently, and
-add one explicit secure-node operation that stages and validates the whole
-posture before committing it. It must never place passphrases on the command
-line or echo secret draft/committed values. The operation should report exactly
-which recovery transport remains before it requests a reboot.
+Namespaces 110 and 111 now implement those independent TCP and UDP tuples, and
+namespace 112 carries the single secure-node posture switch. The common apply
+helper uses 8 bytes for LoRa and 16 bytes for TCP/UDP. Secure mode additionally
+forces every RNS interface into protected or fail-closed operation even if an
+individual Enabled flag is missing or corrupt.
+
+`tools/ifac/provision.py` now addresses each interface independently. Its
+`secure` operation stages all three credentials, the administrator allow-list,
+remote-management enablement and secure posture in one SetState/Commit
+transition. Provisioning persists namespaces as separate files, so this is not
+a power-loss-atomic database transaction. The secure flag is deliberately
+committed first: interruption can leave the node isolated, but not falsely
+secure with wireless KISS open; physical serial remains the recovery path.
+Passphrases remain prompt-only and are checked for omission from both draft and
+committed responses. The inverse `open` transition disables secure mode last,
+after all IFACs, preserving fail-closed behaviour if recovery is interrupted.
 
 ### 8.4 Closing management paths
 
@@ -327,7 +337,7 @@ which handles legacy configuration, data and `CMD_PROVISION_REQ`. Protecting
 TCP port 4242 or UDP port 4242 does nothing to this listener. Anyone who can
 reach it has a configuration path unless it is disabled.
 
-The secure-node posture must therefore:
+The secure-node posture now:
 
 1. disable the WiFi KISS listener on port 7633;
 2. disable Bluetooth KISS unless the deployment explicitly requires it and has
@@ -337,11 +347,12 @@ The secure-node posture must therefore:
 4. retain physical USB/UART KISS for recovery; and
 5. return to a documented recoverable/open state on factory reset.
 
-Treat these as one reboot-required secure-node transition, not unrelated
-toggles an operator can only partly apply. Before accepting the transition,
-verify that TCP/UDP credentials are complete, the remote-management allow-list
-contains the intended administrator where remote administration is required,
-and a physical recovery transport is present in the board profile.
+These are one reboot-required transition, not unrelated toggles. WiFi and BLE
+KISS start fail-closed while the LittleFS-backed policy is loading, avoiding a
+brief unauthenticated boot window. Factory reset restores the open default.
+The tool verifies complete interface credentials and the intended administrator
+before reporting success, then names the physical serial device that remains as
+the recovery transport.
 
 The fallback SoftAP password is not a substitute for this work. It is derived
 from the publicly observable MAC address using code present in the firmware,
@@ -393,3 +404,71 @@ Record firmware hashes, exact interface configuration, Python RNS version and
 positive/negative outcomes here, just as for the LoRa acceptance in §7. Do not
 merge on path discovery alone: require a real bidirectional packet or LXMF
 acknowledgement on each protected IP interface.
+
+### 8.7 Hardware acceptance record (2026-08-26)
+
+The follow-up implementation was exercised on both RAD-01 revisions with
+Python RNS 1.4.2 and LXMF 1.1.1. Rev 1 used native USB at `/dev/ttyACM1`; Rev 2
+used the CP2102 UART bridge at `/dev/ttyUSB0`, including the mandatory
+post-upload power cycle and `fixhash` operation.
+
+| Board | Environment | Firmware hash |
+| --- | --- | --- |
+| IMPR-RAD-01 Rev 1 | `impr-rad01-rev1` | `e5b2d4868d1c8857f5001cdad6649f1c3610c9241596cc44e06813372f680d62` |
+| IMPR-RAD-01 Rev 2 | `impr-rad01-rev2-uart` | `24ebb4e37b86b081acc1727af2e39be36aae684e48ec174f08724a134ffce857` |
+
+The temporary test tuples used distinct TCP and UDP names and passphrases.
+Both were cleared after recovery. The pre-existing LoRa tuple remained enabled
+under network name `IFAC interoperability test`; its write-only passphrase was
+never read or replaced. The two existing remote-management administrators were
+also left unchanged.
+
+Results:
+
+- **Startup listener regression:** the first hardware image exposed an
+  address-ordering defect: TCP 7633 was started before DHCP and never acquired
+  a working listener. `Remote.h` now tracks the bound address and recreates the
+  listener when DHCP completes. Both boards then kept ports 4242 and 7633 open
+  across repeated connect/disconnect probes in open mode.
+- **Schemas and secrecy:** both physical transports advertised LoRa, TCP and
+  UDP Access Control plus Secure Node. Passphrase remained absent from draft
+  and committed responses.
+- **TCP rejection:** isolated unprotected and wrong-key Python TCP fixtures
+  connected to Rev 1's socket but obtained no path. A matching 128-bit IFAC
+  completed a link and page request. A separate 766-byte propagated LXMF
+  Resource was acknowledged by the node and downloaded byte-for-byte by its
+  recipient.
+- **UDP rejection and capacity:** isolated unprotected and wrong-key Python UDP
+  fixtures obtained no path to Rev 2. A matching 128-bit IFAC completed a link
+  and page request. A 1,166-byte propagated LXMF Resource was acknowledged and
+  downloaded byte-for-byte, exercising multi-packet protected traffic and the
+  516-byte maximum protected datagram path. The automated firmware contract
+  also verifies the 564-byte receive capacity and the reject-before-dispatch
+  branch for oversized datagrams; no live drop counter is currently exported.
+- **Boundary re-signing:** with only the protected TCP fixture connected to Rev
+  1, a link and page exchange with Rev 2 completed across Rev 1 TCP, the
+  protected LoRa backbone and Rev 2. There was no direct host UDP route in that
+  fixture.
+- **Secure posture:** after secure-mode reboot, both boards refused TCP 7633
+  while protected TCP 4242 and UDP continued to complete bidirectional page
+  exchanges. Rev 2 was separately observed advertising as `RNode 87D8` after
+  Bluetooth was enabled; after secure reboot it disappeared from an active
+  BlueZ scan and 7633 was closed. Bluetooth was restored to its original
+  disabled setting afterward.
+- **Cold-boot persistence:** both boards were physically power-cycled in secure
+  mode. The closed 7633 / reachable protected 4242 split persisted, and both
+  protected page exchanges succeeded again.
+- **Physical recovery:** USB on Rev 1 and UART on Rev 2 remained usable in
+  secure mode. A staged recovery disabled secure mode and cleared only TCP/UDP,
+  after which 7633 reopened and unprotected TCP and UDP page exchanges
+  succeeded. `tools/rad01/lab_status.py` ended `HEALTHY` for both boards, and
+  the normal host `rnsd` interfaces and LXMF daemon were restored.
+
+Repository verification completed with 31 Python tests passing and successful
+builds of both RAD environments. The microReticulum PlatformIO runner discovered
+all 19 `test_ifac` cases but could not compile any on this host because its
+native toolchain cannot resolve the system `stdio.h`, `setjmp.h` and
+`features.h` headers. This is a host toolchain defect rather than a test
+failure; the firmware builds compile the pinned microReticulum commit on both
+ESP32-S3 targets. Repeat the 19 native cases in CI or on a host with a complete
+native PlatformIO toolchain before merge.

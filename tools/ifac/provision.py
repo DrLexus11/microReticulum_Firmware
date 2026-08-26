@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision LoRa IFAC directly over a board's KISS serial connection.
+"""Provision interface IFAC and secure-node policy over physical KISS serial.
 
 Use the repository's RNS virtual environment, which supplies pyserial and
 umsgpack. Passphrases are prompted on the terminal and never accepted as command
@@ -21,8 +21,18 @@ CMD_RESET, CMD_RESET_BYTE = 0x55, 0xF8
 
 OP_GET_SCHEMA, OP_GET_STATE = 1, 4
 OP_SET_STATE, OP_COMMIT, OP_DISCARD = 5, 6, 7
-NS_IFAC_LORA = 109
+NS_GENERAL = 1
+FIELD_REMOTE_MANAGEMENT_ENABLED = 3
+FIELD_REMOTE_MANAGEMENT_ALLOWED = 8
+NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP = 109, 110, 111
+NS_SECURE_NODE = 112
 FIELD_ENABLED, FIELD_NETNAME, FIELD_PASSPHRASE = 1, 2, 3
+FIELD_SECURE_NODE_ENABLED = 1
+IFAC_NAMESPACES = {
+    "lora": (NS_IFAC_LORA, "LoRa"),
+    "tcp": (NS_IFAC_TCP, "TCP"),
+    "udp": (NS_IFAC_UDP, "UDP"),
+}
 NS_RADIO = 101
 FIELD_OP_MODE = 1
 MODE_HOST, MODE_TNC = 0x11, 0x12
@@ -113,13 +123,14 @@ class KissProvisioner:
         self.serial.flush()
 
 
-def require_ifac_schema(client):
-    schema = client.request(OP_GET_SCHEMA, {1: [NS_IFAC_LORA]})
+def require_ifac_schema(client, interface="lora"):
+    namespace_id, label = IFAC_NAMESPACES[interface]
+    schema = client.request(OP_GET_SCHEMA, {1: [namespace_id]})
     if not isinstance(schema, list) or len(schema) != 1:
-        raise RuntimeError("firmware does not advertise LoRa Access Control")
+        raise RuntimeError("firmware does not advertise %s Access Control" % label)
     namespace = schema[0]
-    if len(namespace) < 4 or namespace[0] != NS_IFAC_LORA:
-        raise RuntimeError("unexpected IFAC namespace schema")
+    if len(namespace) < 4 or namespace[0] != namespace_id:
+        raise RuntimeError("unexpected %s IFAC namespace schema" % label)
     fields = {entry.get(1): entry for entry in namespace[3] if isinstance(entry, dict)}
     if set(fields) != {FIELD_ENABLED, FIELD_NETNAME, FIELD_PASSPHRASE}:
         raise RuntimeError("unexpected IFAC field set: %r" % sorted(fields))
@@ -128,35 +139,159 @@ def require_ifac_schema(client):
     return namespace[1]
 
 
-def provision(client, enabled, network_name="", passphrase="", clear=False):
-    require_ifac_schema(client)
+def stage_ifac(client, interface, enabled, network_name="", passphrase="", clear=False):
+    namespace_id, _ = IFAC_NAMESPACES[interface]
+    require_ifac_schema(client, interface)
     fields = {FIELD_ENABLED: enabled}
     if enabled or clear:
         fields[FIELD_NETNAME] = network_name
         fields[FIELD_PASSPHRASE] = passphrase
 
-    response = client.request(OP_SET_STATE, {3: {NS_IFAC_LORA: fields}, 5: True})
+    response = client.request(OP_SET_STATE, {3: {namespace_id: fields}, 5: True})
     errors = response.get(3, []) if isinstance(response, dict) else []
     if errors:
-        client.request(OP_DISCARD, [NS_IFAC_LORA])
+        client.request(OP_DISCARD, [namespace_id])
         raise RuntimeError("SetState field errors: %r" % (errors,))
 
     # IncludeState is useful for atomic verification, but no response is ever
     # allowed to echo the secret draft back to a reader.
     drafts = response.get(5, {}) if isinstance(response, dict) else {}
-    if FIELD_PASSPHRASE in drafts.get(NS_IFAC_LORA, {}):
-        client.request(OP_DISCARD, [NS_IFAC_LORA])
+    if FIELD_PASSPHRASE in drafts.get(namespace_id, {}):
+        client.request(OP_DISCARD, [namespace_id])
         raise RuntimeError("firmware exposed a SECRET draft; changes discarded")
+    return namespace_id
 
-    committed = client.request(OP_COMMIT, {1: [NS_IFAC_LORA], 5: True})
-    state = client.request(OP_GET_STATE, {1: [NS_IFAC_LORA]})
-    values = state.get(1, {}).get(NS_IFAC_LORA, {})
+
+def provision(client, interface, enabled, network_name="", passphrase="", clear=False):
+    namespace_id = stage_ifac(
+        client, interface, enabled, network_name, passphrase, clear)
+
+    committed = client.request(OP_COMMIT, {1: [namespace_id], 5: True})
+    state = client.request(OP_GET_STATE, {1: [namespace_id]})
+    values = state.get(1, {}).get(namespace_id, {})
     if bool(values.get(FIELD_ENABLED, False)) != enabled:
         raise RuntimeError("committed Enabled value did not verify")
     if enabled and values.get(FIELD_NETNAME) != network_name:
         raise RuntimeError("committed Network Name did not verify")
     if FIELD_PASSPHRASE in values:
         raise RuntimeError("firmware exposed a committed SECRET value")
+    return committed
+
+
+def require_secure_schema(client):
+    schema = client.request(OP_GET_SCHEMA, {1: [NS_SECURE_NODE, NS_GENERAL]})
+    by_id = {entry[0]: entry for entry in schema if isinstance(entry, list) and entry}
+    secure = by_id.get(NS_SECURE_NODE)
+    general = by_id.get(NS_GENERAL)
+    if secure is None or general is None:
+        raise RuntimeError("firmware does not advertise the secure-node schema")
+    secure_fields = {entry.get(1): entry for entry in secure[3] if isinstance(entry, dict)}
+    if set(secure_fields) != {FIELD_SECURE_NODE_ENABLED}:
+        raise RuntimeError("unexpected Secure Node field set")
+    general_fields = {entry.get(1): entry for entry in general[3] if isinstance(entry, dict)}
+    for field in (FIELD_REMOTE_MANAGEMENT_ENABLED, FIELD_REMOTE_MANAGEMENT_ALLOWED):
+        if field not in general_fields:
+            raise RuntimeError("remote-management field %d is unavailable" % field)
+
+
+def parse_administrator(value):
+    try:
+        decoded = bytes.fromhex(value)
+    except ValueError as error:
+        raise RuntimeError("administrator must be hexadecimal") from error
+    if len(decoded) != 16:
+        raise RuntimeError("administrator must be a 16-byte identity hash")
+    return decoded
+
+
+def provision_secure(client, networks, passphrases, administrator):
+    """Stage all IFACs, the admin allow-list, and fail-closed secure posture."""
+    require_secure_schema(client)
+    for interface in IFAC_NAMESPACES:
+        require_ifac_schema(client, interface)
+
+    changes = {
+        NS_GENERAL: {
+            FIELD_REMOTE_MANAGEMENT_ENABLED: True,
+            FIELD_REMOTE_MANAGEMENT_ALLOWED: [administrator],
+        },
+        NS_SECURE_NODE: {FIELD_SECURE_NODE_ENABLED: True},
+    }
+    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+        changes[namespace_id] = {
+            FIELD_ENABLED: True,
+            FIELD_NETNAME: networks[interface],
+            FIELD_PASSPHRASE: passphrases[interface],
+        }
+
+    # Persist the secure flag first. A power loss during the multi-file commit
+    # can then isolate the RNS interfaces, but can never reboot into a posture
+    # that was reported as secure while wireless KISS remains open. Physical
+    # serial is deliberately retained for recovery.
+    namespace_ids = [NS_SECURE_NODE, NS_GENERAL, NS_IFAC_LORA,
+                     NS_IFAC_TCP, NS_IFAC_UDP]
+    response = client.request(OP_SET_STATE, {3: changes, 5: True})
+    errors = response.get(3, []) if isinstance(response, dict) else []
+    if errors:
+        client.request(OP_DISCARD, namespace_ids)
+        raise RuntimeError("secure-node SetState field errors: %r" % (errors,))
+    drafts = response.get(5, {}) if isinstance(response, dict) else {}
+    for namespace_id in (NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP):
+        if FIELD_PASSPHRASE in drafts.get(namespace_id, {}):
+            client.request(OP_DISCARD, namespace_ids)
+            raise RuntimeError("firmware exposed a SECRET draft; changes discarded")
+
+    committed = client.request(OP_COMMIT, {1: namespace_ids, 5: True})
+    state = client.request(OP_GET_STATE, {1: namespace_ids})
+    values = state.get(1, {})
+    if not values.get(NS_SECURE_NODE, {}).get(FIELD_SECURE_NODE_ENABLED, False):
+        raise RuntimeError("secure-node Enabled value did not verify")
+    admins = values.get(NS_GENERAL, {}).get(FIELD_REMOTE_MANAGEMENT_ALLOWED, [])
+    if administrator not in admins:
+        raise RuntimeError("administrator allow-list did not verify")
+    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+        iface = values.get(namespace_id, {})
+        if not iface.get(FIELD_ENABLED, False):
+            raise RuntimeError("%s IFAC Enabled value did not verify" % interface)
+        if iface.get(FIELD_NETNAME) != networks[interface]:
+            raise RuntimeError("%s IFAC Network Name did not verify" % interface)
+        if FIELD_PASSPHRASE in iface:
+            raise RuntimeError("firmware exposed a committed SECRET value")
+    return committed
+
+
+def provision_open(client, clear=False):
+    """Stage the fail-closed transition back to an open-node posture."""
+    require_secure_schema(client)
+    changes = {NS_SECURE_NODE: {FIELD_SECURE_NODE_ENABLED: False}}
+    namespace_ids = [NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP, NS_SECURE_NODE]
+    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+        require_ifac_schema(client, interface)
+        changes[namespace_id] = {FIELD_ENABLED: False}
+        if clear:
+            changes[namespace_id].update({FIELD_NETNAME: "", FIELD_PASSPHRASE: ""})
+    response = client.request(OP_SET_STATE, {3: changes, 5: True})
+    errors = response.get(3, []) if isinstance(response, dict) else []
+    if errors:
+        client.request(OP_DISCARD, namespace_ids)
+        raise RuntimeError("open-node SetState field errors: %r" % (errors,))
+    drafts = response.get(5, {}) if isinstance(response, dict) else {}
+    for namespace_id in (NS_IFAC_LORA, NS_IFAC_TCP, NS_IFAC_UDP):
+        if FIELD_PASSPHRASE in drafts.get(namespace_id, {}):
+            client.request(OP_DISCARD, namespace_ids)
+            raise RuntimeError("firmware exposed a SECRET draft; changes discarded")
+
+    committed = client.request(OP_COMMIT, {1: namespace_ids, 5: True})
+    state = client.request(OP_GET_STATE, {1: namespace_ids})
+    values = state.get(1, {})
+    if values.get(NS_SECURE_NODE, {}).get(FIELD_SECURE_NODE_ENABLED, True):
+        raise RuntimeError("secure-node Enabled value did not verify as disabled")
+    for interface, (namespace_id, _) in IFAC_NAMESPACES.items():
+        iface = values.get(namespace_id, {})
+        if iface.get(FIELD_ENABLED, True):
+            raise RuntimeError("%s IFAC did not verify as disabled" % interface)
+        if FIELD_PASSPHRASE in iface:
+            raise RuntimeError("firmware exposed a committed SECRET value")
     return committed
 
 
@@ -186,17 +321,42 @@ def set_radio_mode(client, mode):
     return committed
 
 
+def prompt_passphrase(label):
+    secret = getpass.getpass("%s IFAC passphrase: " % label)
+    if not secret:
+        raise RuntimeError("passphrase must not be empty")
+    confirm = getpass.getpass("Confirm %s passphrase: " % label)
+    if secret != confirm:
+        raise RuntimeError("passphrases do not match")
+    return secret
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="board serial device")
     parser.add_argument("--boot-wait", type=float, default=4.0)
     sub = parser.add_subparsers(dest="action", required=True)
 
-    enable = sub.add_parser("enable", help="stage and commit protected LoRa operation")
+    enable = sub.add_parser("enable", help="stage and commit protected operation")
+    enable.add_argument("--interface", choices=IFAC_NAMESPACES, default="lora")
     enable.add_argument("--network", required=True, help="IFAC network name")
-    disable = sub.add_parser("disable", help="stage and commit open LoRa operation")
+    disable = sub.add_parser("disable", help="stage and commit an open interface")
+    disable.add_argument("--interface", choices=IFAC_NAMESPACES, default="lora")
     disable.add_argument("--clear-credentials", action="store_true")
-    sub.add_parser("schema", help="verify that the IFAC schema is present")
+    schema = sub.add_parser("schema", help="verify access-control schema")
+    schema.add_argument("--interface", choices=tuple(IFAC_NAMESPACES) + ("all",),
+                        default="lora")
+    secure = sub.add_parser("secure", help="enable the fail-closed fully private posture")
+    secure.add_argument("--network", help="network name used for any unspecified interface")
+    for interface in IFAC_NAMESPACES:
+        secure.add_argument("--%s-network" % interface,
+                            help="independent %s IFAC network name" % interface)
+    secure.add_argument("--administrator", required=True,
+                        help="16-byte remote-management identity hash in hex")
+    secure.add_argument("--shared-passphrase", action="store_true",
+                        help="prompt once and deliberately reuse the secret on all interfaces")
+    opened = sub.add_parser("open", help="disable secure posture and all IFACs")
+    opened.add_argument("--clear-credentials", action="store_true")
     sub.add_parser("radio", help="print current persisted radio settings")
     sub.add_parser("addresses", help="print the board's advertised destination hashes")
     mode = sub.add_parser("mode", help="stage and commit host or autonomous TNC mode")
@@ -207,7 +367,11 @@ def main():
     client = KissProvisioner(args.port, boot_wait=args.boot_wait)
     try:
         if args.action == "schema":
-            print("schema ok: %s" % require_ifac_schema(client))
+            selected = IFAC_NAMESPACES if args.interface == "all" else (args.interface,)
+            names = [require_ifac_schema(client, interface) for interface in selected]
+            if args.interface == "all":
+                require_secure_schema(client)
+            print("schema ok: %s" % ", ".join(names))
         elif args.action == "radio":
             values = radio_state(client)
             print("op_mode=%s frequency=%s bandwidth=%s sf=%s cr=%s txpower=%s implicit=%s" % (
@@ -228,18 +392,43 @@ def main():
         elif args.action == "reboot":
             client.reboot()
             print("reboot requested")
+        elif args.action == "secure":
+            networks = {}
+            for interface in IFAC_NAMESPACES:
+                networks[interface] = getattr(args, "%s_network" % interface) or args.network
+                if not networks[interface]:
+                    raise RuntimeError("--%s-network or --network is required" % interface)
+            administrator = parse_administrator(args.administrator)
+            if args.shared_passphrase:
+                shared = prompt_passphrase("Shared")
+                passphrases = {interface: shared for interface in IFAC_NAMESPACES}
+            else:
+                passphrases = {
+                    interface: prompt_passphrase(label)
+                    for interface, (_, label) in IFAC_NAMESPACES.items()
+                }
+            result = provision_secure(client, networks, passphrases, administrator)
+            print("secure-node posture committed; reboot required: %s" %
+                  bool(result.get(2, False)))
+            print("recovery after reboot: physical KISS serial on %s" % args.port)
+            print("wireless KISS TCP 7633 and Bluetooth KISS will be disabled")
+        elif args.action == "open":
+            result = provision_open(client, clear=args.clear_credentials)
+            print("open-node posture committed; reboot required: %s" %
+                  bool(result.get(2, False)))
+            print("physical KISS serial on %s remains the recovery path until reboot" % args.port)
         elif args.action == "enable":
-            secret = getpass.getpass("LoRa IFAC passphrase: ")
-            if not secret:
-                raise RuntimeError("passphrase must not be empty")
-            confirm = getpass.getpass("Confirm passphrase: ")
-            if secret != confirm:
-                raise RuntimeError("passphrases do not match")
-            result = provision(client, True, args.network, secret)
-            print("IFAC committed; reboot required: %s" % bool(result.get(2, False)))
+            label = IFAC_NAMESPACES[args.interface][1]
+            secret = prompt_passphrase(label)
+            result = provision(client, args.interface, True, args.network, secret)
+            print("%s IFAC committed; reboot required: %s" %
+                  (label, bool(result.get(2, False))))
         else:
-            result = provision(client, False, clear=args.clear_credentials)
-            print("IFAC disabled; reboot required: %s" % bool(result.get(2, False)))
+            label = IFAC_NAMESPACES[args.interface][1]
+            result = provision(client, args.interface, False,
+                               clear=args.clear_credentials)
+            print("%s IFAC disabled; reboot required: %s" %
+                  (label, bool(result.get(2, False))))
     finally:
         client.close()
     return 0

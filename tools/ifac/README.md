@@ -1,50 +1,119 @@
-# LoRa IFAC provisioning
+# IFAC and secure-node provisioning
 
-`provision.py` configures the firmware's LoRa access code directly over its
-local KISS serial connection. Run it with the repository's RNS virtualenv so
-`pyserial` and MsgPack are available:
+`provision.py` configures LoRa, TCP and UDP interface access codes and the
+fully private secure-node posture over a board's **physical** KISS serial
+connection. Run it with the repository's RNS virtualenv so `pyserial` and
+MsgPack are available:
 
 ```sh
 ~/.local/share/rnode-rns-venv/bin/python tools/ifac/provision.py \
-  --port /dev/ttyACM1 schema
+  --port /dev/ttyACM1 schema --interface all
 ```
 
-Passphrases are read with a terminal prompt. They are not accepted on the
+Passphrases are read from terminal prompts. They are never accepted on the
 command line, so they do not appear in shell history or process listings. The
-tool also refuses to provision a firmware schema that does not mark Passphrase
-as `SECRET`, and verifies that neither draft nor committed state echoes it.
+tool refuses schemas that do not mark Passphrase as `SECRET` and verifies that
+neither draft nor committed state echoes it.
 
-## Enable a mesh
+## Interface access control
 
-Commit the same network name and passphrase to every peer before rebooting any
-of them:
+Each interface has independent credentials and can be protected without
+changing the others:
 
 ```sh
-python tools/ifac/provision.py --port /dev/ttyACM1 enable --network "Mesh name"
-python tools/ifac/provision.py --port /dev/ttyUSB0 enable --network "Mesh name"
+python tools/ifac/provision.py --port /dev/ttyACM1 \
+  enable --interface lora --network "Backbone"
+python tools/ifac/provision.py --port /dev/ttyACM1 \
+  enable --interface tcp --network "Agency clients"
+python tools/ifac/provision.py --port /dev/ttyACM1 \
+  enable --interface udp --network "Operations LAN"
+```
 
+The firmware uses an 8-byte Python-compatible IFAC on LoRa and 16-byte IFACs
+on TCP and UDP. Enabled but incomplete/corrupt configurations fail closed
+instead of silently opening the affected interface. All fields are
+reboot-required: configure every peer before rebooting any of them.
+
+The old LoRa-only command remains compatible because `--interface` defaults to
+`lora`:
+
+```sh
+python tools/ifac/provision.py --port /dev/ttyACM1 enable --network "Backbone"
+```
+
+Disable one interface with:
+
+```sh
+python tools/ifac/provision.py --port /dev/ttyACM1 \
+  disable --interface tcp --clear-credentials
+```
+
+## Fully private secure-node posture
+
+The `secure` operation stages one transaction containing:
+
+- LoRa, TCP and UDP IFAC enabled with complete credentials;
+- remote management enabled with the supplied administrator identity hash;
+- the administrator allow-list; and
+- the secure-node switch that disables WiFi KISS on TCP 7633, the optional
+  KISS WebSocket endpoint, and Bluetooth KISS after reboot.
+
+Physical USB/UART KISS is deliberately unaffected and remains the recovery
+path. The administrator is a 16-byte Reticulum identity hash, written as 32
+hexadecimal characters.
+
+Use independent network names and prompted passphrases:
+
+```sh
+python tools/ifac/provision.py --port /dev/ttyACM1 secure \
+  --lora-network "Agency backbone" \
+  --tcp-network "Agency clients" \
+  --udp-network "Agency LAN" \
+  --administrator 0123456789abcdef0123456789abcdef
+```
+
+If an installation deliberately uses one name for every interface, `--network`
+provides the common fallback. `--shared-passphrase` prompts only once and reuses
+that secret explicitly:
+
+```sh
+python tools/ifac/provision.py --port /dev/ttyACM1 secure \
+  --network "Agency mesh" --shared-passphrase \
+  --administrator 0123456789abcdef0123456789abcdef
+```
+
+Independent credentials are preferred when the node bridges distinct trust
+domains. A public QuakeMesh resident node should not enable this posture until
+its actual phone client is confirmed to support TCP IFAC.
+
+After staging all peers, reboot them explicitly:
+
+```sh
 python tools/ifac/provision.py --port /dev/ttyACM1 --boot-wait 0 reboot
 python tools/ifac/provision.py --port /dev/ttyUSB0 --boot-wait 0 reboot
 ```
 
-The firmware uses an 8-byte Python-compatible IFAC on LoRa. TCP and UDP local
-attachment remain open. An enabled but incomplete/corrupt configuration is
-fail-closed rather than silently falling back to open radio operation.
+## Physical recovery and factory reset
 
-## Return to an open mesh
-
-Disable every peer, then reboot them. `--clear-credentials` also removes the
-stored network name and passphrase; without it, they remain available for a
-later re-enable but are still omitted from GetState responses.
+To return a reachable unit to the open posture, connect its physical USB/UART
+and disable secure mode plus all three IFACs in one staged transition:
 
 ```sh
-python tools/ifac/provision.py --port /dev/ttyACM1 disable --clear-credentials
-python tools/ifac/provision.py --port /dev/ttyUSB0 disable --clear-credentials
+python tools/ifac/provision.py --port /dev/ttyACM1 \
+  open --clear-credentials
+python tools/ifac/provision.py --port /dev/ttyACM1 --boot-wait 0 reboot
 ```
 
-## Lab diagnostics
+Factory reset restores the same open defaults. Never perform the first secure
+transition on a remotely mounted node until the physical recovery port and the
+administrator identity have both been exercised on the bench.
 
-The following commands were used by the Python-RNS hardware fixture:
+Opening Rev1's native USB serial port resets that board. Rev2's external UART
+bridge normally does not. A Rev2 UART firmware upload still requires the
+post-flash firmware-hash write described in `docs/PropagationNodeTODO.md`;
+secure mode does not change that recovery requirement.
+
+## Lab diagnostics
 
 ```sh
 python tools/ifac/provision.py --port /dev/ttyACM1 radio
@@ -55,9 +124,8 @@ python tools/ifac/provision.py --port /dev/ttyACM1 mode tnc
 
 `mode host` temporarily turns a board into a conventional host-driven RNode;
 `mode tnc` restores this firmware's autonomous transport-node role. Both are
-reboot-required. Opening Rev 1's native USB serial port itself resets that
-board, while Rev 2's external UART bridge normally does not.
+reboot-required.
 
-The provisioned passphrase is not encrypted at rest in LittleFS. `SECRET`
-means write-only over the provisioning protocol, not resistance to physical
+Provisioned passphrases are not encrypted at rest in LittleFS. `SECRET` means
+write-only over the provisioning protocol, not resistance to physical
 extraction from a captured board.
