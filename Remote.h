@@ -43,6 +43,11 @@ uint32_t wr_last_read = 0;
 
 WiFiClient connection;
 WiFiServer remote_listener(7633, 1);
+// Address on which the legacy KISS listener was last started. In station mode
+// setup reaches wifi_remote_start() before DHCP completes; starting the server
+// there can leave it without a usable listening socket. Rebind exactly once
+// when an address arrives, just as the UDP transport does below.
+IPAddress kiss_bound_ip((uint32_t)0);
 IPAddress ap_ip(10, 0, 0, 1);
 IPAddress ap_nm(255, 255, 255, 0);
 IPAddress wr_device_ip;
@@ -247,6 +252,8 @@ void wifi_remote_start_sta() {
 }
 
 void wifi_remote_stop() {
+  remote_listener.end();
+  kiss_bound_ip = IPAddress((uint32_t)0);
   WiFi.softAPdisconnect(true);
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_MODE_NULL);
@@ -259,18 +266,60 @@ void wifi_remote_start() {
   else                               { wifi_remote_stop(); }
 
   if (wifi_initialized == true) {
-    remote_listener.begin();
-    remote_listener.setTimeout(WR_SOCKET_TIMEOUT);
-    wr_state = WR_STATE_ON;
+    // TCP 7633 is unauthenticated KISS, not RNS. Keep it closed until
+    // Provisioning has loaded the persisted secure-node policy.
+    if (wireless_kiss_policy_ready && wireless_kiss_allowed) {
+      IPAddress bind_ip = wifi_mode == WR_WIFI_AP ? WiFi.softAPIP() : WiFi.localIP();
+      if (bind_ip != IPAddress((uint32_t)0)) {
+        remote_listener.begin();
+        remote_listener.setTimeout(WR_SOCKET_TIMEOUT);
+        kiss_bound_ip = bind_ip;
+      }
+      wr_state = WR_STATE_ON;
+    } else {
+      remote_listener.end();
+      kiss_bound_ip = IPAddress((uint32_t)0);
+      wr_state = WR_STATE_OFF;
+    }
 #if defined(UDP_TRANSPORT)
     udp.begin(udp_port);
 #endif
   } else {
     remote_listener.end();
+    kiss_bound_ip = IPAddress((uint32_t)0);
     wr_state = WR_STATE_OFF;
 #if defined(UDP_TRANSPORT)
     udp.stop();
 #endif
+  }
+}
+
+// Re-apply TCP 7633 policy after Provisioning loads or factory reset restores
+// defaults. WiFi and the RNS interfaces on 4242 remain independent.
+void wifi_remote_apply_kiss_policy() {
+  if (!wifi_initialized) {
+    kiss_bound_ip = IPAddress((uint32_t)0);
+    wr_state = WR_STATE_OFF;
+    return;
+  }
+  if (wireless_kiss_policy_ready && wireless_kiss_allowed) {
+    IPAddress bind_ip = wifi_mode == WR_WIFI_AP ? WiFi.softAPIP() : WiFi.localIP();
+    if (bind_ip != IPAddress((uint32_t)0)) {
+      remote_listener.begin();
+      remote_listener.setTimeout(WR_SOCKET_TIMEOUT);
+      kiss_bound_ip = bind_ip;
+    }
+    wr_state = WR_STATE_ON;
+  } else {
+    if (connection) connection.stop();
+    WiFiClient client = remote_listener.available();
+    while (client) {
+      client.stop();
+      client = remote_listener.available();
+    }
+    remote_listener.end();
+    kiss_bound_ip = IPAddress((uint32_t)0);
+    wr_state = WR_STATE_OFF;
   }
 }
 
@@ -297,7 +346,8 @@ void wifi_remote_close_all() {
   if (connection) { connection.stop(); }
   WiFiClient client = remote_listener.available();
   while (client) { client.stop(); client = remote_listener.available(); }
-  wr_state = WR_STATE_ON;
+  wr_state = (wireless_kiss_policy_ready && wireless_kiss_allowed)
+             ? WR_STATE_ON : WR_STATE_OFF;
 }
 
 void wifi_remote_check_active() {
@@ -312,6 +362,7 @@ void wifi_remote_check_active() {
 }
 
 bool wifi_remote_available() {
+  if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return false;
   if (connection) {
     if (connection.connected()) {
       if (connection.available()) { wr_last_read = millis(); return true; }
@@ -354,6 +405,20 @@ void wifi_update_status() {
   printf("[WiFi] status: %d\n", wr_wifi_status);
   if (wr_wifi_status == WL_CONNECTED) {
     wr_device_ip = WiFi.localIP();
+    if (wifi_initialized && wireless_kiss_policy_ready && wireless_kiss_allowed &&
+        wr_device_ip != IPAddress((uint32_t)0) && wr_device_ip != kiss_bound_ip) {
+      // TCP servers started before DHCP may never acquire a working listener.
+      // Recreate it when the station address becomes usable, and again after
+      // an address change. Secure-node mode never enters this branch.
+      if (connection) connection.stop();
+      remote_listener.end();
+      remote_listener.begin();
+      remote_listener.setTimeout(WR_SOCKET_TIMEOUT);
+      kiss_bound_ip = wr_device_ip;
+      wr_state = WR_STATE_ON;
+      printf("[WiFi] KISS TCP bound on %s:7633\n",
+             wr_device_ip.toString().c_str());
+    }
 #if defined(UDP_TRANSPORT)
     // wifi_remote_start() opens the UDP socket immediately after WiFi.begin(),
     // which is before DHCP has assigned an address -- it binds with no local IP
@@ -444,16 +509,27 @@ void wifi_update_status() {
 void update_wifi() {
 #if defined(UDP_TRANSPORT)
   if (wifi_initialized) {
-    if (udp.parsePacket() > 0) {
+    int packet_len = udp.parsePacket();
+    if (packet_len > 0) {
       udp_rx_count++;
-      size_t len = udp.read(udp_buffer.writable(MTU), MTU);
-    if (len > 0) {
-        udp_buffer.resize(len);
+      if (packet_len > UDP_RX_CAPACITY) {
+        // Reading into a smaller buffer returns a truncated prefix. Drain and
+        // reject the whole datagram so Transport never sees partial input.
+        uint8_t discard[64];
+        while (udp.available() > 0) udp.read(discard, sizeof(discard));
+        WARNINGF("Dropped oversized UDP datagram (%d > %u bytes)",
+                 packet_len, (unsigned)UDP_RX_CAPACITY);
+      } else {
+        int len = udp.read(udp_buffer.writable(UDP_RX_CAPACITY), UDP_RX_CAPACITY);
+        if (len > 0 && len == packet_len) {
+          udp_buffer.resize((size_t)len);
 #if defined(HAS_RNS)
-        if (udp_interface) {
-          udp_interface.handle_incoming(udp_buffer);
-        }
+          if (udp_interface) udp_interface.handle_incoming(udp_buffer);
 #endif
+        } else if (len >= 0) {
+          WARNINGF("Dropped incomplete UDP datagram (%d of %d bytes)",
+                   len, packet_len);
+        }
       }
     }
   }

@@ -75,6 +75,7 @@ char bt_devname[11];
     }
 
     void bt_start() {
+      if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return;
       display_unblank();
       if (bt_state == BT_STATE_OFF) {
         SerialBT.begin(bt_devname);
@@ -83,6 +84,7 @@ char bt_devname[11];
     }
 
     void bt_enable_pairing() {
+      if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return;
       display_unblank();
       if (bt_state == BT_STATE_OFF) bt_start();
       bt_allow_pairing = true;
@@ -114,7 +116,8 @@ char bt_devname[11];
       }
        
       if(event == ESP_SPP_CLOSE_EVT ){
-        bt_state = BT_STATE_ON;
+        bt_state = (wireless_kiss_policy_ready && wireless_kiss_allowed)
+                   ? BT_STATE_ON : BT_STATE_OFF;
       }
     }
 
@@ -180,6 +183,7 @@ char bt_devname[11];
 
     void bt_start() {
       // Serial.println("BT start");
+      if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return;
       display_unblank();
       if (bt_state == BT_STATE_OFF) {
         bt_state = BT_STATE_ON;
@@ -220,6 +224,7 @@ char bt_devname[11];
 
     void bt_enable_pairing() {
       // Serial.println("BT enable pairing");
+      if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return;
       display_unblank();
       if (bt_state == BT_STATE_OFF) bt_start();
 
@@ -322,7 +327,8 @@ char bt_devname[11];
       // Serial.printf("Disconnected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;
-      bt_state = BT_STATE_ON;
+      bt_state = (wireless_kiss_policy_ready && wireless_kiss_allowed)
+                 ? BT_STATE_ON : BT_STATE_OFF;
     }
 
     bool bt_setup_hw() {
@@ -404,6 +410,8 @@ char bt_devname[11];
   void bt_stop() {
     // Serial.println("BT Stop");
     if (bt_state != BT_STATE_OFF) {
+      Bluefruit.Advertising.restartOnDisconnect(false);
+      Bluefruit.Advertising.stop();
       bt_allow_pairing = false;
       bt_state = BT_STATE_OFF;
     }
@@ -481,7 +489,8 @@ char bt_devname[11];
   void bt_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
     // Serial.println("Disconnect callback");
     if (reason != BLE_GAP_SEC_STATUS_SUCCESS) {
-        bt_state = BT_STATE_ON;
+        bt_state = (wireless_kiss_policy_ready && wireless_kiss_allowed)
+                   ? BT_STATE_ON : BT_STATE_OFF;
     }
   }
 
@@ -561,6 +570,7 @@ char bt_devname[11];
 
   void bt_start() {
     // Serial.println("BT Start");
+    if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return;
     if (bt_state == BT_STATE_OFF) {
       Bluefruit.setName(bt_devname);
       bledis.setManufacturer(BLE_MANUFACTURER);
@@ -619,6 +629,7 @@ char bt_devname[11];
 
   void bt_enable_pairing() {
     // Serial.println("BT enable pairing");
+    if (!wireless_kiss_policy_ready || !wireless_kiss_allowed) return;
     if (bt_state == BT_STATE_OFF) bt_start();
 
     uint32_t pin = bt_get_passkey();

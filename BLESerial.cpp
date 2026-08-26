@@ -28,13 +28,22 @@ bool bt_confirm_pin_callback(uint32_t pin);
 void bt_connect_callback(BLEServer *server);
 void bt_disconnect_callback(BLEServer *server);
 bool bt_client_authenticated();
+extern bool wireless_kiss_policy_ready;
+extern bool wireless_kiss_allowed;
 
 uint32_t BLESerial::onPassKeyRequest() { return bt_passkey_callback(); }
 void BLESerial::onPassKeyNotify(uint32_t passkey) { bt_passkey_notify_callback(passkey); }
 bool BLESerial::onSecurityRequest() { return bt_security_request_callback(); }
 void BLESerial::onAuthenticationComplete(esp_ble_auth_cmpl_t auth_result) { bt_authentication_complete_callback(auth_result); }
 void BLESerial::onConnect(BLEServer *server) { bt_connect_callback(server); }
-void BLESerial::onDisconnect(BLEServer *server) { bt_disconnect_callback(server); ble_server->startAdvertising(); }
+void BLESerial::onDisconnect(BLEServer *server) {
+  bt_disconnect_callback(server);
+  // SerialBT.end() can trigger this callback while secure-node policy is
+  // closing BLE. Never let the library's disconnect path reopen advertising.
+  if (wireless_kiss_policy_ready && wireless_kiss_allowed) {
+    ble_server->startAdvertising();
+  }
+}
 bool BLESerial::onConfirmPIN(uint32_t pin) { return bt_confirm_pin_callback(pin); };
 bool BLESerial::connected() { return ble_server->getConnectedCount() > 0; }
 

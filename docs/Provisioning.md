@@ -229,12 +229,13 @@ This is by far the highest-leverage feature — and the easiest to underestimate
 - The KISS-over-WebSocket endpoint on `native` and the KISS-over-TCP endpoint on `native` (port 7633) default to **loopback only**. Setting `kiss_ws_public = true` or `kiss_tcp_public = true` in `rnoded.conf` binds them on `0.0.0.0`, with no auth — only do this on a trusted network.
 - The RNS transport authenticates Link peers cryptographically (Reticulum Identity) and supports an allow-list via `RNS::Transport::remote_management_allowed()`. Configure this if your management destination is reachable over public mesh paths.
 - The `SECRET` field flag means a field's value is never returned in `GET_STATE` responses. PSKs and similar belong here. The Console displays "(secret — not exposed)" for these on read; you can still write a new value.
-- LoRa IFAC protects only Reticulum frames on the radio interface. It does not
-  protect the WiFi KISS control listener on TCP port 7633 or Bluetooth KISS;
-  both feed the same privileged command path as physical serial. Do not expose
-  them on an untrusted network. A follow-up secure-node PR will add TCP/UDP IFAC
-  and close those non-RNS wireless management paths as one recoverable posture;
-  its investigated design and acceptance plan are in `docs/PrivateMesh.md` §8.
+- LoRa, TCP and UDP expose independent IFAC namespaces when their corresponding
+  transports are compiled into the firmware. The secure-node posture closes
+  WiFi KISS on TCP port 7633, the
+  optional KISS WebSocket endpoint, and Bluetooth KISS as one reboot-required
+  transition because they bypass RNS and its IFAC checks. Physical USB/UART KISS remains the recovery path. Use
+  `tools/ifac/provision.py`; implementation and completed Rev1/Rev2 hardware
+  acceptance are recorded in `docs/PrivateMesh.md` §8.
 
 ### WiFi and AP mode
 

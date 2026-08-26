@@ -30,6 +30,11 @@
 #endif
 #define UDP_PORT 4242
 
+// Maximum RNS packet (500 bytes) plus microReticulum's maximum IFAC (64).
+// The radio/KISS MTU is only 508 and truncates Python's normal 16-byte UDP
+// IFAC frame, so the UDP receive path must use its own capacity.
+#define UDP_RX_CAPACITY 564
+
 //#include "Remote.h"
 extern WiFiUDP udp;
 extern bool wifi_initialized;
