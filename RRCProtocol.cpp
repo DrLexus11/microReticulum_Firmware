@@ -170,13 +170,16 @@ Error read_text(CborValue& value, size_t maximum, std::string& output) {
     CborError error = cbor_value_get_string_length(&value, &length);
     if (error != CborNoError) return cbor_error(error);
     if (length > maximum) return Error::ConstraintViolation;
-    output.resize(length);
-    char empty = 0;
-    char* destination = length == 0 ? &empty : output.data();
+    // TinyCBOR does not require space for its optional NUL terminator, but
+    // providing it makes the ownership boundary explicit and avoids relying on
+    // that less-obvious API detail.
+    output.resize(length + 1);
     CborValue next;
-    size_t copied = length;
-    error = cbor_value_copy_text_string(&value, destination, &copied, &next);
+    size_t copied = output.size();
+    error = cbor_value_copy_text_string(&value, output.data(), &copied, &next);
     if (error != CborNoError) return cbor_error(error);
+    if (copied != length) return Error::Malformed;
+    output.resize(length);
     value = next;
     if (!is_utf8(output)) return Error::InvalidUtf8;
     return Error::None;

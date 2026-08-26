@@ -202,6 +202,15 @@ void test_maximum_message_fits_default_link_mdu() {
     envelope.nickname = std::string(RRC::MAX_NICK_BYTES, 'n');
     const std::vector<uint8_t> wire = encode(envelope);
     TEST_ASSERT_LESS_OR_EQUAL_size_t(RRC::MAX_ENVELOPE_BYTES, wire.size());
+
+    RRC::Envelope decoded;
+    const RRC::Result result = RRC::decode(wire.data(), wire.size(), decoded);
+    TEST_ASSERT_TRUE_MESSAGE(static_cast<bool>(result),
+                             RRC::error_string(result.error));
+    TEST_ASSERT_EQUAL_size_t(RRC::MAX_TEXT_BYTES, decoded.body.text.size());
+    TEST_ASSERT_EQUAL_STRING_LEN(envelope.body.text.c_str(),
+                                 decoded.body.text.c_str(),
+                                 RRC::MAX_TEXT_BYTES);
 }
 
 void test_decoder_rejects_wrong_fixed_lengths_and_trailing_data() {
