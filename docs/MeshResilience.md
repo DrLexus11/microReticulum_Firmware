@@ -8,8 +8,22 @@ Target deployment: rooftop "blackbox" relays on apartment buildings, IMPR-RAD
 nodes inside apartments, residents attaching with phones. Nodes must survive
 losing their relay and re-absorb automatically when a field team restores one.
 
-Status: **design proposal.** Written 2026-08-23. Verified facts are marked as
-such; everything else is a proposal.
+Status: **the SoftAP fallback described here is implemented and shipped.**
+Written 2026-08-23 as a proposal; corrected 2026-08-27 once the behaviour had
+been in the firmware for some time and the status line had not kept up.
+
+`Remote.h` implements the fallback state machine -- `wifi_build_ap_ssid()`,
+`wifi_remote_start_ap_fallback()`, the station-failure timer, the retry window
+and the bounded deferral while clients are associated. The knobs are
+`WIFI_AP_FALLBACK_MS`, `WIFI_AP_RETRY_STA_MS` and `WIFI_AP_MAX_DEFER_MS` in
+`Config.h`.
+
+What remains is **not implementation**: the settings are compile-time only with
+no provisioning surface, and the acceptance listed in
+[`docs/FeatureRoadmap.md`](FeatureRoadmap.md) -- AP/STA transitions, recovery
+timing, client reconnection, secure-node interaction and LoRa coexistence -- has
+not been run as a deliberate exercise. Anything below still marked as a proposal
+should be read with that in mind.
 
 ---
 
