@@ -350,3 +350,61 @@ it.
 - ESP-WIFI-MESH.
 - Changes to Reticulum core routing. The stack already heals; the work is
   keeping nodes on a common PHY and attached to something.
+
+---
+
+## Acceptance evidence
+
+### Operator test, before 2026-08-27
+
+Reported by the operator and recorded here because it covers more of the
+acceptance list than the roadmap credited:
+
+- The node raised its own AP and it was joinable using the **MAC-derived,
+  device-specific PSK**.
+- A Columba interface was configured for **10.0.0.1** and attached over TCP.
+- Traffic was observed going **Columba -> Rev 1 TCP -> Rev 1 LoRa -> Rev 2 ->
+  the wider network hosted by the Deck.**
+
+That last path is the important one. It demonstrates the AP, the TCP attachment
+and the LoRa hop working *simultaneously* on one node -- which is the
+coexistence question the acceptance list asks about, answered in the affirmative
+rather than by argument.
+
+**What it does not cover.** The test exercised the fallback while it was up; it
+did not exercise the *transitions*. Specifically untested:
+
+1. The automatic trigger -- a healthy node watching its station network fail and
+   raising the AP on its own after `wifi_ap_fallback_ms`, rather than being
+   configured into that state.
+2. The return path -- rejoining the station network once it comes back, and the
+   deferral that holds that off while a resident is associated.
+3. The deferral ceiling -- `wifi_ap_max_defer_ms` forcing a retry with clients
+   still attached.
+4. Secure-node interaction.
+
+Items 1 to 3 are now much cheaper to test, because the timers are provisionable
+at runtime: an AP fallback delay of 30 s and a retry of 60 s turn a 2-minute and
+10-minute wait into something observable in a single sitting, and the values can
+be put back afterwards without a reflash.
+
+### Provisioning surface, 2026-08-27
+
+`PROV_NS_NETWORK` (102) now carries the fallback timing as live-apply fields, in
+seconds:
+
+| Field | Id | Range | Default |
+| --- | ---: | --- | ---: |
+| AP Fallback Delay | 5 | 30-3600 s | 120 |
+| AP Station Retry | 6 | 60-86400 s | 600 |
+| AP Max Defer | 7 | 60-86400 s | 14400 |
+
+and read-only state as metrics: AP active (32), AP clients (33), AP SSID (34).
+
+Verified on Rev 1: a write of 45 s applied live and read back; a write of 10 s
+was **refused** with a constraint violation on field 5 and left the previous
+value intact, rather than being silently clamped.
+
+The floors are deliberate. A fallback delay under 30 seconds deserts a router
+that is merely rebooting, and a retry interval under a minute means a node
+serving residents keeps dropping their AP to go looking for an uplink.

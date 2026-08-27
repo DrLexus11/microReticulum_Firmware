@@ -70,6 +70,25 @@ extern RNS::Interface udp_interface;
 uint8_t wifi_mode = WIFI_OFF;
 bool wifi_init_ran = false;
 
+// --- SoftAP fallback timing, provisionable at runtime ---
+//
+// The Config.h values are the defaults; these are what the code reads. Correct
+// values depend on the building -- how slow the router is to boot, how long a
+// resident may hold the node before it goes looking for an uplink again -- and
+// a deployed node should not need a reflash to change them.
+//
+// Seconds on the wire, milliseconds in use: an operator setting a fallback
+// delay does not think in milliseconds, and the provisioning schema should not
+// make them.
+uint32_t wifi_ap_fallback_ms = WIFI_AP_FALLBACK_MS;
+uint32_t wifi_ap_retry_sta_ms = WIFI_AP_RETRY_STA_MS;
+uint32_t wifi_ap_max_defer_ms = WIFI_AP_MAX_DEFER_MS;
+
+// Mirrors WiFi.softAPgetStationNum() so provisioning can report it without
+// pulling the WiFi headers into that translation unit. Updated wherever the
+// fallback state machine already asks.
+uint8_t wifi_ap_client_count = 0;
+
 // --- SoftAP fallback state (see WIFI_AP_FALLBACK_MS in Config.h) ---
 // True while we are serving our OWN access point because the configured
 // station network could not be reached. Distinct from wifi_mode == WR_WIFI_AP,
@@ -459,7 +478,7 @@ void wifi_update_status() {
     // a network that does not exist.
     bool never_configured = (wr_ssid[0] == 0x00);
     if (wifi_sta_failing_since == 0) { wifi_sta_failing_since = millis(); }
-    if (never_configured || (millis() - wifi_sta_failing_since >= WIFI_AP_FALLBACK_MS)) {
+    if (never_configured || (millis() - wifi_sta_failing_since >= wifi_ap_fallback_ms)) {
       printf("[WiFi] %s -- falling back to own AP\n",
              never_configured ? "no station network configured"
                               : "station network unreachable");
@@ -475,12 +494,13 @@ void wifi_update_status() {
   // but ONLY when nobody is associated. Dropping a resident mid-message to go
   // chase an uplink is the wrong trade; the uplink can wait until they leave.
   if (wifi_ap_fallback_active && wr_ssid[0] != 0x00 &&
-      millis() - wifi_ap_last_sta_retry >= WIFI_AP_RETRY_STA_MS) {
+      millis() - wifi_ap_last_sta_retry >= wifi_ap_retry_sta_ms) {
     wifi_ap_last_sta_retry = millis();
     uint8_t stations = WiFi.softAPgetStationNum();
+    wifi_ap_client_count = stations;
     if (stations > 0 && wifi_ap_deferring_since == 0) { wifi_ap_deferring_since = millis(); }
     bool defer_expired = (wifi_ap_deferring_since != 0 &&
-                          millis() - wifi_ap_deferring_since >= WIFI_AP_MAX_DEFER_MS);
+                          millis() - wifi_ap_deferring_since >= wifi_ap_max_defer_ms);
     if (stations > 0 && !defer_expired) {
       // Someone is using us; the uplink can wait.
       printf("[WiFi] fallback AP has %u client(s) -- deferring station retry\n",
