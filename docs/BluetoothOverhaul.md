@@ -106,6 +106,72 @@ Bluetooth-free image to compare against, and the size argument for this whole
 overhaul rests on a link-map reading that proved unreliable. Fix the target,
 take the measurement, then start.
 
+## 4b. Device attestation is wired to Bluetooth — read this before porting
+
+Found 2026-08-27 while trying to measure the stack by building without it. This
+is the largest risk on this work and it is not a size question.
+
+`Device.h`:
+
+```c
+bool device_init() {
+  if (bt_ready) {                                  // <-- gate
+    ...
+    #if HAS_BLUETOOTH == true || HAS_BLE == true
+      mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);   // <-- BT MAC feeds dev_hash
+    #else
+      // TODO: Get from BLE stack instead
+    #endif
+    ...
+    return device_init_done && fw_signature_validated;
+  } else {
+    return false;                                  // <-- no Bluetooth, no device
+  }
+}
+```
+
+Two couplings, both consequential:
+
+**`hw_ready` depends on Bluetooth coming up.** `device_init()` returns false
+unless `bt_ready`, and `hw_ready` gates `startRadio()`. A board that fails to
+bring Bluetooth up does not merely lose Bluetooth -- **its LoRa radio never
+starts**. That is the identical failure signature that cost most of a day on
+Rev 2: `startRadio BLOCKED locked=0 hwr=0`, a node healthy on WiFi and deaf on
+RF. Any change that affects `bt_ready` can produce it.
+
+**The Bluetooth MAC is hashed into the device identity.** `dev_bt_mac` is input
+to `dev_hash`, which is signature-checked against the EEPROM-stored signature.
+If a stack change alters what `dev_bt_mac` contains, `dev_hash` changes,
+`fw_signature_validated` goes false, and every provisioned board fails
+validation until re-provisioned.
+
+### What this means for the port
+
+- **Verify `dev_bt_mac` is byte-identical under NimBLE before anything else.**
+  Both stacks should derive it from the same efuse base MAC, so it probably is
+  -- but "probably" is not good enough for a value that gates the radio on every
+  provisioned board. Confirm it on hardware, on both boards, early.
+- **Keep `bt_ready` meaningful.** If initialisation is restructured, the flag
+  must still become true on success, or `device_init()` fails and takes the LoRa
+  radio with it.
+- **A partial or failed port is not a Bluetooth outage, it is a node outage.**
+  Plan the rollback accordingly, and do not flash both boards at once.
+
+### And why `RAD01_NO_BLE` is not a small fix
+
+The documented WiFi-only target fails to compile because `Remote.h` uses
+`bt_devname` for the SoftAP SSID and DHCP hostname while that symbol lives
+behind the Bluetooth guard. Moving the symbol is easy; making the target
+*work* is not. With Bluetooth compiled out, `device_init()` takes the `else`
+branch and returns false, so the image would boot with `hw_ready = 0` and no
+radio -- and the `#else` branch that should supply substitute hash material is
+an unfinished `TODO`. Substituting the base MAC would change `dev_hash` and
+invalidate the stored signature, so it also needs a provisioning story.
+
+This is why the "NimBLE is smaller" figure is still unmeasured: the only honest
+way to measure it is a build without Bluetooth, and that build does not yet
+exist for reasons that have nothing to do with linker sizes.
+
 ## 5. Proposed sequencing
 
 Deliberately two stages, so the first is provable on its own.
