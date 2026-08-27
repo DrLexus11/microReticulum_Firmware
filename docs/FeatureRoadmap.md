@@ -5,7 +5,7 @@ private-mesh milestones. Detailed design and acceptance evidence remain in each
 feature document; this file answers which implementation should happen next.
 
 Status: **current recommendation**, updated 2026-08-27 after RRC PR 3 hardware
-acceptance and the Bluetooth overhaul proposal. The protocol core and embedded hub are merged. The reusable probe,
+acceptance, the Bluetooth overhaul proposal and the flash-headroom measurements. The protocol core and embedded hub are merged. The reusable probe,
 Rev2 promotion, two-hop automated run and stock NomadNet/Eridanus exchange are
 green on PR 3. Automatic disaster SoftAP is next after this PR merges.
 
@@ -64,7 +64,41 @@ reconnection, secure-node interaction and coexistence with LoRa. The fallback
 MAC-derived PSK is not a true credential; secure deployments need an explicit
 per-node policy.
 
-### 3. Bluetooth Low Energy overhaul — **scheduled after SoftAP**
+### 3. Flash headroom: repartition and low-hanging trims — **before the BLE work**
+
+Reclaim application space per [`docs/FlashHeadroom.md`](FlashHeadroom.md).
+
+Why before Bluetooth:
+
+- the boards carry 8 MB of flash and the partition table maps only 4 MB, so the
+  application is squeezed into 2 MB while roughly half the chip is unused and
+  the filesystem beside it sits 83% empty;
+- `impr-rad01-rev2` is already at **90.2%** of its partition, which is tight
+  enough that the next feature of any size does not fit;
+- the BLE overhaul needs somewhere to land, and doing the partition first means
+  it is not competing for the last 10%; and
+- `RAD01_NO_BLE` does not currently compile, and repairing it is the only way to
+  measure what the Bluetooth stack actually costs -- so the BLE work's own
+  business case depends on this item.
+
+Scope, in order:
+
+1. A custom 8 MB partition table giving 3-4 MB application and 3-4 MB
+   filesystem. Acceptance must cover the migration: LittleFS is erased, so
+   provisioning configuration and the LXMF store need a backup and restore
+   path, while NVS stays at `0x9000` and the device identity survives.
+2. Fix `RAD01_NO_BLE` by moving the device name out from behind the Bluetooth
+   guard, then record the measured size of a Bluetooth-free image.
+3. Leave the RNS log level alone for now. It is worth 39 KB and costs the
+   on-device diagnostics that found this year's worst bug; revisit only if the
+   partition work slips.
+4. Evaluate `-flto` once, as a measurement rather than a default.
+
+Explicitly **not** in scope: `-Os` and `--gc-sections` are already applied. The
+`-O0` visible on the compile line is overridden by a later `-Os`, and proposing
+those flags is a false lead this document exists to close.
+
+### 4. Bluetooth Low Energy overhaul — **after the flash-headroom work**
 
 Replace the Bluedroid BLE implementation with a NimBLE one that a phone can pair
 from its own Bluetooth settings, per
@@ -89,20 +123,27 @@ attachment path, and serves the same goal for a phone that still has WiFi. BLE
 is the larger build and carries a WiFi coexistence risk that is better measured
 once the SoftAP transitions are understood.
 
+It now also follows the flash-headroom work in item 3, for two reasons. The
+application partition is at 90.2% on Rev 2, so a stack replacement has nowhere
+to land until the partition is enlarged. And the claim that NimBLE *returns*
+headroom is currently unmeasured -- `RAD01_NO_BLE` does not compile, so nobody
+has built a Bluetooth-free image to compare against. Item 3 repairs that target
+and produces the number, which is this item's own business case.
+
 Deliver it in the two stages that document defines: pairing and link stability
 first, proven from stock OS settings and held for at least 30 minutes; the
 Reticulum `BLEInterface` only after that. A partial port that pairs and then
 drops is worse than the current state, because it looks like a broken product
 rather than a missing feature.
 
-### 4. Propagation-node operational controls and occupancy page
+### 5. Propagation-node operational controls and occupancy page
 
 Add provisioning controls for enable/disable, limits, occupancy and purge, then
 surface those counters on a NomadNet page. This closes the operator-visibility
 gap in [`docs/PropagationNodeTODO.md`](PropagationNodeTODO.md) without requiring
 an RTC.
 
-### 5. Resilience release gates and orphan recovery
+### 6. Resilience release gates and orphan recovery
 
 Hardware-verify the existing announce jitter and duty-cycle telemetry, define a
 production duty-cycle configuration, then implement the listen-first orphan
@@ -112,7 +153,7 @@ This is more important than internet-oriented convenience features, but follows
 SoftAP because resident attachment is useful immediately and the orphan state
 machine needs longer fleet-level timing tests.
 
-### 6. Wall-time adoption and propagation expiry
+### 7. Wall-time adoption and propagation expiry
 
 Adopt trustworthy wall time from an authenticated client request, then implement
 message expiry. A Rev3 battery-backed RTC will improve cold-start behaviour, but
@@ -121,19 +162,19 @@ firmware time adoption can be designed and tested on Rev1/Rev2 first.
 Peer sync remains after this work because it depends on stable time semantics
 and introduces substantial LoRa airtime cost.
 
-### 7. Resource API Stage 1
+### 8. Resource API Stage 1
 
 Build the host-side schema-to-OpenAPI/Swagger generator proposed in
 [`docs/ResourceAPI.md`](ResourceAPI.md). It provides industrial evaluation value
 without firmware or protocol changes. Defer collections, events and new device
 verbs until the generated interface has real users.
 
-### 8. Outbound TCP client
+### 9. Outbound TCP client
 
 Add `TCPClientInterface` for normal-time off-site anchoring and monitoring. It
 does not solve the local disaster path, so it follows SoftAP and orphan recovery.
 
-### 9. Optional and research items
+### 10. Optional and research items
 
 - RRC resources, moderation, persistent rooms and offline bridge.
 - Propagation-node peer sync.
