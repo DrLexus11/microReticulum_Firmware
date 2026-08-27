@@ -113,3 +113,53 @@ behaviour. Worth one measured experiment before it is trusted, not a default.
 Items 1 and 3 together should take the application from 90% of 2 MB to roughly
 50-60% of 3-4 MB, which removes flash as a design constraint for the
 foreseeable future.
+
+## 5. The migration, as performed
+
+Executed on Rev 1 on 2026-08-27. Recorded because the obvious approach --
+reflash and reconfigure -- would have quietly destroyed the node's identity.
+
+**The trap.** The Reticulum transport identity is a *file on LittleFS*
+(`Transport.cpp`: `"%s/transport_identity"`), not EEPROM or NVS. Repartitioning
+moves the filesystem, so a naive repartition regenerates it and every
+destination hash on the node changes: the RRC hub, the LXMF propagation node and
+the NomadNet site. Every client configuration pointing at those hashes breaks,
+and the "stable across reboots and firmware updates" property that PR 3
+acceptance tested is lost.
+
+**Why the filesystem size is unchanged.** `boards/rad01_8mb.csv` keeps the
+filesystem at exactly `0x1E0000`, the same as `no_ota.csv`. Identical size means
+the partition can be copied byte for byte to its new offset. A resized
+filesystem could not be: LittleFS geometry is fixed at format time.
+
+**Sequence.**
+
+```console
+# 1. Back up the filesystem BEFORE flashing anything
+esptool --port <port> --chip esp32s3 --baud 921600 \
+        read_flash 0x210000 0x1E0000 fs_backup.bin
+
+# 2. Verify the backup really holds the identity, not a blank read
+strings -n 4 fs_backup.bin | grep transport_identity
+
+# 3. Flash firmware and the new partition table
+pio run -e <env> -t upload --upload-port <port>
+
+# 4. Restore the filesystem at its new offset
+esptool --port <port> --chip esp32s3 --baud 921600 \
+        write_flash 0x410000 fs_backup.bin
+```
+
+Step 2 is not optional. A `read_flash` of an unmounted or wrong region returns a
+plausible-looking file of the right length; checking for the identity by name is
+what distinguishes a real backup from 1.9 MB of `0xFF`.
+
+The board boots once between steps 3 and 4 and briefly formats an empty
+filesystem, generating a throwaway identity. Step 4 overwrites it. Harmless, but
+do not stop between those steps and assume the node is fine -- it is announcing
+under a hash nobody knows.
+
+**Result on Rev 1.** Application 87.6% of 2 MB to **43.8% of 4 MB**. RRC hub
+`d36d1371772fca94fb6dc2522d1c4254`, LXMF propagation node
+`ba03aa75f8a136b1b6a74667c755727e`, radio configuration and RRC settings all
+unchanged. Two-identity RRC acceptance passes. Loop stack margin unaffected.

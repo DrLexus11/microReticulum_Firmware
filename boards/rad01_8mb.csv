@@ -1,0 +1,17 @@
+# RAD-01 8 MB layout: 4 MB application, filesystem unchanged in size.
+#
+# The filesystem size is deliberately identical to no_ota.csv (0x1E0000). It
+# holds the Reticulum transport_identity, so its contents must survive a
+# repartition or every destination hash on the node changes and every client
+# config breaks. Keeping the size identical means the old partition can be read
+# out and written back byte for byte at the new offset, which a resized
+# filesystem would not allow -- LittleFS geometry is fixed at format time.
+#
+# nvs stays at 0x9000 so the provisioned device identity in EEPROM survives.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x400000,
+spiffs,     data, spiffs,   0x410000, 0x1E0000,
+coredump,   data, coredump, 0x5F0000, 0x10000,
