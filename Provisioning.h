@@ -53,6 +53,7 @@
 #define PROV_NS_IFAC_TCP        110
 #define PROV_NS_IFAC_UDP        111
 #define PROV_NS_SECURE_NODE     112
+#define PROV_NS_RRC             113
 
 #define PROV_GENERAL_KISS_LOG        1
 #define PROV_GENERAL_LORA_MODE       2
@@ -117,6 +118,33 @@
 #define PROV_IFAC_UDP_PASSPHRASE   3
 
 #define PROV_SECURE_NODE_ENABLED   1
+
+#define PROV_RRC_ENABLED           1
+#define PROV_RRC_NAME              2
+#define PROV_RRC_ANNOUNCE_INTERVAL 3
+#define PROV_RRC_MAX_SESSIONS      4
+#define PROV_RRC_MAX_ROOMS_SESSION 5
+#define PROV_RRC_MAX_BODY_BYTES    6
+#define PROV_RRC_RATE_PER_MINUTE   7
+#define PROV_RRC_PING_INTERVAL     8
+#define PROV_RRC_PONG_TIMEOUT      9
+
+#define PROV_RRC_DESTINATION       32
+#define PROV_RRC_RUNNING           33
+#define PROV_RRC_SESSIONS          34
+#define PROV_RRC_IDENTIFIED        35
+#define PROV_RRC_ROOMS             36
+#define PROV_RRC_MEMBERSHIPS       37
+#define PROV_RRC_RX                38
+#define PROV_RRC_TX                39
+#define PROV_RRC_ACCEPTED          40
+#define PROV_RRC_FORWARDED         41
+#define PROV_RRC_REJECTED          42
+#define PROV_RRC_RATE_LIMITED      43
+#define PROV_RRC_MALFORMED         44
+#define PROV_RRC_IDENT_TIMEOUTS    45
+#define PROV_RRC_HELLO_TIMEOUTS    46
+#define PROV_RRC_PONG_TIMEOUTS     47
 
 // Set true once Provisioning::Provisioner::begin() has run.
 extern bool provisioning_started;

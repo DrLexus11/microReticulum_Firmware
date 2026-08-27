@@ -13,6 +13,9 @@
 #ifdef HAS_PROVISIONING
 
 #include "Provisioning.h"
+#if defined(RRC_HUB)
+#include "RRCHub.h"
+#endif
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
 
@@ -253,6 +256,98 @@ static void register_provisioning_namespaces() {
       .field_string("NomadNet Name", PROV_GENERAL_NOMADNET_NAME, FF_REBOOT_REQUIRED, nomadnet_name, sizeof(nomadnet_name)-1,
         [](const Value& v) { strncpy(nomadnet_name, v.as_string().c_str(), sizeof(nomadnet_name)); return true; },
         []() { return nomadnet_name; });
+#endif
+
+#if defined(RRC_HUB)
+  // ----- Ephemeral RRC group-chat hub -----
+  // Configuration is persisted and applied on reboot because the Destination,
+  // bounded state engine and timers are constructed during RNS startup.
+  Provisioner::instance()
+    .register_namespace("RRC Hub", PROV_NS_RRC)
+      .field_bool("Enabled", PROV_RRC_ENABLED, FF_REBOOT_REQUIRED, rrc_hub_enabled,
+        [](const Value& v) { rrc_hub_enabled = v.as_bool(); return true; },
+        []() { return rrc_hub_enabled; })
+      .field_string("Hub Name", PROV_RRC_NAME, FF_REBOOT_REQUIRED,
+        rrc_hub_name, sizeof(rrc_hub_name)-1,
+        [](const Value& v) {
+          const std::string& name = v.as_string();
+          if (name.empty() || name.size() >= sizeof(rrc_hub_name)) return false;
+          snprintf(rrc_hub_name, sizeof(rrc_hub_name), "%s", name.c_str());
+          return true;
+        },
+        []() { return rrc_hub_name; })
+      .field_int("Announce Interval (s)", PROV_RRC_ANNOUNCE_INTERVAL,
+        FF_REBOOT_REQUIRED, rrc_hub_announce_interval_seconds, 60, 86400,
+        [](const Value& v) {
+          rrc_hub_announce_interval_seconds = static_cast<uint32_t>(v.as_int());
+          return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_announce_interval_seconds); })
+      .field_int("Max Sessions", PROV_RRC_MAX_SESSIONS,
+        FF_REBOOT_REQUIRED, rrc_hub_max_sessions, 1, 8,
+        [](const Value& v) {
+          rrc_hub_max_sessions = static_cast<uint8_t>(v.as_int()); return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_max_sessions); })
+      .field_int("Max Rooms / Session", PROV_RRC_MAX_ROOMS_SESSION,
+        FF_REBOOT_REQUIRED, rrc_hub_max_rooms_per_session, 1, 8,
+        [](const Value& v) {
+          rrc_hub_max_rooms_per_session = static_cast<uint8_t>(v.as_int());
+          return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_max_rooms_per_session); })
+      .field_int("Max Body Bytes", PROV_RRC_MAX_BODY_BYTES,
+        FF_REBOOT_REQUIRED, rrc_hub_max_body_bytes, 1, 280,
+        [](const Value& v) {
+          rrc_hub_max_body_bytes = static_cast<uint16_t>(v.as_int()); return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_max_body_bytes); })
+      .field_int("Rate / Minute", PROV_RRC_RATE_PER_MINUTE,
+        FF_REBOOT_REQUIRED, rrc_hub_rate_per_minute, 1, 600,
+        [](const Value& v) {
+          rrc_hub_rate_per_minute = static_cast<uint16_t>(v.as_int()); return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_rate_per_minute); })
+      .field_int("PING Interval (s)", PROV_RRC_PING_INTERVAL,
+        FF_REBOOT_REQUIRED, rrc_hub_ping_interval_seconds, 10, 3600,
+        [](const Value& v) {
+          rrc_hub_ping_interval_seconds = static_cast<uint32_t>(v.as_int());
+          return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_ping_interval_seconds); })
+      .field_int("PONG Timeout (s)", PROV_RRC_PONG_TIMEOUT,
+        FF_REBOOT_REQUIRED, rrc_hub_pong_timeout_seconds, 5, 600,
+        [](const Value& v) {
+          rrc_hub_pong_timeout_seconds = static_cast<uint32_t>(v.as_int());
+          return true;
+        }, []() { return static_cast<fint_t>(rrc_hub_pong_timeout_seconds); })
+      .metric_bytes("Destination", PROV_RRC_DESTINATION,
+        []() { return rrc_hub_destination_hash(); })
+      .metric_bool("Running", PROV_RRC_RUNNING,
+        []() { return rrc_hub_running(); })
+      .metric_int("Sessions", PROV_RRC_SESSIONS,
+        []() { return static_cast<fint_t>(rrc_hub_session_count()); })
+      .metric_int("Identified", PROV_RRC_IDENTIFIED,
+        []() { return static_cast<fint_t>(rrc_hub_identified_count()); })
+      .metric_int("Rooms", PROV_RRC_ROOMS,
+        []() { return static_cast<fint_t>(rrc_hub_room_count()); })
+      .metric_int("Memberships", PROV_RRC_MEMBERSHIPS,
+        []() { return static_cast<fint_t>(rrc_hub_membership_count()); })
+      .metric_int("Packets RX", PROV_RRC_RX,
+        []() { return static_cast<fint_t>(rrc_hub_rx_count()); })
+      .metric_int("Packets TX", PROV_RRC_TX,
+        []() { return static_cast<fint_t>(rrc_hub_tx_count()); })
+      .metric_int("Accepted", PROV_RRC_ACCEPTED,
+        []() { return static_cast<fint_t>(rrc_hub_accepted_count()); })
+      .metric_int("Forwarded", PROV_RRC_FORWARDED,
+        []() { return static_cast<fint_t>(rrc_hub_forwarded_count()); })
+      .metric_int("Rejected", PROV_RRC_REJECTED,
+        []() { return static_cast<fint_t>(rrc_hub_rejected_count()); })
+      .metric_int("Rate Limited", PROV_RRC_RATE_LIMITED,
+        []() { return static_cast<fint_t>(rrc_hub_rate_limited_count()); })
+      .metric_int("Malformed", PROV_RRC_MALFORMED,
+        []() { return static_cast<fint_t>(rrc_hub_malformed_count()); })
+      .metric_int("Identify Timeouts", PROV_RRC_IDENT_TIMEOUTS,
+        []() { return static_cast<fint_t>(rrc_hub_identify_timeout_count()); })
+      .metric_int("HELLO Timeouts", PROV_RRC_HELLO_TIMEOUTS,
+        []() { return static_cast<fint_t>(rrc_hub_hello_timeout_count()); })
+      .metric_int("PONG Timeouts", PROV_RRC_PONG_TIMEOUTS,
+        []() { return static_cast<fint_t>(rrc_hub_pong_timeout_count()); })
+      .end();
 #endif
 
 #ifdef HAS_GPIO
