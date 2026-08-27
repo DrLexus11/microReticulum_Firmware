@@ -71,6 +71,7 @@ extern uint32_t lora_bitrate;
 extern uint8_t radio_preset_current();
 extern bool radio_preset_apply(uint8_t idx);
 extern uint8_t implicit_l;
+extern uint32_t loop_stack_free_min;
 extern int noise_floor;
 extern int current_rssi;
 extern int last_rssi;
@@ -555,6 +556,8 @@ static void register_provisioning_namespaces() {
 
   metrics.register_namespace("Device", PROV_NS_METRICS_DEV)
     //.metric_string("transport_identity", PROV_METRICS_DEV_VER, []() { return std::to_string(MAJ_VERS) + "." + std::to_string(MIN_VERS); })
+    .metric_int("Loop Stack Free Min", PROV_METRICS_DEV_STACK,
+      []() { return (fint_t)loop_stack_free_min; })
     .metric_float("Battery Voltage", PROV_METRICS_DEV_BATV, []() { return battery_voltage; })
     .metric_float("Battery Percent", PROV_METRICS_DEV_BATP, []() { return battery_percent; })
 /*

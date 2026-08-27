@@ -72,6 +72,10 @@
 #define PROV_METRICS_DEV_BATV   2
 #define PROV_METRICS_DEV_BATP   3
 #define PROV_METRICS_DEV_BATS   4
+// Smallest free stack ever observed on the Arduino loop task, in bytes. The
+// whole Reticulum stack runs there, so this is the number that goes to zero
+// before the board panics in the allocator with no other warning.
+#define PROV_METRICS_DEV_STACK  5
 
 #define PROV_METRICS_LORA_FREQ  1
 #define PROV_METRICS_LORA_BW    2
