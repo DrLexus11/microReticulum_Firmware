@@ -180,6 +180,29 @@ Error stamp_forwarded(Envelope& envelope, const IdentityHash& authenticated_sour
                       const std::optional<std::string>& accepted_nickname,
                       const ValidationLimits& limits = ValidationLimits{});
 
+// --- Hub service reply formats --------------------------------------------
+//
+// These strings are a client parser contract, not a presentation choice.
+// NomadNet matches them with `_parse_room_list_notice` and `_parse_who_notice`;
+// a wrong prefix or separator is not an error anywhere, it simply leaves the
+// client's room list empty and its members unnamed. Kept here, away from
+// Arduino and Reticulum, so the exact bytes can be asserted in native tests.
+
+struct MemberEntry {
+    IdentityHash identity{};
+    std::optional<std::string> nickname;
+};
+
+// "Registered public rooms\n<room>\n<room>" or "No public rooms registered".
+std::string format_room_list(const std::string* rooms, size_t count,
+                             size_t max_bytes);
+
+// "members in <room>: nick (hex12), <full-32-hex>, ..." or "... : (none)".
+// A nicked member is identified by a 6-byte prefix, an un-nicked one by the
+// whole 16-byte hash; that asymmetry is the client's format, not a shortcut.
+std::string format_member_list(const std::string& room, const MemberEntry* members,
+                               size_t count, size_t max_bytes);
+
 Result encode(const Envelope& envelope, uint8_t* output, size_t capacity,
               const ValidationLimits& limits = ValidationLimits{});
 Result decode(const uint8_t* data, size_t size, Envelope& envelope,

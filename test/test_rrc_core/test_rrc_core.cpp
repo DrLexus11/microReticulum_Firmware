@@ -439,6 +439,53 @@ void test_roomless_command_message_is_accepted_and_membership_still_needs_room()
                       static_cast<int>(RRC::validate(part)));
 }
 
+// These exact strings are what stock NomadNet's _parse_room_list_notice and
+// _parse_who_notice match on. A wrong prefix or separator produces no error
+// anywhere -- the client's room list simply stays empty and its members stay
+// unnamed, which is precisely how the hub differed from rrcd in the field.
+void test_service_reply_formats_match_the_client_parser_contract() {
+    TEST_ASSERT_EQUAL_STRING("No public rooms registered",
+                             RRC::format_room_list(nullptr, 0, 280).c_str());
+
+    const std::string rooms[] = {"#alpha", "#beta"};
+    TEST_ASSERT_EQUAL_STRING("Registered public rooms\n#alpha\n#beta",
+                             RRC::format_room_list(rooms, 2, 280).c_str());
+
+    RRC::MemberEntry entries[2]{};
+    for (size_t i = 0; i < entries[0].identity.size(); i++) {
+        entries[0].identity[i] = static_cast<uint8_t>(i);
+        entries[1].identity[i] = static_cast<uint8_t>(0xF0 + (i & 0x0F));
+    }
+    entries[0].nickname = std::string("Lexus");   // nicked -> 12 hex prefix
+    // entries[1] stays un-nicked                  -> full 32 hex
+
+    TEST_ASSERT_EQUAL_STRING(
+        "members in #rad01: Lexus (000102030405), "
+        "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+        RRC::format_member_list("#rad01", entries, 2, 280).c_str());
+
+    TEST_ASSERT_EQUAL_STRING("members in #empty: (none)",
+                             RRC::format_member_list("#empty", nullptr, 0, 280).c_str());
+}
+
+// The advertised body limit must bound the reply, or the hub builds a NOTICE it
+// cannot encode and the client gets nothing at all.
+void test_service_replies_stay_within_the_advertised_body_limit() {
+    std::string rooms[8];
+    for (size_t i = 0; i < 8; i++) rooms[i] = std::string("#") + std::string(40, 'a' + (char)i);
+    const std::string listed = RRC::format_room_list(rooms, 8, 120);
+    TEST_ASSERT_TRUE(listed.size() <= 120);
+    TEST_ASSERT_EQUAL_STRING("Registered public rooms", listed.substr(0, 23).c_str());
+
+    RRC::MemberEntry many[8]{};
+    for (size_t m = 0; m < 8; m++) {
+        for (size_t i = 0; i < many[m].identity.size(); i++) many[m].identity[i] = (uint8_t)(m * 16 + i);
+        many[m].nickname = std::string(28, 'n');
+    }
+    const std::string members = RRC::format_member_list("#room", many, 8, 120);
+    TEST_ASSERT_TRUE(members.size() <= 120);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -462,5 +509,7 @@ int main(void) {
     RUN_TEST(test_repeated_reconnects_leave_no_stale_membership);
     RUN_TEST(test_state_reports_live_session_after_expiry);
     RUN_TEST(test_roomless_command_message_is_accepted_and_membership_still_needs_room);
+    RUN_TEST(test_service_reply_formats_match_the_client_parser_contract);
+    RUN_TEST(test_service_replies_stay_within_the_advertised_body_limit);
     return UNITY_END();
 }

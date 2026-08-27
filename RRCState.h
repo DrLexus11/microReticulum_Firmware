@@ -55,6 +55,13 @@ struct RoomNames {
     size_t count = 0;
 };
 
+// Every active room, for the `/list` service reply. Sized to the hard room cap
+// rather than the per-session cap, which RoomNames uses.
+struct AllRoomNames {
+    std::array<std::string, HARD_MAX_ROOMS> values{};
+    size_t count = 0;
+};
+
 struct ExpireCounts {
     size_t unidentified = 0;
     size_t hello = 0;
@@ -94,6 +101,7 @@ public:
     std::optional<IdentityHash> identity(SessionKey key) const;
     std::optional<std::string> nickname(SessionKey key) const;
     RoomNames joined_rooms(SessionKey key) const;
+    AllRoomNames all_rooms() const;
     MemberKeys members(const std::string& room) const;
 
 private:

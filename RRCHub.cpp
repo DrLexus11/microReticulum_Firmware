@@ -245,7 +245,95 @@ void handle_part(Slot& slot, const RRC::Envelope& envelope) {
     fanout(before, parted, slot.key);
 }
 
+// --- Hub service commands -------------------------------------------------
+//
+// Stock clients issue these automatically and depend on the answers: NomadNet
+// sends `/list` right after WELCOME to populate its channel list, and
+// `/who <room>` right after JOIN to learn who is present. Without replies the
+// room list stays empty and members render as bare hashes, which is exactly how
+// the hub looked next to rrcd.
+//
+// The reply formats are NomadNet's parser contract, not our invention:
+//   /list -> "Registered public rooms\n<room>\n<room>"  or
+//            "No public rooms registered"
+//   /who  -> "members in <room>: nick (hex12), <full-32-hex>, ..." or "(none)"
+// A nicked member carries a 12-hex prefix; an un-nicked one the full 32 hex.
+//
+// Replies go only to the requester, as rrcd does, and are never fanned out.
+
+bool body_starts_with(const RRC::Envelope& envelope, const char* command,
+                      std::string* argument) {
+    if (envelope.body.kind != RRC::BodyKind::Text) return false;
+    const std::string& text = envelope.body.text;
+    const size_t length = std::strlen(command);
+    if (text.size() < length || text.compare(0, length, command) != 0) return false;
+    if (text.size() > length && text[length] != ' ') return false;  // /whoever
+    if (argument) {
+        *argument = text.size() > length ? text.substr(length + 1) : std::string();
+    }
+    return true;
+}
+
+void send_notice(Slot& slot, const std::string& text,
+                 const std::optional<std::string>& room) {
+    RRC::Envelope notice = base_envelope(RRC::T_NOTICE);
+    notice.room = room;
+    notice.body = RRC::Body::text_value(text);
+    send_envelope(slot, notice);
+}
+
+void reply_room_list(Slot& slot) {
+    const RRC::AllRoomNames rooms = hub_state.all_rooms();
+    send_notice(slot,
+                RRC::format_room_list(rooms.values.data(), rooms.count,
+                                      rrc_hub_max_body_bytes),
+                std::nullopt);
+}
+
+void reply_member_list(Slot& slot, const std::string& room) {
+    const RRC::MemberKeys members = hub_state.members(room);
+    std::array<RRC::MemberEntry, RRC::HARD_MAX_SESSIONS> entries{};
+    size_t count = 0;
+    for (size_t i = 0; i < members.count && count < entries.size(); i++) {
+        const auto identity = hub_state.identity(members.values[i]);
+        if (!identity) continue;
+        entries[count].identity = *identity;
+        entries[count].nickname = hub_state.nickname(members.values[i]);
+        ++count;
+    }
+    send_notice(slot,
+                RRC::format_member_list(room, entries.data(), count,
+                                        rrc_hub_max_body_bytes),
+                room);
+}
+
+// Returns true when the envelope was a service command and has been answered.
+bool handle_service_command(Slot& slot, const RRC::Envelope& envelope) {
+    if (!hub_state.welcomed(slot.key)) return false;
+    std::string argument;
+    if (body_starts_with(envelope, "/list", &argument)) {
+        reply_room_list(slot);
+        ++accepted_count;
+        return true;
+    }
+    if (body_starts_with(envelope, "/who", &argument) ||
+        body_starts_with(envelope, "/names", &argument)) {
+        // `/who` takes an optional room; NomadNet sends the name explicitly and
+        // Eridanus does the same. Fall back to the envelope's room.
+        std::string room = RRC::normalize_room(argument);
+        if (room.empty() && envelope.room) room = RRC::normalize_room(*envelope.room);
+        if (room.empty()) return false;
+        reply_member_list(slot, room);
+        ++accepted_count;
+        return true;
+    }
+    return false;
+}
+
 void handle_room_traffic(Slot& slot, RRC::Envelope envelope, uint64_t now_ms) {
+    // Service commands are answered privately and never relayed as room text.
+    if (handle_service_command(slot, envelope)) return;
+
     // A text envelope with no room is a global hub command, not room traffic.
     // Stock NomadNet sends `/list` this way right after WELCOME. The MVP hub
     // implements no commands, and RRC requires unknown things to be ignored

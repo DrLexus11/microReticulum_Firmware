@@ -596,6 +596,60 @@ std::string normalize_room(const std::string& room) {
     return normalized;
 }
 
+namespace {
+
+// Append only if the result still fits. A hub that overruns its own advertised
+// body limit cannot encode the reply at all, so a truncated list beats none.
+bool append_bounded(std::string& target, const std::string& piece, size_t limit) {
+    if (target.size() + piece.size() > limit) return false;
+    target += piece;
+    return true;
+}
+
+std::string hex_of(const IdentityHash& identity, size_t bytes) {
+    static const char digits[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(bytes * 2);
+    for (size_t i = 0; i < bytes && i < identity.size(); i++) {
+        hex += digits[identity[i] >> 4];
+        hex += digits[identity[i] & 0x0F];
+    }
+    return hex;
+}
+
+} // namespace
+
+std::string format_room_list(const std::string* rooms, size_t count,
+                             size_t max_bytes) {
+    if (count == 0 || rooms == nullptr) return "No public rooms registered";
+    std::string text = "Registered public rooms";
+    for (size_t i = 0; i < count; i++) {
+        if (!append_bounded(text, "\n" + rooms[i], max_bytes)) break;
+    }
+    return text;
+}
+
+std::string format_member_list(const std::string& room, const MemberEntry* members,
+                               size_t count, size_t max_bytes) {
+    std::string text = "members in " + room + ": ";
+    if (count == 0 || members == nullptr) {
+        text += "(none)";
+        return text;
+    }
+    bool first = true;
+    for (size_t i = 0; i < count; i++) {
+        const MemberEntry& member = members[i];
+        const bool nicked = member.nickname && !member.nickname->empty();
+        const std::string hex = hex_of(member.identity, nicked ? 6 : member.identity.size());
+        std::string entry = first ? std::string() : std::string(", ");
+        entry += nicked ? (*member.nickname + " (" + hex + ")") : hex;
+        if (!append_bounded(text, entry, max_bytes)) break;
+        first = false;
+    }
+    if (first) text += "(none)";
+    return text;
+}
+
 Error validate(const Envelope& envelope, const ValidationLimits& limits) {
     if (envelope.version != VERSION) return Error::UnsupportedVersion;
     if (envelope.room) {

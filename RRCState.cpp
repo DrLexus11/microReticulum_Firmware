@@ -411,6 +411,15 @@ RoomNames HubState::joined_rooms(SessionKey key) const {
     return result;
 }
 
+AllRoomNames HubState::all_rooms() const {
+    AllRoomNames names;
+    for (const auto& room : rooms_) {
+        if (!room.used || names.count >= names.values.size()) continue;
+        names.values[names.count++] = room.name;
+    }
+    return names;
+}
+
 MemberKeys HubState::members(const std::string& value) const {
     MemberKeys result;
     const int room_index = find_room(normalize_room(value));
