@@ -178,7 +178,10 @@ Error read_text(CborValue& value, size_t maximum, std::string& output) {
     size_t copied = output.size();
     error = cbor_value_copy_text_string(&value, output.data(), &copied, &next);
     if (error != CborNoError) return cbor_error(error);
-    if (copied != length) return Error::Malformed;
+    // TinyCBOR variants disagree on whether the returned count includes the
+    // trailing NUL. The destination was sized for either convention; only the
+    // original text bytes become part of the std::string.
+    if (copied != length && copied != length + 1) return Error::Malformed;
     output.resize(length);
     value = next;
     if (!is_utf8(output)) return Error::InvalidUtf8;
