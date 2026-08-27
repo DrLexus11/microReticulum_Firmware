@@ -89,6 +89,23 @@ for LXMF text, RRC chat and NomadNet pages, and unsuitable for bulk transfer.
 The propagation node's measured stall above roughly 8 KB is a reminder to size
 expectations before building on it.
 
+## 4a. Prerequisite: flash headroom
+
+This work is scheduled after the flash-headroom item in
+[`docs/FeatureRoadmap.md`](FeatureRoadmap.md), and depends on it twice over.
+
+`impr-rad01-rev2` is at 90.2% of its 2 MB application partition, so a stack
+replacement has nowhere to land while it is in progress -- both stacks are
+briefly present during a port.
+
+More importantly, the claim in section 3 that NimBLE returns headroom is
+**unmeasured**. `RAD01_NO_BLE` does not currently compile, because `Remote.h`
+uses `bt_devname` for the SoftAP SSID and DHCP hostname while that symbol lives
+behind the Bluetooth guard. Until that is fixed nobody has built a
+Bluetooth-free image to compare against, and the size argument for this whole
+overhaul rests on a link-map reading that proved unreliable. Fix the target,
+take the measurement, then start.
+
 ## 5. Proposed sequencing
 
 Deliberately two stages, so the first is provable on its own.
