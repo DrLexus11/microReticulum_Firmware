@@ -543,6 +543,44 @@ on `feature/rrc-client-interop`.**
 Merge gate: NomadNet and Eridanus exchange exact room messages across the real
 two-board path, reconnect cleanly and leave both boards healthy.
 
+## 12b. Loop task stack, and why the hub appeared unjoinable
+
+Reticulum runs inside `loop()`, so every Link callback executes on the Arduino
+loop task and then descends through `Packet`, `Destination`, `sha256` and the
+allocator. Arduino's default for that task is 8 KB.
+
+Measured with `uxTaskGetStackHighWaterMark()` on Rev 1 after raising the task to
+16 KB: **the deepest observed path leaves 5,048 bytes free, so it consumes about
+11.3 KB.** Against the 8 KB default that is an overflow of roughly 3 KB, and it
+was reached whenever the hub answered `HELLO` -- building a `WELCOME` on top of
+an already-decoded envelope, with a 431-byte encode buffer then on the stack.
+
+The failure gave no useful signal. ESP-IDF's stack-overflow watchpoint fired
+inside whatever allocated next, so the panic pointed at `malloc`:
+
+```
+Link::receive -> handle_packet -> send_welcome -> send_envelope
+  -> RNS::Packet -> RNS::Destination -> sha256 -> Bytes::newData
+  -> malloc -> poison_allocated_region -> PANIC
+```
+
+To a client this looked like a hub that announced normally and could never be
+joined: NomadNet reported "identified, sending HELLO" and was disconnected,
+Eridanus could not join at all, and every session, room and counter was wiped
+roughly once a minute. It also invalidated a day of testing, because every
+result was measured against a board rebooting underneath it.
+
+Two consequences worth carrying forward:
+
+- The encode buffer is no longer a stack frame, and the loop task now has 16 KB.
+  The margin is reported as a device metric so it can be watched rather than
+  discovered by a crash.
+- **`printf` is a heavy stack consumer and must be treated as unsafe in callback
+  context.** A single diagnostic `printf` added inside `handle_packet` during
+  investigation panicked the board on its own. `LXMFPropagation.h` calls it from
+  twenty-three places reachable inside a callback; those are affordable at 16 KB
+  but should be converted to counters rather than relied upon.
+
 ## 12a. Service replies and the room-list bound
 
 `/list` and `/who` are answered as private `NOTICE` text in the formats stock
