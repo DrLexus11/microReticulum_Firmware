@@ -163,3 +163,35 @@ under a hash nobody knows.
 `d36d1371772fca94fb6dc2522d1c4254`, LXMF propagation node
 `ba03aa75f8a136b1b6a74667c755727e`, radio configuration and RRC settings all
 unchanged. Two-identity RRC acceptance passes. Loop stack margin unaffected.
+
+**Result on Rev 2.** Same sequence, application 88.3% of 2 MB to **44.2% of
+4 MB**. RRC hub `736043f85ba10cd1b8f01b6726c7bee9`, LXMF propagation node
+`41fc2ab5e88d0b355d3c35fa60f4a22e`, and the message store reloaded with exactly
+its previous contents -- `store loaded: 12 message(s), 2992 bytes`. That last
+line is the clearest proof the copy was byte for byte: a reformatted filesystem
+would have reported an empty store.
+
+**One interruption worth recording.** Between flashing the table and restoring
+the filesystem, Rev 2 went unreachable -- no bootloader, no serial, no ping,
+which on this bench has meant the board working loose on the breadboard. That is
+exactly the window this document warns not to linger in, and the recovery was
+uneventful only because the backup already existed and had been verified. Take
+the backup first, verify it by name, and keep it somewhere that outlives the
+session: a scratch directory that is cleaned up would have turned a reseat into
+a lost identity.
+
+## 6. Where this leaves flash
+
+| Environment | Before | After |
+| --- | ---: | ---: |
+| `impr-rad01-rev1` | 87.6% of 2 MB | **43.8% of 4 MB** |
+| `impr-rad01-rev2` | 90.2% of 2 MB | **45.1% of 4 MB** |
+| `impr-rad01-rev2-uart` | 88.3% of 2 MB | **44.2% of 4 MB** |
+
+2 MB of the 8 MB chip remains unallocated beyond the coredump partition, so
+there is room to grow the filesystem later without touching the application
+again -- though doing so reformats it, and §5 applies.
+
+Flash is no longer the binding constraint. The Bluetooth overhaul in item 4 of
+the roadmap now has somewhere to land, and the remaining trims in §3.4 and §3.5
+can stay unspent.
