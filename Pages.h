@@ -23,6 +23,9 @@
 #include <microReticulum/Identity.h>
 #include <microReticulum/Utilities/OS.h>
 #include <microReticulum/Bytes.h>
+#if defined(RRC_HUB)
+#include "RRCHub.h"
+#endif
 #ifdef HAS_BME
 #include "BME680.h"
 #endif
@@ -145,6 +148,9 @@ RNS::Bytes serve_page(
       content << ">> Device\n";
       content << "`!`[• General`:/page/device.mu`c=general]`\n";
       content << "`!`[• Interface`:/page/device.mu`c=interfaces]`\n";
+#if defined(RRC_HUB)
+      content << "`!`[• RRC Hub`:/page/device.mu`c=rrc]`\n";
+#endif
 #ifdef HAS_BME
       if (BME680::bme_installed) {
         content << "`!`[• Telemetry`:/page/telemetry.mu]`\n";
@@ -283,7 +289,7 @@ RNS::Bytes serve_page(
         content << "  \"nomadnet_destination\": \"" << (nomadnet_destination ? nomadnet_destination.hash().toHex() : RNS::Bytes{}.toHex()) << "\",\n";
       	content << "}";
       }
-  	  else if (category == "interfaces") {
+      else if (category == "interfaces") {
         content = "{\n";
 #if defined(LORA_TRANSPORT)
         content << "  \"" << lora_interface.name().c_str() << "\": {\n";
@@ -331,6 +337,37 @@ RNS::Bytes serve_page(
 #endif
       	content << "}";
       }
+#if defined(RRC_HUB)
+      else if (category == "rrc") {
+        const RNS::Bytes hash = rrc_hub_destination_hash();
+        content = "{\n";
+        content << "  \"enabled\": " << (rrc_hub_enabled ? "true" : "false") << ",\n";
+        content << "  \"running\": " << (rrc_hub_running() ? "true" : "false") << ",\n";
+        content << "  \"destination\": \"" << hash.toHex() << "\",\n";
+        content << "  \"announce_interval_seconds\": " << std::to_string(rrc_hub_announce_interval_seconds) << ",\n";
+        content << "  \"max_sessions\": " << std::to_string(rrc_hub_max_sessions) << ",\n";
+        content << "  \"max_rooms_per_session\": " << std::to_string(rrc_hub_max_rooms_per_session) << ",\n";
+        content << "  \"max_body_bytes\": " << std::to_string(rrc_hub_max_body_bytes) << ",\n";
+        content << "  \"rate_per_minute\": " << std::to_string(rrc_hub_rate_per_minute) << ",\n";
+        content << "  \"ping_interval_seconds\": " << std::to_string(rrc_hub_ping_interval_seconds) << ",\n";
+        content << "  \"pong_timeout_seconds\": " << std::to_string(rrc_hub_pong_timeout_seconds) << ",\n";
+        content << "  \"sessions\": " << std::to_string(rrc_hub_session_count()) << ",\n";
+        content << "  \"identified_sessions\": " << std::to_string(rrc_hub_identified_count()) << ",\n";
+        content << "  \"rooms\": " << std::to_string(rrc_hub_room_count()) << ",\n";
+        content << "  \"memberships\": " << std::to_string(rrc_hub_membership_count()) << ",\n";
+        content << "  \"packets_received\": " << std::to_string(rrc_hub_rx_count()) << ",\n";
+        content << "  \"packets_sent\": " << std::to_string(rrc_hub_tx_count()) << ",\n";
+        content << "  \"accepted\": " << std::to_string(rrc_hub_accepted_count()) << ",\n";
+        content << "  \"forwarded\": " << std::to_string(rrc_hub_forwarded_count()) << ",\n";
+        content << "  \"rejected\": " << std::to_string(rrc_hub_rejected_count()) << ",\n";
+        content << "  \"rate_limited\": " << std::to_string(rrc_hub_rate_limited_count()) << ",\n";
+        content << "  \"malformed\": " << std::to_string(rrc_hub_malformed_count()) << ",\n";
+        content << "  \"identify_timeouts\": " << std::to_string(rrc_hub_identify_timeout_count()) << ",\n";
+        content << "  \"hello_timeouts\": " << std::to_string(rrc_hub_hello_timeout_count()) << ",\n";
+        content << "  \"pong_timeouts\": " << std::to_string(rrc_hub_pong_timeout_count()) << "\n";
+        content << "}";
+      }
+#endif
       else {
         content = "CATEGORY NOT FOUND\n";
       }
