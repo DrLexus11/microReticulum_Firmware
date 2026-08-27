@@ -174,11 +174,44 @@ struct ValidationLimits {
 
 bool is_utf8(const std::string& value);
 std::string normalize_room(const std::string& room);
+
+// Whether a client-supplied room token names the given canonical room.
+//
+// Clients are inconsistent about the leading '#': NomadNet sends "/who #room"
+// while Eridanus sends "/who room" for the same room. Matching literally made
+// the hub answer "(none)" for a populated room, which is indistinguishable from
+// an empty one. Comparison is therefore case-insensitive and ignores a single
+// leading '#' on either side. It deliberately does not strip anything else --
+// '#' is the only prefix clients disagree about.
+bool room_token_matches(const std::string& canonical, const std::string& token);
 Error validate(const Envelope& envelope,
                const ValidationLimits& limits = ValidationLimits{});
 Error stamp_forwarded(Envelope& envelope, const IdentityHash& authenticated_source,
                       const std::optional<std::string>& accepted_nickname,
                       const ValidationLimits& limits = ValidationLimits{});
+
+// --- Hub service reply formats --------------------------------------------
+//
+// These strings are a client parser contract, not a presentation choice.
+// NomadNet matches them with `_parse_room_list_notice` and `_parse_who_notice`;
+// a wrong prefix or separator is not an error anywhere, it simply leaves the
+// client's room list empty and its members unnamed. Kept here, away from
+// Arduino and Reticulum, so the exact bytes can be asserted in native tests.
+
+struct MemberEntry {
+    IdentityHash identity{};
+    std::optional<std::string> nickname;
+};
+
+// "Registered public rooms\n<room>\n<room>" or "No public rooms registered".
+std::string format_room_list(const std::string* rooms, size_t count,
+                             size_t max_bytes);
+
+// "members in <room>: nick (hex12), <full-32-hex>, ..." or "... : (none)".
+// A nicked member is identified by a 6-byte prefix, an un-nicked one by the
+// whole 16-byte hash; that asymmetry is the client's format, not a shortcut.
+std::string format_member_list(const std::string& room, const MemberEntry* members,
+                               size_t count, size_t max_bytes);
 
 Result encode(const Envelope& envelope, uint8_t* output, size_t capacity,
               const ValidationLimits& limits = ValidationLimits{});

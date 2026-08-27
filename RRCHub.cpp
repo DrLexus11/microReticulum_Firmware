@@ -57,6 +57,7 @@ uint32_t malformed_count = 0;
 uint32_t identify_timeout_count = 0;
 uint32_t hello_timeout_count = 0;
 uint32_t pong_timeout_count = 0;
+uint32_t list_truncated_count = 0;
 uint32_t last_millis = 0;
 uint64_t millis_high = 0;
 uint64_t last_announce_ms = 0;
@@ -107,6 +108,9 @@ RRC::ValidationLimits validation_limits(Slot& slot) {
     return limits;
 }
 
+bool send_envelope(Slot& slot, const RRC::Envelope& envelope,
+                   const std::optional<RRC::ValidationLimits>& override_limits = std::nullopt);
+
 RRC::Envelope base_envelope(uint8_t type) {
     RRC::Envelope envelope;
     envelope.type = type;
@@ -116,10 +120,22 @@ RRC::Envelope base_envelope(uint8_t type) {
     return envelope;
 }
 
-bool send_envelope(Slot& slot, const RRC::Envelope& envelope) {
+bool send_envelope(Slot& slot, const RRC::Envelope& envelope,
+                   const std::optional<RRC::ValidationLimits>& override_limits) {
     if (!slot.used || !slot.link || slot.link.status() != RNS::Type::Link::ACTIVE) return false;
-    std::array<uint8_t, RRC::MAX_ENVELOPE_BYTES> buffer{};
-    const RRC::ValidationLimits limits = validation_limits(slot);
+    // Deliberately not on the stack. This runs inside Link::receive on the
+    // Arduino loop task, which then descends through Packet -> Destination ->
+    // sha256 -> malloc. Adding a 431-byte frame on top of an already decoded
+    // Envelope and a WelcomeBody was enough to overflow that task's stack: the
+    // board panicked in malloc every time it tried to answer HELLO, which
+    // presented to clients as "identified, sending HELLO" then disconnect.
+    //
+    // Safe as a static because every RRC callback runs on that one loop task
+    // and nothing here re-enters send_envelope; fanout() sends sequentially.
+    static std::array<uint8_t, RRC::MAX_ENVELOPE_BYTES> buffer;
+    buffer.fill(0);
+    const RRC::ValidationLimits limits =
+        override_limits ? *override_limits : validation_limits(slot);
     const RRC::Result result = RRC::encode(envelope, buffer.data(), buffer.size(), limits);
     if (!result) {
         ++rejected_count;
@@ -245,7 +261,141 @@ void handle_part(Slot& slot, const RRC::Envelope& envelope) {
     fanout(before, parted, slot.key);
 }
 
+// --- Hub service commands -------------------------------------------------
+//
+// Stock clients issue these automatically and depend on the answers: NomadNet
+// sends `/list` right after WELCOME to populate its channel list, and
+// `/who <room>` right after JOIN to learn who is present. Without replies the
+// room list stays empty and members render as bare hashes, which is exactly how
+// the hub looked next to rrcd.
+//
+// The reply formats are NomadNet's parser contract, not our invention:
+//   /list -> "Registered public rooms\n<room>\n<room>"  or
+//            "No public rooms registered"
+//   /who  -> "members in <room>: nick (hex12), <full-32-hex>, ..." or "(none)"
+// A nicked member carries a 12-hex prefix; an un-nicked one the full 32 hex.
+//
+// Replies go only to the requester, as rrcd does, and are never fanned out.
+
+bool body_starts_with(const RRC::Envelope& envelope, const char* command,
+                      std::string* argument) {
+    if (envelope.body.kind != RRC::BodyKind::Text) return false;
+    const std::string& text = envelope.body.text;
+    const size_t length = std::strlen(command);
+    if (text.size() < length || text.compare(0, length, command) != 0) return false;
+    if (text.size() > length && text[length] != ' ') return false;  // /whoever
+    if (argument) {
+        *argument = text.size() > length ? text.substr(length + 1) : std::string();
+    }
+    return true;
+}
+
+// How much text a hub-generated service reply may carry.
+//
+// Deliberately not rrc_hub_max_body_bytes. That limit is advertised to bound
+// what *clients* may send; applying it to our own replies truncated the room
+// list silently -- measured at 7 of 16 rooms with 40-character names. The real
+// constraint on a reply is what fits the negotiated Link MDU, so use that and
+// keep a margin for the fixed envelope fields and CBOR framing.
+size_t service_body_budget(Slot& slot) {
+    const RRC::ValidationLimits limits = validation_limits(slot);
+    constexpr size_t envelope_overhead = 72;
+    return limits.max_envelope_bytes > envelope_overhead
+        ? limits.max_envelope_bytes - envelope_overhead : 0;
+}
+
+void send_notice(Slot& slot, const std::string& text,
+                 const std::optional<std::string>& room) {
+    RRC::Envelope notice = base_envelope(RRC::T_NOTICE);
+    notice.room = room;
+    notice.body = RRC::Body::text_value(text);
+    // Validate against the reply budget rather than the client body limit,
+    // otherwise our own encode() rejects a notice that would fit the link.
+    RRC::ValidationLimits limits = validation_limits(slot);
+    limits.max_body_bytes = std::max(limits.max_body_bytes, service_body_budget(slot));
+    send_envelope(slot, notice, limits);
+}
+
+void reply_room_list(Slot& slot) {
+    const RRC::AllRoomNames rooms = hub_state.all_rooms();
+    const std::string text =
+        RRC::format_room_list(rooms.values.data(), rooms.count, service_body_budget(slot));
+    // Count what did not fit so an operator can see that a client received a
+    // partial view instead of having to infer it from a short list.
+    size_t listed = 0;
+    for (size_t i = 0; i + 1 < text.size(); i++) if (text[i] == '\n') ++listed;
+    if (rooms.count > listed) ++list_truncated_count;
+    send_notice(slot, text, std::nullopt);
+}
+
+void reply_member_list(Slot& slot, const std::string& room) {
+    const RRC::MemberKeys members = hub_state.members(room);
+    std::array<RRC::MemberEntry, RRC::HARD_MAX_SESSIONS> entries{};
+    size_t count = 0;
+    for (size_t i = 0; i < members.count && count < entries.size(); i++) {
+        const auto identity = hub_state.identity(members.values[i]);
+        if (!identity) continue;
+        entries[count].identity = *identity;
+        entries[count].nickname = hub_state.nickname(members.values[i]);
+        ++count;
+    }
+    send_notice(slot,
+                RRC::format_member_list(room, entries.data(), count,
+                                        service_body_budget(slot)),
+                room);
+}
+
+// Returns true when the envelope was a service command and has been answered.
+bool handle_service_command(Slot& slot, const RRC::Envelope& envelope) {
+    if (!hub_state.welcomed(slot.key)) return false;
+    std::string argument;
+    if (body_starts_with(envelope, "/list", &argument)) {
+        reply_room_list(slot);
+        ++accepted_count;
+        return true;
+    }
+    if (body_starts_with(envelope, "/who", &argument) ||
+        body_starts_with(envelope, "/names", &argument)) {
+        // `/who` takes an optional room, and clients disagree about the leading
+        // '#': NomadNet sends "/who #room", Eridanus sends "/who room" for the
+        // same room. Resolve the token against the rooms that actually exist and
+        // answer with the canonical name, so the reply matches the key the
+        // client holds. Comparing literally answered "(none)" for a populated
+        // room, which reads exactly like an empty one.
+        std::string room;
+        if (!argument.empty()) {
+            const RRC::AllRoomNames rooms = hub_state.all_rooms();
+            for (size_t i = 0; i < rooms.count; i++) {
+                if (RRC::room_token_matches(rooms.values[i], argument)) {
+                    room = rooms.values[i];
+                    break;
+                }
+            }
+            // Named a room that does not exist: answer about what was asked
+            // rather than silently substituting the room they happen to be in.
+            if (room.empty()) room = RRC::normalize_room(argument);
+        }
+        else if (envelope.room) {
+            room = RRC::normalize_room(*envelope.room);
+        }
+        if (room.empty()) return false;
+        reply_member_list(slot, room);
+        ++accepted_count;
+        return true;
+    }
+    return false;
+}
+
 void handle_room_traffic(Slot& slot, RRC::Envelope envelope, uint64_t now_ms) {
+    // Service commands are answered privately and never relayed as room text.
+    if (handle_service_command(slot, envelope)) return;
+
+    // A text envelope with no room is a global hub command, not room traffic.
+    // Stock NomadNet sends `/list` this way right after WELCOME. The MVP hub
+    // implements no commands, and RRC requires unknown things to be ignored
+    // rather than refused, so drop it silently: answering with an ERROR made
+    // every stock client show a failure on a healthy connection.
+    if (!envelope.room) return;
     const std::string room = RRC::normalize_room(*envelope.room);
     const RRC::StateError allowed = hub_state.can_send(slot.key, room, now_ms);
     if (allowed != RRC::StateError::None) {
@@ -273,8 +423,25 @@ void handle_packet(const RNS::Bytes& plaintext, const RNS::Packet& packet) {
     ++rx_count;
 
     // Link encryption alone does not prove who is at the other end. Until the
-    // remote-identification callback succeeds, do not parse or answer any
-    // application bytes (including a syntactically valid HELLO).
+    // remote identity is known, do not parse or answer any application bytes
+    // (including a syntactically valid HELLO).
+    //
+    // Do not depend solely on the remote-identified callback to deliver it.
+    // When that callback is missed the session is mute for ever: the client
+    // identifies, sends HELLO, receives nothing, and retries into silence until
+    // its deadline while the Link sits ACTIVE. Hub telemetry showed exactly
+    // that shape -- rx 7, rejected 7, identify_timeouts 1, sessions 0 -- with
+    // stock NomadNet and Eridanus unable to join a hub they could discover.
+    //
+    // Ask the Link for its proven identity instead. This is the same
+    // authenticated value the callback would have carried, so it weakens
+    // nothing: identity still comes from Reticulum, never from K_SRC.
+    if (!hub_state.identity(slot->key) && slot->link) {
+        RRC::IdentityHash hash{};
+        if (copy_identity_hash(slot->link.get_remote_identity(), hash)) {
+            hub_state.identify(slot->key, hash, monotonic_ms());
+        }
+    }
     if (!hub_state.identity(slot->key)) {
         ++rejected_count;
         return;
@@ -466,8 +633,25 @@ void rrc_hub_loop() {
     for (auto& slot : slots) {
         if (!slot.used) continue;
         if (!hub_state.has_session(slot.key)) {
+            // The session already expired out of HubState. Ask the Link to go
+            // away, then reclaim the slot ourselves rather than waiting for the
+            // closed callback.
+            //
+            // Relying on that callback leaks the slot whenever it does not fire
+            // -- and microReticulum's Link watchdog is still a TODO, so it
+            // cannot be assumed to. A leaked slot is never reused, teardown()
+            // is retried against a dead Link on every loop, and once all
+            // MAX_SESSION_CAPACITY slots have leaked handle_established()
+            // refuses every new Link. The hub then looks alive and announces
+            // normally while accepting nobody, which presents as a hub that
+            // worked and then quietly stopped taking joins.
+            //
+            // Memberships were already released by expire(); this only returns
+            // the slot. Cleanup must not depend on the library reaping Links,
+            // exactly as the requirements demand of the handshake timeouts.
             RNS::Link closing = slot.link;
             closing.teardown();
+            slot = Slot{};
             continue;
         }
         if (hub_state.welcomed(slot.key) &&

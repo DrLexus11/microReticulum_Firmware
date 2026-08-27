@@ -4,10 +4,10 @@ Cross-feature priority for work that remains after the propagation-node and
 private-mesh milestones. Detailed design and acceptance evidence remain in each
 feature document; this file answers which implementation should happen next.
 
-Status: **current recommendation**, updated 2026-08-27 after embedded RRC hub
-acceptance. RRC protocol core is merged; the Rev1 embedded hub passed automated
-and physical-power-cycle acceptance and is ready to merge. Stock-client/two-board
-PR 3 is next.
+Status: **current recommendation**, updated 2026-08-27 after RRC PR 3 hardware
+acceptance and the Bluetooth overhaul proposal. The protocol core and embedded hub are merged. The reusable probe,
+Rev2 promotion, two-hop automated run and stock NomadNet/Eridanus exchange are
+green on PR 3. Automatic disaster SoftAP is next after this PR merges.
 
 ## Completed foundations
 
@@ -23,7 +23,7 @@ items.
 
 ## Recommended implementation order
 
-### 1. Embedded RRC group chat — **active**
+### 1. Embedded RRC group chat — **active; PR 3 acceptance green**
 
 Implement the scoped live group-chat hub in
 [`docs/RRCRequirements.md`](RRCRequirements.md).
@@ -37,9 +37,9 @@ Why first:
 - it exercises long-lived Links, which are foundational for later interactive
   services.
 
-Deliver it as the three PRs defined in the requirements document. PR 1 is
-merged. PR 2 hosts the bounded hub and has passed Rev1 hardware acceptance. PR 3
-adds the reusable probe and stock NomadNet/Eridanus mixed-board acceptance. Do
+Deliver it as the three PRs defined in the requirements document. PR 1 and PR 2
+are merged. PR 3 adds the reusable probe, promotes Rev2 to the same hub build,
+and has passed automated and stock NomadNet/Eridanus mixed-board acceptance. Do
 not expand it into history, Resources, moderation or a Columba fork during the
 MVP.
 
@@ -64,14 +64,45 @@ reconnection, secure-node interaction and coexistence with LoRa. The fallback
 MAC-derived PSK is not a true credential; secure deployments need an explicit
 per-node policy.
 
-### 3. Propagation-node operational controls and occupancy page
+### 3. Bluetooth Low Energy overhaul — **scheduled after SoftAP**
+
+Replace the Bluedroid BLE implementation with a NimBLE one that a phone can pair
+from its own Bluetooth settings, per
+[`docs/BluetoothOverhaul.md`](BluetoothOverhaul.md).
+
+Why here:
+
+- it is the only phone attachment path that needs no access point, no DHCP and
+  no surviving building infrastructure, which makes it the most disaster-
+  appropriate attachment of all;
+- the current implementation cannot be paired without nRF Connect, because it
+  never requests bonding and declares no IO capability -- a responder cannot be
+  asked to install a developer tool;
+- it is expected to *return* flash headroom rather than consume it, since
+  Bluedroid is already linked into images sitting at 87-88% of the application
+  partition; and
+- Meshtastic runs the target configuration on the same silicon, so there is a
+  behavioural oracle rather than a specification to guess at.
+
+It is placed after SoftAP because SoftAP is smaller, reuses the working TCP
+attachment path, and serves the same goal for a phone that still has WiFi. BLE
+is the larger build and carries a WiFi coexistence risk that is better measured
+once the SoftAP transitions are understood.
+
+Deliver it in the two stages that document defines: pairing and link stability
+first, proven from stock OS settings and held for at least 30 minutes; the
+Reticulum `BLEInterface` only after that. A partial port that pairs and then
+drops is worse than the current state, because it looks like a broken product
+rather than a missing feature.
+
+### 4. Propagation-node operational controls and occupancy page
 
 Add provisioning controls for enable/disable, limits, occupancy and purge, then
 surface those counters on a NomadNet page. This closes the operator-visibility
 gap in [`docs/PropagationNodeTODO.md`](PropagationNodeTODO.md) without requiring
 an RTC.
 
-### 4. Resilience release gates and orphan recovery
+### 5. Resilience release gates and orphan recovery
 
 Hardware-verify the existing announce jitter and duty-cycle telemetry, define a
 production duty-cycle configuration, then implement the listen-first orphan
@@ -81,7 +112,7 @@ This is more important than internet-oriented convenience features, but follows
 SoftAP because resident attachment is useful immediately and the orphan state
 machine needs longer fleet-level timing tests.
 
-### 5. Wall-time adoption and propagation expiry
+### 6. Wall-time adoption and propagation expiry
 
 Adopt trustworthy wall time from an authenticated client request, then implement
 message expiry. A Rev3 battery-backed RTC will improve cold-start behaviour, but
@@ -90,19 +121,19 @@ firmware time adoption can be designed and tested on Rev1/Rev2 first.
 Peer sync remains after this work because it depends on stable time semantics
 and introduces substantial LoRa airtime cost.
 
-### 6. Resource API Stage 1
+### 7. Resource API Stage 1
 
 Build the host-side schema-to-OpenAPI/Swagger generator proposed in
 [`docs/ResourceAPI.md`](ResourceAPI.md). It provides industrial evaluation value
 without firmware or protocol changes. Defer collections, events and new device
 verbs until the generated interface has real users.
 
-### 7. Outbound TCP client
+### 8. Outbound TCP client
 
 Add `TCPClientInterface` for normal-time off-site anchoring and monitoring. It
 does not solve the local disaster path, so it follows SoftAP and orphan recovery.
 
-### 8. Optional and research items
+### 9. Optional and research items
 
 - RRC resources, moderation, persistent rooms and offline bridge.
 - Propagation-node peer sync.
@@ -143,6 +174,6 @@ Choose the next item by dependency and disaster value, not by novelty:
 4. defer features blocked by unavailable hardware or unstable semantics rather
    than implementing an untestable approximation.
 
-Under that rule, finish **RRC embedded hub PR 2**, then **RRC client and
-two-board interoperability PR 3**. Once those are accepted, the next feature
-branch should be **automatic disaster SoftAP**.
+Under that rule, finish review and merge of **RRC client and two-board
+interoperability PR 3**. The next feature branch should then be **automatic
+disaster SoftAP**.

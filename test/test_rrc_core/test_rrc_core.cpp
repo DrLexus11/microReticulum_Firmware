@@ -410,6 +410,134 @@ void test_state_reports_live_session_after_expiry() {
         state.consume_rate(91, 111));
 }
 
+// Stock NomadNet sends `/list` as a MSG with no room immediately after WELCOME,
+// and `/who <room>` room-scoped after JOIN. Requiring a room on every text type
+// made the hub answer a healthy stock connection with "missing required field".
+// Membership operations still require one, because they are meaningless without.
+void test_roomless_command_message_is_accepted_and_membership_still_needs_room() {
+    RRC::Envelope command;
+    command.type = RRC::T_MSG;
+    command.body = RRC::Body::text_value("/list");
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::None),
+                      static_cast<int>(RRC::validate(command)));
+
+    RRC::Envelope room_message;
+    room_message.type = RRC::T_MSG;
+    room_message.room = "#rad01";
+    room_message.body = RRC::Body::text_value("hello");
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::None),
+                      static_cast<int>(RRC::validate(room_message)));
+
+    RRC::Envelope join;
+    join.type = RRC::T_JOIN;
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::MissingField),
+                      static_cast<int>(RRC::validate(join)));
+
+    RRC::Envelope part;
+    part.type = RRC::T_PART;
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::MissingField),
+                      static_cast<int>(RRC::validate(part)));
+}
+
+// These exact strings are what stock NomadNet's _parse_room_list_notice and
+// _parse_who_notice match on. A wrong prefix or separator produces no error
+// anywhere -- the client's room list simply stays empty and its members stay
+// unnamed, which is precisely how the hub differed from rrcd in the field.
+void test_service_reply_formats_match_the_client_parser_contract() {
+    TEST_ASSERT_EQUAL_STRING("No public rooms registered",
+                             RRC::format_room_list(nullptr, 0, 280).c_str());
+
+    const std::string rooms[] = {"#alpha", "#beta"};
+    TEST_ASSERT_EQUAL_STRING("Registered public rooms\n#alpha\n#beta",
+                             RRC::format_room_list(rooms, 2, 280).c_str());
+
+    RRC::MemberEntry entries[2]{};
+    for (size_t i = 0; i < entries[0].identity.size(); i++) {
+        entries[0].identity[i] = static_cast<uint8_t>(i);
+        entries[1].identity[i] = static_cast<uint8_t>(0xF0 + (i & 0x0F));
+    }
+    entries[0].nickname = std::string("Lexus");   // nicked -> 12 hex prefix
+    // entries[1] stays un-nicked                  -> full 32 hex
+
+    TEST_ASSERT_EQUAL_STRING(
+        "members in #rad01: Lexus (000102030405), "
+        "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+        RRC::format_member_list("#rad01", entries, 2, 280).c_str());
+
+    TEST_ASSERT_EQUAL_STRING("members in #empty: (none)",
+                             RRC::format_member_list("#empty", nullptr, 0, 280).c_str());
+}
+
+// The advertised body limit must bound the reply, or the hub builds a NOTICE it
+// cannot encode and the client gets nothing at all.
+void test_service_replies_stay_within_the_advertised_body_limit() {
+    std::string rooms[8];
+    for (size_t i = 0; i < 8; i++) rooms[i] = std::string("#") + std::string(40, 'a' + (char)i);
+    const std::string listed = RRC::format_room_list(rooms, 8, 120);
+    TEST_ASSERT_TRUE(listed.size() <= 120);
+    TEST_ASSERT_EQUAL_STRING("Registered public rooms", listed.substr(0, 23).c_str());
+
+    RRC::MemberEntry many[8]{};
+    for (size_t m = 0; m < 8; m++) {
+        for (size_t i = 0; i < many[m].identity.size(); i++) many[m].identity[i] = (uint8_t)(m * 16 + i);
+        many[m].nickname = std::string(28, 'n');
+    }
+    const std::string members = RRC::format_member_list("#room", many, 8, 120);
+    TEST_ASSERT_TRUE(members.size() <= 120);
+}
+
+// A second identify with the same identity must be a no-op. Reticulum can
+// deliver the identified callback more than once, and the hub also adopts the
+// Link's proven identity when a packet arrives first. Refusing the duplicate
+// made the hub tear down a session that had just identified correctly -- stock
+// clients showed "identified, sending HELLO" and were then disconnected.
+void test_repeated_identify_is_idempotent_but_rejects_a_different_identity() {
+    RRC::HubState state;
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(7, 0));
+
+    RRC::IdentityHash first{};
+    for (size_t i = 0; i < first.size(); i++) first[i] = static_cast<uint8_t>(i);
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.identify(7, first, 10));
+
+    // Same identity again: accepted, and the session survives.
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.identify(7, first, 20));
+    TEST_ASSERT_TRUE(state.has_session(7));
+    TEST_ASSERT_TRUE(state.identity(7).has_value());
+    TEST_ASSERT_TRUE(*state.identity(7) == first);
+
+    // A different identity on the same session is still refused.
+    RRC::IdentityHash other{};
+    for (size_t i = 0; i < other.size(); i++) other[i] = static_cast<uint8_t>(0xA0 + i);
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::AlreadyIdentified,
+                            state.identify(7, other, 30));
+    TEST_ASSERT_TRUE(*state.identity(7) == first);
+}
+
+// Clients disagree about the leading '#'. Our own PR 3 acceptance log records
+// Eridanus sending "/who rad01-pr3" for the room "#rad01-pr3"; NomadNet sends
+// "/who #rad01-pr3" for the same room. Matching literally answered "(none)" for
+// a populated room, which a user cannot tell apart from an empty one.
+void test_room_token_matching_tolerates_the_leading_hash() {
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#rad01-pr3", "rad01-pr3"));   // Eridanus
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#rad01-pr3", "#rad01-pr3"));  // NomadNet
+    TEST_ASSERT_TRUE(RRC::room_token_matches("rad01-pr3", "#rad01-pr3"));
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#RAD01-PR3", "rad01-pr3"));   // case
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#rad01-pr3", "  rad01-pr3 ")); // trimmed
+
+    // Different rooms must not collide, and only ONE leading '#' is ignored --
+    // "##x" is a different room from "#x", not the same one.
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#rad01", "#rad02"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#general", "gener"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("##x", "x"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#rad01", ""));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("", "rad01"));
+    // "#" is itself a legal room name, so it matches itself -- but stripping the
+    // hash must not leave an empty string that then matches any room.
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#", "#"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#", "rad01"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("rad01", "#"));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -432,5 +560,10 @@ int main(void) {
     RUN_TEST(test_incomplete_and_unresponsive_sessions_expire_and_release_rooms);
     RUN_TEST(test_repeated_reconnects_leave_no_stale_membership);
     RUN_TEST(test_state_reports_live_session_after_expiry);
+    RUN_TEST(test_roomless_command_message_is_accepted_and_membership_still_needs_room);
+    RUN_TEST(test_service_reply_formats_match_the_client_parser_contract);
+    RUN_TEST(test_service_replies_stay_within_the_advertised_body_limit);
+    RUN_TEST(test_repeated_identify_is_idempotent_but_rejects_a_different_identity);
+    RUN_TEST(test_room_token_matching_tolerates_the_leading_hash);
     return UNITY_END();
 }

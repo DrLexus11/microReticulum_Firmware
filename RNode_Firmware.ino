@@ -502,6 +502,32 @@ void dump_filesystem(const char* basepath, uint8_t level = 0, uint8_t max_level 
 }
 #endif
 
+// The Reticulum stack runs inside loop(), so every Link callback -- RRC's
+// packet handling, LXMF's store writes, NomadNet page rendering -- executes on
+// the Arduino loop task and then descends through Packet, Destination, sha256
+// and malloc. The 8 KB default was not enough: answering an RRC HELLO overflowed
+// it and panicked the board in the allocator roughly once a minute, which looked
+// like a hub that could be discovered but never joined.
+#if MCU_VARIANT == MCU_ESP32
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+#endif
+
+// Smallest free stack seen on the loop task. Sampled every pass, so it records
+// the worst case across every Reticulum callback rather than a quiet moment.
+// A stack overflow here presents as a panic inside malloc with no indication of
+// the real cause, so this number is worth watching before it reaches zero.
+// Sentinel is the maximum on purpose: the running minimum is computed with `<`,
+// so seeding this at 0 would mean no sample is ever smaller and the metric would
+// report 0 for ever. It is only exposed on platforms that can sample it.
+uint32_t loop_stack_free_min = 0xFFFFFFFF;
+
+static void sample_loop_stack() {
+#if MCU_VARIANT == MCU_ESP32
+  const uint32_t free_bytes = uxTaskGetStackHighWaterMark(NULL);
+  if (free_bytes < loop_stack_free_min) loop_stack_free_min = free_bytes;
+#endif
+}
+
 void setup() {
 
   // Initialise serial communication
@@ -3384,7 +3410,8 @@ void loop() {
 
     #endif
 
-    tx_queue_handler();
+      sample_loop_stack();
+  tx_queue_handler();
     check_modem_status();
     #if MCU_VARIANT == MCU_NATIVE
       // Drop a TCP host client that's gone silent past the idle window.

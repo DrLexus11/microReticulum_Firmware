@@ -105,7 +105,22 @@ StateError HubState::identify(SessionKey key, const IdentityHash& identity_value
     const int index = find_session(key);
     if (index < 0) return StateError::NotFound;
     Session& session = sessions_[static_cast<size_t>(index)];
-    if (session.identified) return StateError::AlreadyIdentified;
+    if (session.identified) {
+        // Re-identification with the same identity is idempotent, not an error.
+        // Reticulum may deliver the identified callback more than once, and the
+        // hub also reads the Link's proven identity directly when a packet
+        // arrives before the callback has landed -- so a second, identical
+        // identify is entirely normal. Treating it as a failure made the caller
+        // tear down a session that had just identified correctly, which
+        // presented to stock clients as "identified, sending HELLO" followed by
+        // a disconnect on a hub that was otherwise healthy.
+        //
+        // A *different* identity on an established session is another matter
+        // and is still refused: the caller must not silently re-attribute a
+        // live session to someone else.
+        return session.identity == identity_value ? StateError::None
+                                                  : StateError::AlreadyIdentified;
+    }
     session.identified = true;
     session.identity = identity_value;
     session.identified_ms = now_ms;
@@ -409,6 +424,15 @@ RoomNames HubState::joined_rooms(SessionKey key) const {
         }
     }
     return result;
+}
+
+AllRoomNames HubState::all_rooms() const {
+    AllRoomNames names;
+    for (const auto& room : rooms_) {
+        if (!room.used || names.count >= names.values.size()) continue;
+        names.values[names.count++] = room.name;
+    }
+    return names;
 }
 
 MemberKeys HubState::members(const std::string& value) const {
