@@ -560,8 +560,25 @@ void rrc_hub_loop() {
     for (auto& slot : slots) {
         if (!slot.used) continue;
         if (!hub_state.has_session(slot.key)) {
+            // The session already expired out of HubState. Ask the Link to go
+            // away, then reclaim the slot ourselves rather than waiting for the
+            // closed callback.
+            //
+            // Relying on that callback leaks the slot whenever it does not fire
+            // -- and microReticulum's Link watchdog is still a TODO, so it
+            // cannot be assumed to. A leaked slot is never reused, teardown()
+            // is retried against a dead Link on every loop, and once all
+            // MAX_SESSION_CAPACITY slots have leaked handle_established()
+            // refuses every new Link. The hub then looks alive and announces
+            // normally while accepting nobody, which presents as a hub that
+            // worked and then quietly stopped taking joins.
+            //
+            // Memberships were already released by expire(); this only returns
+            // the slot. Cleanup must not depend on the library reaping Links,
+            // exactly as the requirements demand of the handshake timeouts.
             RNS::Link closing = slot.link;
             closing.teardown();
+            slot = Slot{};
             continue;
         }
         if (hub_state.welcomed(slot.key) &&
