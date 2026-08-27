@@ -174,6 +174,16 @@ struct ValidationLimits {
 
 bool is_utf8(const std::string& value);
 std::string normalize_room(const std::string& room);
+
+// Whether a client-supplied room token names the given canonical room.
+//
+// Clients are inconsistent about the leading '#': NomadNet sends "/who #room"
+// while Eridanus sends "/who room" for the same room. Matching literally made
+// the hub answer "(none)" for a populated room, which is indistinguishable from
+// an empty one. Comparison is therefore case-insensitive and ignores a single
+// leading '#' on either side. It deliberately does not strip anything else --
+// '#' is the only prefix clients disagree about.
+bool room_token_matches(const std::string& canonical, const std::string& token);
 Error validate(const Envelope& envelope,
                const ValidationLimits& limits = ValidationLimits{});
 Error stamp_forwarded(Envelope& envelope, const IdentityHash& authenticated_source,

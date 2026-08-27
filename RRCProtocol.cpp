@@ -650,6 +650,19 @@ std::string format_member_list(const std::string& room, const MemberEntry* membe
     return text;
 }
 
+bool room_token_matches(const std::string& canonical, const std::string& token) {
+    const std::string a = normalize_room(canonical);
+    const std::string b = normalize_room(token);
+    if (a.empty() || b.empty()) return false;
+    if (a == b) return true;
+    auto without_hash = [](const std::string& value) {
+        return (!value.empty() && value[0] == '#') ? value.substr(1) : value;
+    };
+    const std::string bare_a = without_hash(a);
+    const std::string bare_b = without_hash(b);
+    return !bare_a.empty() && bare_a == bare_b;
+}
+
 Error validate(const Envelope& envelope, const ValidationLimits& limits) {
     if (envelope.version != VERSION) return Error::UnsupportedVersion;
     if (envelope.room) {

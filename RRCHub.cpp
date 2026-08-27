@@ -356,10 +356,28 @@ bool handle_service_command(Slot& slot, const RRC::Envelope& envelope) {
     }
     if (body_starts_with(envelope, "/who", &argument) ||
         body_starts_with(envelope, "/names", &argument)) {
-        // `/who` takes an optional room; NomadNet sends the name explicitly and
-        // Eridanus does the same. Fall back to the envelope's room.
-        std::string room = RRC::normalize_room(argument);
-        if (room.empty() && envelope.room) room = RRC::normalize_room(*envelope.room);
+        // `/who` takes an optional room, and clients disagree about the leading
+        // '#': NomadNet sends "/who #room", Eridanus sends "/who room" for the
+        // same room. Resolve the token against the rooms that actually exist and
+        // answer with the canonical name, so the reply matches the key the
+        // client holds. Comparing literally answered "(none)" for a populated
+        // room, which reads exactly like an empty one.
+        std::string room;
+        if (!argument.empty()) {
+            const RRC::AllRoomNames rooms = hub_state.all_rooms();
+            for (size_t i = 0; i < rooms.count; i++) {
+                if (RRC::room_token_matches(rooms.values[i], argument)) {
+                    room = rooms.values[i];
+                    break;
+                }
+            }
+            // Named a room that does not exist: answer about what was asked
+            // rather than silently substituting the room they happen to be in.
+            if (room.empty()) room = RRC::normalize_room(argument);
+        }
+        else if (envelope.room) {
+            room = RRC::normalize_room(*envelope.room);
+        }
         if (room.empty()) return false;
         reply_member_list(slot, room);
         ++accepted_count;

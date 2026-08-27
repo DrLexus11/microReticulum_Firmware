@@ -513,6 +513,31 @@ void test_repeated_identify_is_idempotent_but_rejects_a_different_identity() {
     TEST_ASSERT_TRUE(*state.identity(7) == first);
 }
 
+// Clients disagree about the leading '#'. Our own PR 3 acceptance log records
+// Eridanus sending "/who rad01-pr3" for the room "#rad01-pr3"; NomadNet sends
+// "/who #rad01-pr3" for the same room. Matching literally answered "(none)" for
+// a populated room, which a user cannot tell apart from an empty one.
+void test_room_token_matching_tolerates_the_leading_hash() {
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#rad01-pr3", "rad01-pr3"));   // Eridanus
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#rad01-pr3", "#rad01-pr3"));  // NomadNet
+    TEST_ASSERT_TRUE(RRC::room_token_matches("rad01-pr3", "#rad01-pr3"));
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#RAD01-PR3", "rad01-pr3"));   // case
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#rad01-pr3", "  rad01-pr3 ")); // trimmed
+
+    // Different rooms must not collide, and only ONE leading '#' is ignored --
+    // "##x" is a different room from "#x", not the same one.
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#rad01", "#rad02"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#general", "gener"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("##x", "x"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#rad01", ""));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("", "rad01"));
+    // "#" is itself a legal room name, so it matches itself -- but stripping the
+    // hash must not leave an empty string that then matches any room.
+    TEST_ASSERT_TRUE(RRC::room_token_matches("#", "#"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("#", "rad01"));
+    TEST_ASSERT_FALSE(RRC::room_token_matches("rad01", "#"));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -539,5 +564,6 @@ int main(void) {
     RUN_TEST(test_service_reply_formats_match_the_client_parser_contract);
     RUN_TEST(test_service_replies_stay_within_the_advertised_body_limit);
     RUN_TEST(test_repeated_identify_is_idempotent_but_rejects_a_different_identity);
+    RUN_TEST(test_room_token_matching_tolerates_the_leading_hash);
     return UNITY_END();
 }

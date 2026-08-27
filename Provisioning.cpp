@@ -13,6 +13,11 @@
 #ifdef HAS_PROVISIONING
 
 #include "Provisioning.h"
+
+// For MCU_VARIANT / MCU_ESP32, used to guard the loop-stack metric. These
+// otherwise arrive only through an incidental include chain, and a platform
+// guard that depends on one is a guard waiting to be silently inverted.
+#include "Boards.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #endif
@@ -71,7 +76,9 @@ extern uint32_t lora_bitrate;
 extern uint8_t radio_preset_current();
 extern bool radio_preset_apply(uint8_t idx);
 extern uint8_t implicit_l;
+#if MCU_VARIANT == MCU_ESP32
 extern uint32_t loop_stack_free_min;
+#endif
 extern int noise_floor;
 extern int current_rssi;
 extern int last_rssi;
@@ -556,8 +563,17 @@ static void register_provisioning_namespaces() {
 
   metrics.register_namespace("Device", PROV_NS_METRICS_DEV)
     //.metric_string("transport_identity", PROV_METRICS_DEV_VER, []() { return std::to_string(MAJ_VERS) + "." + std::to_string(MIN_VERS); })
+#if MCU_VARIANT == MCU_ESP32
+    // Only where it can actually be sampled. loop_stack_free_min keeps its
+    // "nothing seen yet" sentinel on platforms without
+    // uxTaskGetStackHighWaterMark(), and reporting that sentinel would show a
+    // 4 GB free stack -- worse than absent for a metric whose entire purpose is
+    // to be trusted. Note the sentinel itself must stay at its maximum value:
+    // the running minimum is computed with `<`, so seeding it at 0 would freeze
+    // the metric at 0 on the platforms where it does work.
     .metric_int("Loop Stack Free Min", PROV_METRICS_DEV_STACK,
       []() { return (fint_t)loop_stack_free_min; })
+#endif
     .metric_float("Battery Voltage", PROV_METRICS_DEV_BATV, []() { return battery_voltage; })
     .metric_float("Battery Percent", PROV_METRICS_DEV_BATP, []() { return battery_percent; })
 /*

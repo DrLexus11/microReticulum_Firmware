@@ -516,6 +516,9 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 // the worst case across every Reticulum callback rather than a quiet moment.
 // A stack overflow here presents as a panic inside malloc with no indication of
 // the real cause, so this number is worth watching before it reaches zero.
+// Sentinel is the maximum on purpose: the running minimum is computed with `<`,
+// so seeding this at 0 would mean no sample is ever smaller and the metric would
+// report 0 for ever. It is only exposed on platforms that can sample it.
 uint32_t loop_stack_free_min = 0xFFFFFFFF;
 
 static void sample_loop_stack() {
