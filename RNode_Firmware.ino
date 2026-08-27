@@ -18,6 +18,9 @@
 #include <microReticulum.h>
 #include "Provisioning.h"
 #include "RadioPresets.h"
+#if defined(RRC_HUB)
+#include "RRCHub.h"
+#endif
 #if defined(LXMF_PROPAGATION_NODE)
 #include "LXMFPropagation.h"
 #endif
@@ -1357,6 +1360,13 @@ printf("[init] op_mode: %U\n", op_mode);
         }
       }
 #endif // URTN_STATS_PAGES
+
+#if defined(RRC_HUB)
+      // RRC is a separate Reticulum service from NomadNet pages and LXMF.
+      // It intentionally shares the persistent transport identity so the
+      // rrc.hub destination hash survives firmware updates and reboots.
+      rrc_hub_begin(RNS::Transport::identity());
+#endif
 
       HEAD("RNS is READY!", RNS::LOG_TRACE);
       if (op_mode == MODE_TNC) {
@@ -3290,6 +3300,9 @@ void loop() {
 #endif
 #if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
   nomadnet_announce_watch();
+#endif
+#if defined(HAS_RNS) && defined(RRC_HUB)
+  rrc_hub_loop();
 #endif
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
   radio_rx_watchdog();

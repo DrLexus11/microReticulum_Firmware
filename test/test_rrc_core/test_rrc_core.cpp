@@ -313,11 +313,13 @@ void test_rate_limit_refills_without_unbounded_queue() {
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
         state.can_send(1, "#room", 0));
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
-        state.can_send(1, "#room", 0));
-    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::RateLimited,
-        state.can_send(1, "#room", 0));
+        state.consume_rate(1, 0));
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
-        state.can_send(1, "#room", 30000));
+        state.consume_rate(1, 0));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::RateLimited,
+        state.consume_rate(1, 0));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.consume_rate(1, 30000));
 }
 
 void test_incomplete_and_unresponsive_sessions_expire_and_release_rooms() {
@@ -327,12 +329,16 @@ void test_incomplete_and_unresponsive_sessions_expire_and_release_rooms() {
     limits.pong_timeout_ms = 30;
     RRC::HubState state(limits);
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(1, 100));
-    TEST_ASSERT_EQUAL_size_t(1, state.expire(110));
+    RRC::ExpireCounts expired;
+    TEST_ASSERT_EQUAL_size_t(1, state.expire(110, &expired));
+    TEST_ASSERT_EQUAL_size_t(1, expired.unidentified);
 
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(2, 200));
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
         state.identify(2, identity(2), 205));
-    TEST_ASSERT_EQUAL_size_t(1, state.expire(225));
+    expired = {};
+    TEST_ASSERT_EQUAL_size_t(1, state.expire(225, &expired));
+    TEST_ASSERT_EQUAL_size_t(1, expired.hello);
 
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(3, 300));
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
@@ -340,11 +346,34 @@ void test_incomplete_and_unresponsive_sessions_expire_and_release_rooms() {
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
         state.hello(3, std::nullopt, 302));
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.join(3, "#room"));
+    TEST_ASSERT_EQUAL_size_t(1, state.membership_count());
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
         state.mark_ping_sent(3, 310));
-    TEST_ASSERT_EQUAL_size_t(1, state.expire(340));
+    TEST_ASSERT_TRUE(state.awaiting_pong(3));
+    // A scheduler retry must preserve the original deadline. With a 30 ms
+    // timeout, resetting this to 320 would incorrectly keep the session alive
+    // at 340.
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.mark_ping_sent(3, 320));
+    expired = {};
+    TEST_ASSERT_EQUAL_size_t(1, state.expire(340, &expired));
+    TEST_ASSERT_EQUAL_size_t(1, expired.pong);
+    TEST_ASSERT_EQUAL_size_t(1, expired.total());
     TEST_ASSERT_EQUAL_size_t(0, state.session_count());
     TEST_ASSERT_EQUAL_size_t(0, state.room_count());
+    TEST_ASSERT_EQUAL_size_t(0, state.membership_count());
+
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(4, 400));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.identify(4, identity(4), 401));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.hello(4, std::nullopt, 402));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.mark_ping_sent(4, 410));
+    TEST_ASSERT_TRUE(state.awaiting_pong(4));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.pong(4));
+    TEST_ASSERT_FALSE(state.awaiting_pong(4));
+    TEST_ASSERT_EQUAL_size_t(0, state.expire(500));
 }
 
 void test_repeated_reconnects_leave_no_stale_membership() {
@@ -357,11 +386,28 @@ void test_repeated_reconnects_leave_no_stale_membership() {
             state.hello(7, std::string("field"), cycle));
         TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
             state.join(7, "#incident"));
+        const RRC::RoomNames rooms = state.joined_rooms(7);
+        TEST_ASSERT_EQUAL_size_t(1, rooms.count);
+        TEST_ASSERT_EQUAL_STRING("#incident", rooms.values[0].c_str());
         TEST_ASSERT_TRUE(state.close(7));
         TEST_ASSERT_EQUAL_size_t(0, state.session_count());
         TEST_ASSERT_EQUAL_size_t(0, state.room_count());
         TEST_ASSERT_EQUAL_size_t(0, state.members("#incident").count);
     }
+}
+
+void test_state_reports_live_session_after_expiry() {
+    RRC::StateLimits limits;
+    limits.identify_timeout_ms = 10;
+    RRC::HubState state(limits);
+
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(RRC::StateError::None),
+                          static_cast<int>(state.open(91, 100)));
+    TEST_ASSERT_TRUE(state.has_session(91));
+    TEST_ASSERT_EQUAL_UINT32(1, state.expire(110));
+    TEST_ASSERT_FALSE(state.has_session(91));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::NotFound,
+        state.consume_rate(91, 111));
 }
 
 void setUp(void) {}
@@ -385,5 +431,6 @@ int main(void) {
     RUN_TEST(test_rate_limit_refills_without_unbounded_queue);
     RUN_TEST(test_incomplete_and_unresponsive_sessions_expire_and_release_rooms);
     RUN_TEST(test_repeated_reconnects_leave_no_stale_membership);
+    RUN_TEST(test_state_reports_live_session_after_expiry);
     return UNITY_END();
 }

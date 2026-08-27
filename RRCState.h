@@ -50,6 +50,19 @@ struct MemberKeys {
     size_t count = 0;
 };
 
+struct RoomNames {
+    std::array<std::string, HARD_MAX_ROOMS_PER_SESSION> values{};
+    size_t count = 0;
+};
+
+struct ExpireCounts {
+    size_t unidentified = 0;
+    size_t hello = 0;
+    size_t pong = 0;
+
+    size_t total() const { return unidentified + hello + pong; }
+};
+
 class HubState {
 public:
     explicit HubState(const StateLimits& limits = StateLimits{});
@@ -62,20 +75,25 @@ public:
     StateError set_nickname(SessionKey key, const std::string& nickname);
     StateError join(SessionKey key, const std::string& room);
     StateError part(SessionKey key, const std::string& room);
+    StateError consume_rate(SessionKey key, uint64_t now_ms);
     StateError can_send(SessionKey key, const std::string& room,
                         uint64_t now_ms);
     StateError pong(SessionKey key);
     StateError mark_ping_sent(SessionKey key, uint64_t now_ms);
     bool close(SessionKey key);
-    size_t expire(uint64_t now_ms);
+    size_t expire(uint64_t now_ms, ExpireCounts* counts = nullptr);
 
     size_t session_count() const;
     size_t identified_count() const;
     size_t room_count() const;
+    size_t membership_count() const;
+    bool has_session(SessionKey key) const;
     bool welcomed(SessionKey key) const;
+    bool awaiting_pong(SessionKey key) const;
     bool joined(SessionKey key, const std::string& room) const;
     std::optional<IdentityHash> identity(SessionKey key) const;
     std::optional<std::string> nickname(SessionKey key) const;
+    RoomNames joined_rooms(SessionKey key) const;
     MemberKeys members(const std::string& room) const;
 
 private:

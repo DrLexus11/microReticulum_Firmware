@@ -4,8 +4,10 @@ Cross-feature priority for work that remains after the propagation-node and
 private-mesh milestones. Detailed design and acceptance evidence remain in each
 feature document; this file answers which implementation should happen next.
 
-Status: **current recommendation**, updated 2026-08-26 after secure-node merge
-and RRC investigation.
+Status: **current recommendation**, updated 2026-08-27 after embedded RRC hub
+acceptance. RRC protocol core is merged; the Rev1 embedded hub passed automated
+and physical-power-cycle acceptance and is ready to merge. Stock-client/two-board
+PR 3 is next.
 
 ## Completed foundations
 
@@ -21,7 +23,7 @@ items.
 
 ## Recommended implementation order
 
-### 1. Embedded RRC group chat — **next**
+### 1. Embedded RRC group chat — **active**
 
 Implement the scoped live group-chat hub in
 [`docs/RRCRequirements.md`](RRCRequirements.md).
@@ -35,8 +37,11 @@ Why first:
 - it exercises long-lived Links, which are foundational for later interactive
   services.
 
-Deliver it as the three PRs defined in the requirements document. Do not expand
-it into history, Resources, moderation or a Columba fork during the MVP.
+Deliver it as the three PRs defined in the requirements document. PR 1 is
+merged. PR 2 hosts the bounded hub and has passed Rev1 hardware acceptance. PR 3
+adds the reusable probe and stock NomadNet/Eridanus mixed-board acceptance. Do
+not expand it into history, Resources, moderation or a Columba fork during the
+MVP.
 
 ### 2. Automatic disaster SoftAP — **next after RRC**
 
@@ -138,7 +143,6 @@ Choose the next item by dependency and disaster value, not by novelty:
 4. defer features blocked by unavailable hardware or unstable semantics rather
    than implementing an untestable approximation.
 
-Under that rule, the immediate branch should be **RRC protocol core**. Once the
-three RRC PRs are accepted, the next feature branch should be **automatic
-disaster SoftAP**.
-
+Under that rule, finish **RRC embedded hub PR 2**, then **RRC client and
+two-board interoperability PR 3**. Once those are accepted, the next feature
+branch should be **automatic disaster SoftAP**.

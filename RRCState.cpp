@@ -249,14 +249,21 @@ bool HubState::consume_token(Session& session, uint64_t now_ms) {
 
 StateError HubState::can_send(SessionKey key, const std::string& value,
                               uint64_t now_ms) {
+    (void)now_ms;
     const int index = find_session(key);
     if (index < 0) return StateError::NotFound;
     Session& session = sessions_[static_cast<size_t>(index)];
     if (!session.identified) return StateError::NotIdentified;
     if (!session.welcomed) return StateError::HelloRequired;
     if (!joined(key, value)) return StateError::NotJoined;
-    return consume_token(session, now_ms) ? StateError::None
-                                          : StateError::RateLimited;
+    return StateError::None;
+}
+
+StateError HubState::consume_rate(SessionKey key, uint64_t now_ms) {
+    const int index = find_session(key);
+    if (index < 0) return StateError::NotFound;
+    return consume_token(sessions_[static_cast<size_t>(index)], now_ms)
+        ? StateError::None : StateError::RateLimited;
 }
 
 StateError HubState::pong(SessionKey key) {
@@ -271,7 +278,11 @@ StateError HubState::mark_ping_sent(SessionKey key, uint64_t now_ms) {
     if (index < 0) return StateError::NotFound;
     Session& session = sessions_[static_cast<size_t>(index)];
     if (!session.welcomed) return StateError::HelloRequired;
-    session.awaiting_pong_ms = now_ms == 0 ? 1 : now_ms;
+    // Preserve the first unanswered PING's timestamp. Re-marking a pending
+    // check must never extend the PONG deadline.
+    if (session.awaiting_pong_ms == 0) {
+        session.awaiting_pong_ms = now_ms == 0 ? 1 : now_ms;
+    }
     return StateError::None;
 }
 
@@ -289,7 +300,7 @@ bool HubState::close(SessionKey key) {
     return true;
 }
 
-size_t HubState::expire(uint64_t now_ms) {
+size_t HubState::expire(uint64_t now_ms, ExpireCounts* counts) {
     std::array<SessionKey, HARD_MAX_SESSIONS> expired{};
     size_t count = 0;
     for (size_t i = 0; i < limits_.max_sessions; ++i) {
@@ -299,12 +310,15 @@ size_t HubState::expire(uint64_t now_ms) {
         if (!session.identified) {
             should_expire = now_ms >= session.opened_ms &&
                 now_ms - session.opened_ms >= limits_.identify_timeout_ms;
+            if (should_expire && counts) ++counts->unidentified;
         } else if (!session.welcomed) {
             should_expire = now_ms >= session.identified_ms &&
                 now_ms - session.identified_ms >= limits_.hello_timeout_ms;
+            if (should_expire && counts) ++counts->hello;
         } else if (session.awaiting_pong_ms != 0) {
             should_expire = now_ms >= session.awaiting_pong_ms &&
                 now_ms - session.awaiting_pong_ms >= limits_.pong_timeout_ms;
+            if (should_expire && counts) ++counts->pong;
         }
         if (should_expire) expired[count++] = session.key;
     }
@@ -332,9 +346,27 @@ size_t HubState::room_count() const {
     return count;
 }
 
+size_t HubState::membership_count() const {
+    size_t count = 0;
+    for (const auto& session : sessions_) {
+        if (session.used) count += session.room_count;
+    }
+    return count;
+}
+
+bool HubState::has_session(SessionKey key) const {
+    return find_session(key) >= 0;
+}
+
 bool HubState::welcomed(SessionKey key) const {
     const int index = find_session(key);
     return index >= 0 && sessions_[static_cast<size_t>(index)].welcomed;
+}
+
+bool HubState::awaiting_pong(SessionKey key) const {
+    const int index = find_session(key);
+    return index >= 0 &&
+        sessions_[static_cast<size_t>(index)].awaiting_pong_ms != 0;
 }
 
 bool HubState::joined(SessionKey key, const std::string& value) const {
@@ -362,6 +394,21 @@ std::optional<std::string> HubState::nickname(SessionKey key) const {
         return std::nullopt;
     }
     return sessions_[static_cast<size_t>(index)].nickname;
+}
+
+RoomNames HubState::joined_rooms(SessionKey key) const {
+    RoomNames result;
+    const int index = find_session(key);
+    if (index < 0) return result;
+    const Session& session = sessions_[static_cast<size_t>(index)];
+    for (size_t i = 0; i < session.room_count; ++i) {
+        const int8_t room_index = session.rooms[i];
+        if (room_index >= 0 && rooms_[static_cast<size_t>(room_index)].used) {
+            result.values[result.count++] =
+                rooms_[static_cast<size_t>(room_index)].name;
+        }
+    }
+    return result;
 }
 
 MemberKeys HubState::members(const std::string& value) const {
