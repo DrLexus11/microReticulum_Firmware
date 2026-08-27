@@ -119,6 +119,25 @@ uint8_t wifi_remote_mode() { return wifi_mode; }
 bool wifi_is_connected() { return (wr_wifi_status == WL_CONNECTED); }
 bool wifi_host_is_connected() { if (connection) { return true; } else { return false; } }
 
+extern void eeprom_update(int mapped_addr, uint8_t byte);
+
+// Persist the station SSID to EEPROM.
+//
+// Lives here rather than in Provisioning.cpp because config_addr() and
+// ADDR_CONF_SSID come from Config.h, whose macros collide with the Provisioning
+// headers and cannot be included there. wifi_remote_init() reloads wr_ssid from
+// EEPROM on every boot, so a provisioning setter that wrote only the variable
+// accepted the value and then silently reverted on reboot.
+void wifi_persist_ssid(const char* ssid) {
+	const size_t length = ssid ? strnlen(ssid, 32) : 0;
+	for (uint8_t i = 0; i < 32; i++) {
+		eeprom_update(config_addr(ADDR_CONF_SSID + i),
+		              i < length ? (uint8_t)ssid[i] : 0x00);
+	}
+	strncpy(wr_ssid, ssid ? ssid : "", sizeof(wr_ssid) - 1);
+	wr_ssid[sizeof(wr_ssid) - 1] = 0x00;
+}
+
 // Build the fallback AP SSID: node name plus a MAC suffix.
 //
 // The name alone is not unique -- a building full of RAD-01s provisioned from

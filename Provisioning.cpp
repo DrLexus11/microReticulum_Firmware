@@ -96,6 +96,7 @@ extern IPAddress wr_device_ip;
 extern uint16_t udp_port;
 extern uint8_t wifi_mode;
 extern char wr_ssid[33];
+extern void wifi_persist_ssid(const char* ssid);
 // Guarded on HAS_WIFI alone. Config.h cannot be included in this translation
         // unit -- its macros collide with the Provisioning headers -- so
         // WIFI_AP_FALLBACK_MS is not visible here. Testing an invisible macro is
@@ -760,18 +761,32 @@ static void register_provisioning_namespaces() {
   //if (wifi_mode != WR_WIFI_OFF && udp_interface) {
     Provisioner::instance()
       .register_namespace("RNode Network Config", PROV_NS_NETWORK)
-        .field_string("IP Address", PROV_NET_IP, FF_REBOOT_REQUIRED,
-          wr_device_ip.toString().c_str(), 15,
-          [](const Value& v) { /*wr_device_ip = v.as_string();*/ return true; })
+        // Read-only on purpose. The setter here was commented out, so the
+        // field accepted an address, answered "reboot required" and discarded
+        // it. Reporting the current address honestly is better than pretending
+        // it can be set; static addressing is configured over KISS
+        // (CMD_CONF_IP) and belongs in a deliberate change, not a stub.
+        .metric_string("IP Address", PROV_NET_IP,
+          []() { return std::string(wr_device_ip.toString().c_str()); })
         .field_int("UDP Port", PROV_NET_PORT, FF_REBOOT_REQUIRED,
           (fint_t)udp_port, (fint_t)1024, (fint_t)65535,
           [](const Value& v) { udp_port = (uint32_t)v.as_int(); return true; })
+        // Persisted to EEPROM, not just to RAM. wifi_remote_init() reloads
+        // wr_ssid from EEPROM on every boot, so a setter that touched only the
+        // variable accepted the value, reported "reboot required", and then
+        // silently reverted -- the field looked settable and was not. This is
+        // the same EEPROM path the KISS CMD_CONF_SSID command already uses.
         .field_string("WiFi SSID", PROV_NET_SSID, FF_REBOOT_REQUIRED,
           wr_ssid, 32,
-          [](const Value& v) { strncpy(wr_ssid, v.as_string().c_str(), sizeof(wr_ssid)); return true; })
-        .field_string("WiFi Mode", PROV_NET_MODE, FF_REBOOT_REQUIRED,
-          std::to_string(wifi_mode).c_str(), 0,
-          [](const Value& v) { return true; })
+          [](const Value& v) {
+            const std::string ssid = v.as_string();
+            if (ssid.size() > 32) return false;
+            wifi_persist_ssid(ssid.c_str());
+            return true;
+          })
+        // Likewise read-only: the setter accepted anything and did nothing.
+        .metric_string("WiFi Mode", PROV_NET_MODE,
+          []() { return std::to_string(wifi_mode); })
 // Guarded on HAS_WIFI alone. Config.h cannot be included in this translation
         // unit -- its macros collide with the Provisioning headers -- so
         // WIFI_AP_FALLBACK_MS is not visible here. Testing an invisible macro is

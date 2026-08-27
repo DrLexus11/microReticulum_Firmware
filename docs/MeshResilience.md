@@ -408,3 +408,59 @@ value intact, rather than being silently clamped.
 The floors are deliberate. A fallback delay under 30 seconds deserts a router
 that is merely rebooting, and a retry interval under a minute means a node
 serving residents keeps dropping their AP to go looking for an uplink.
+
+### Automatic fallback transition, 2026-08-27
+
+The transition the earlier test could not cover, exercised deliberately on
+Rev 1 and observed from the host.
+
+**Method.** Fallback delay turned down to 30 s over provisioning (live apply),
+the station SSID set to a name that does not exist, and the node rebooted.
+
+**Result.** The node failed to associate, raised its own access point, and left
+the LAN:
+
+```
+ping 192.168.1.54      -> 100% packet loss
+AP active              -> 1
+AP SSID                -> IMPR-RAD-01-Rev1-C7A4
+STA SSID               -> RAD01-FALLBACK-TEST-NOPE
+```
+
+Seen from the Deck's own WiFi scan, alongside the building router:
+
+```
+IMPR-RAD-01-Rev1-C7A4:100:WPA2      <- the node
+FiberHGW_ZTXK5F_2.4GHz:72:WPA2      <- the router it could not reach
+```
+
+Node name plus MAC suffix, WPA2, strongest signal in the room. A resident with
+a phone sees it in the normal WiFi list with no special software, which is the
+entire point of the feature.
+
+**Recovery.** Correct SSID restored over provisioning, node rejoined the LAN in
+about ten seconds, AP down, timers returned to their defaults. RRC acceptance
+passes afterwards and both boards report healthy.
+
+**Still untested:** the return path *while clients are attached* -- the
+`AP Station Retry` deferral and the `AP Max Defer` ceiling that eventually
+overrides it. Testing those needs a device associated to the fallback AP for the
+duration, so it is a two-person test rather than one that can be driven from the
+host alone.
+
+### A defect this test uncovered
+
+The station SSID could not be set over provisioning at all. `wifi_remote_init()`
+reloads `wr_ssid` from EEPROM on every boot, while the provisioning setter wrote
+only the RAM variable -- so a change was accepted, answered "reboot required",
+and silently reverted. The field looked settable and was not.
+
+Two neighbouring fields were worse: **IP Address** had its setter body commented
+out entirely, and **WiFi Mode** was `return true;` with no body at all. All three
+acknowledged writes that did nothing.
+
+The SSID setter now persists through the same EEPROM path the KISS
+`CMD_CONF_SSID` command uses. IP Address and WiFi Mode are now **read-only
+metrics**, because reporting a value honestly is better than accepting a write
+and discarding it -- static addressing belongs in a deliberate change rather
+than a stub that pretends.
