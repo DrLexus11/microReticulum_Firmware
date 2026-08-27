@@ -486,6 +486,33 @@ void test_service_replies_stay_within_the_advertised_body_limit() {
     TEST_ASSERT_TRUE(members.size() <= 120);
 }
 
+// A second identify with the same identity must be a no-op. Reticulum can
+// deliver the identified callback more than once, and the hub also adopts the
+// Link's proven identity when a packet arrives first. Refusing the duplicate
+// made the hub tear down a session that had just identified correctly -- stock
+// clients showed "identified, sending HELLO" and were then disconnected.
+void test_repeated_identify_is_idempotent_but_rejects_a_different_identity() {
+    RRC::HubState state;
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(7, 0));
+
+    RRC::IdentityHash first{};
+    for (size_t i = 0; i < first.size(); i++) first[i] = static_cast<uint8_t>(i);
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.identify(7, first, 10));
+
+    // Same identity again: accepted, and the session survives.
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.identify(7, first, 20));
+    TEST_ASSERT_TRUE(state.has_session(7));
+    TEST_ASSERT_TRUE(state.identity(7).has_value());
+    TEST_ASSERT_TRUE(*state.identity(7) == first);
+
+    // A different identity on the same session is still refused.
+    RRC::IdentityHash other{};
+    for (size_t i = 0; i < other.size(); i++) other[i] = static_cast<uint8_t>(0xA0 + i);
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::AlreadyIdentified,
+                            state.identify(7, other, 30));
+    TEST_ASSERT_TRUE(*state.identity(7) == first);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -511,5 +538,6 @@ int main(void) {
     RUN_TEST(test_roomless_command_message_is_accepted_and_membership_still_needs_room);
     RUN_TEST(test_service_reply_formats_match_the_client_parser_contract);
     RUN_TEST(test_service_replies_stay_within_the_advertised_body_limit);
+    RUN_TEST(test_repeated_identify_is_idempotent_but_rejects_a_different_identity);
     return UNITY_END();
 }
