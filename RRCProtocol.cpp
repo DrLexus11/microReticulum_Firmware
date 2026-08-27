@@ -19,10 +19,9 @@ Error cbor_error(CborError error) {
     return Error::Malformed;
 }
 
-bool is_room_type(uint8_t type) {
+bool is_membership_type(uint8_t type) {
     return type == T_JOIN || type == T_JOINED || type == T_PART ||
-           type == T_PARTED || type == T_MSG || type == T_NOTICE ||
-           type == T_ACTION;
+           type == T_PARTED;
 }
 
 bool is_text_type(uint8_t type) {
@@ -612,7 +611,14 @@ Error validate(const Envelope& envelope, const ValidationLimits& limits) {
         }
         if (!is_utf8(*envelope.nickname)) return Error::InvalidUtf8;
     }
-    if (is_room_type(envelope.type) && !envelope.room) return Error::MissingField;
+    // Room is mandatory for membership operations, which are meaningless
+    // without one. It is NOT mandatory for text types: RRC clients send
+    // roomless MSG envelopes as global hub commands -- stock NomadNet emits
+    // `/list` with no room immediately after WELCOME. Rejecting those made the
+    // hub answer every stock connection with "missing required field". The hub
+    // drops a roomless text message instead, since there is nowhere to relay
+    // it.
+    if (is_membership_type(envelope.type) && !envelope.room) return Error::MissingField;
     if (envelope.body.kind == BodyKind::Text) {
         if (envelope.body.text.size() > limits.max_body_bytes) {
             return Error::ConstraintViolation;

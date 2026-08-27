@@ -410,6 +410,35 @@ void test_state_reports_live_session_after_expiry() {
         state.consume_rate(91, 111));
 }
 
+// Stock NomadNet sends `/list` as a MSG with no room immediately after WELCOME,
+// and `/who <room>` room-scoped after JOIN. Requiring a room on every text type
+// made the hub answer a healthy stock connection with "missing required field".
+// Membership operations still require one, because they are meaningless without.
+void test_roomless_command_message_is_accepted_and_membership_still_needs_room() {
+    RRC::Envelope command;
+    command.type = RRC::T_MSG;
+    command.body = RRC::Body::text_value("/list");
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::None),
+                      static_cast<int>(RRC::validate(command)));
+
+    RRC::Envelope room_message;
+    room_message.type = RRC::T_MSG;
+    room_message.room = "#rad01";
+    room_message.body = RRC::Body::text_value("hello");
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::None),
+                      static_cast<int>(RRC::validate(room_message)));
+
+    RRC::Envelope join;
+    join.type = RRC::T_JOIN;
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::MissingField),
+                      static_cast<int>(RRC::validate(join)));
+
+    RRC::Envelope part;
+    part.type = RRC::T_PART;
+    TEST_ASSERT_EQUAL(static_cast<int>(RRC::Error::MissingField),
+                      static_cast<int>(RRC::validate(part)));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -432,5 +461,6 @@ int main(void) {
     RUN_TEST(test_incomplete_and_unresponsive_sessions_expire_and_release_rooms);
     RUN_TEST(test_repeated_reconnects_leave_no_stale_membership);
     RUN_TEST(test_state_reports_live_session_after_expiry);
+    RUN_TEST(test_roomless_command_message_is_accepted_and_membership_still_needs_room);
     return UNITY_END();
 }

@@ -246,6 +246,12 @@ void handle_part(Slot& slot, const RRC::Envelope& envelope) {
 }
 
 void handle_room_traffic(Slot& slot, RRC::Envelope envelope, uint64_t now_ms) {
+    // A text envelope with no room is a global hub command, not room traffic.
+    // Stock NomadNet sends `/list` this way right after WELCOME. The MVP hub
+    // implements no commands, and RRC requires unknown things to be ignored
+    // rather than refused, so drop it silently: answering with an ERROR made
+    // every stock client show a failure on a healthy connection.
+    if (!envelope.room) return;
     const std::string room = RRC::normalize_room(*envelope.room);
     const RRC::StateError allowed = hub_state.can_send(slot.key, room, now_ms);
     if (allowed != RRC::StateError::None) {
