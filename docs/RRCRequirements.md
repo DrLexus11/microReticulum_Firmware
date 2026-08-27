@@ -581,6 +581,59 @@ Two consequences worth carrying forward:
   twenty-three places reachable inside a callback; those are affordable at 16 KB
   but should be converted to counters rather than relied upon.
 
+## 11.7 Re-verified acceptance after the stack fix
+
+The evidence in 11.5 and 11.6 was recorded before the loop-task stack overflow
+in 12b was found, on boards that were panicking and rebooting roughly once a
+minute. Those runs are retained as history but should not be treated as
+acceptance. This section replaces them.
+
+Re-run 2026-08-27 with both boards on the fixed build.
+
+**Boards.** Rev 1 image 87.5% of the application partition, Rev 2 (UART) 88.3%.
+Both report `hw_ready 1`, radio `online=1`, stable propagation destinations, and
+no panic across the observation windows -- 250 s on Rev 1 and 220 s on Rev 2,
+where the previous build crashed every ~60 s.
+
+**Single-board acceptance.** The two-identity probe passes against Rev 1's hub
+`d36d1371772fca94fb6dc2522d1c4254` and Rev 2's `736043f85ba10cd1b8f01b6726c7bee9`:
+`WELCOME` with the configured limits, join, exact bidirectional messages with
+authenticated attribution, abrupt disconnect, `PARTED`, same-identity reconnect
+and a final relayed message.
+
+**Two-board mixed TCP/LoRa acceptance.** From an isolated Reticulum instance
+whose only interface is a TCP client to Rev 2, Rev 1's hub resolves at **two
+hops** while Rev 2's resolves at one -- so the path is probe -> Rev 2 over TCP
+-> Rev 1 over LoRa. The full lifecycle passes across it with markers
+`REV2-LORA-REV1-A/B/RECONNECT`. This is the LoRa-hop evidence that earlier work
+could only infer.
+
+**Service commands.** `/list` returns `Registered public rooms` with the active
+rooms and `/who` returns `members in <room>: <nick> (hex12), <full-hex>`; both
+parse correctly with stock NomadNet's own `_parse_room_list_notice` and
+`_parse_who_notice`.
+
+**Telemetry after the runs.**
+
+| | Rev 1 | Rev 2 |
+| --- | ---: | ---: |
+| Loop stack free, minimum | 5,048 / 16,384 | 5,268 / 16,384 |
+| RRC accepted | 107 | 11 |
+| RRC rejected | 0 | 0 |
+| Malformed envelopes | 0 | 0 |
+
+**Stock clients.** Confirmed by the operator against Rev 1: connects quickly,
+lists the registered room, joins from both Eridanus and NomadNet, messages both
+ways without loss. The `/who` quirk and the "missing required field" error are
+both gone.
+
+**A caveat on the probe.** During this work the probe failed repeatedly through
+the Deck's shared Reticulum instance while passing four times in a row through
+an isolated direct-TCP instance against the same firmware, with the hub's own
+counters showing a healthy session and nothing refused. The shared instance had
+absorbed a very large amount of link churn. Treat probe failures through it as
+unproven until reproduced through an isolated configuration.
+
 ## 12a. Service replies and the room-list bound
 
 `/list` and `/who` are answered as private `NOTICE` text in the formats stock
