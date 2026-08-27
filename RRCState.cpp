@@ -278,7 +278,11 @@ StateError HubState::mark_ping_sent(SessionKey key, uint64_t now_ms) {
     if (index < 0) return StateError::NotFound;
     Session& session = sessions_[static_cast<size_t>(index)];
     if (!session.welcomed) return StateError::HelloRequired;
-    session.awaiting_pong_ms = now_ms == 0 ? 1 : now_ms;
+    // Preserve the first unanswered PING's timestamp. Re-marking a pending
+    // check must never extend the PONG deadline.
+    if (session.awaiting_pong_ms == 0) {
+        session.awaiting_pong_ms = now_ms == 0 ? 1 : now_ms;
+    }
     return StateError::None;
 }
 
@@ -357,6 +361,12 @@ bool HubState::has_session(SessionKey key) const {
 bool HubState::welcomed(SessionKey key) const {
     const int index = find_session(key);
     return index >= 0 && sessions_[static_cast<size_t>(index)].welcomed;
+}
+
+bool HubState::awaiting_pong(SessionKey key) const {
+    const int index = find_session(key);
+    return index >= 0 &&
+        sessions_[static_cast<size_t>(index)].awaiting_pong_ms != 0;
 }
 
 bool HubState::joined(SessionKey key, const std::string& value) const {

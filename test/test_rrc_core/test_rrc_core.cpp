@@ -349,6 +349,12 @@ void test_incomplete_and_unresponsive_sessions_expire_and_release_rooms() {
     TEST_ASSERT_EQUAL_size_t(1, state.membership_count());
     TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
         state.mark_ping_sent(3, 310));
+    TEST_ASSERT_TRUE(state.awaiting_pong(3));
+    // A scheduler retry must preserve the original deadline. With a 30 ms
+    // timeout, resetting this to 320 would incorrectly keep the session alive
+    // at 340.
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.mark_ping_sent(3, 320));
     expired = {};
     TEST_ASSERT_EQUAL_size_t(1, state.expire(340, &expired));
     TEST_ASSERT_EQUAL_size_t(1, expired.pong);
@@ -356,6 +362,18 @@ void test_incomplete_and_unresponsive_sessions_expire_and_release_rooms() {
     TEST_ASSERT_EQUAL_size_t(0, state.session_count());
     TEST_ASSERT_EQUAL_size_t(0, state.room_count());
     TEST_ASSERT_EQUAL_size_t(0, state.membership_count());
+
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.open(4, 400));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.identify(4, identity(4), 401));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.hello(4, std::nullopt, 402));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None,
+        state.mark_ping_sent(4, 410));
+    TEST_ASSERT_TRUE(state.awaiting_pong(4));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::None, state.pong(4));
+    TEST_ASSERT_FALSE(state.awaiting_pong(4));
+    TEST_ASSERT_EQUAL_size_t(0, state.expire(500));
 }
 
 void test_repeated_reconnects_leave_no_stale_membership() {
@@ -388,6 +406,8 @@ void test_state_reports_live_session_after_expiry() {
     TEST_ASSERT_TRUE(state.has_session(91));
     TEST_ASSERT_EQUAL_UINT32(1, state.expire(110));
     TEST_ASSERT_FALSE(state.has_session(91));
+    TEST_ASSERT_EQUAL_UINT8(RRC::StateError::NotFound,
+        state.consume_rate(91, 111));
 }
 
 void setUp(void) {}

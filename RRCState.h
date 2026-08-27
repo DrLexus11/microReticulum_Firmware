@@ -89,6 +89,7 @@ public:
     size_t membership_count() const;
     bool has_session(SessionKey key) const;
     bool welcomed(SessionKey key) const;
+    bool awaiting_pong(SessionKey key) const;
     bool joined(SessionKey key, const std::string& room) const;
     std::optional<IdentityHash> identity(SessionKey key) const;
     std::optional<std::string> nickname(SessionKey key) const;

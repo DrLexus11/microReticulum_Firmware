@@ -292,9 +292,16 @@ void handle_packet(const RNS::Bytes& plaintext, const RNS::Packet& packet) {
     const uint64_t now_ms = monotonic_ms();
     if (envelope.type != RRC::T_PONG) {
         const RRC::StateError rate = hub_state.consume_rate(slot->key, now_ms);
-        if (rate != RRC::StateError::None) {
+        if (rate == RRC::StateError::RateLimited) {
             ++rate_limited_count;
             reject(*slot, RRC::state_error_string(rate));
+            return;
+        }
+        if (rate != RRC::StateError::None) {
+            // Expiry removes HubState before asynchronous Link teardown has
+            // necessarily completed. A late packet in that window is stale,
+            // not rate-limited, and must not receive another application reply.
+            ++rejected_count;
             return;
         }
     }
@@ -464,6 +471,7 @@ void rrc_hub_loop() {
             continue;
         }
         if (hub_state.welcomed(slot.key) &&
+            !hub_state.awaiting_pong(slot.key) &&
             now_ms - slot.last_ping_ms >=
                 static_cast<uint64_t>(rrc_hub_ping_interval_seconds) * 1000ULL) {
             RRC::Envelope ping = base_envelope(RRC::T_PING);

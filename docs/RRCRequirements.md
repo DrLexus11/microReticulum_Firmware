@@ -120,7 +120,10 @@ the microReticulum fork as a separate prerequisite PR.
 RRC `PING`/`PONG` is an application responsiveness check rather than a routing
 keepalive. A missed response may be used as the hub's resource-management reason
 to close an idle session, but must not be presented as proof that the identity
-has left the wider mesh.
+has left the wider mesh. A session may have at most one unanswered hub `PING`;
+the scheduler must not send another or extend the original PONG deadline while
+that check is pending, even when the configured PING interval is shorter than
+the PONG timeout.
 
 ## 5. Wire protocol requirements
 
@@ -420,12 +423,12 @@ across flashes, software reboots and a physical power cycle.
   deadline and incremented `hello_timeouts`. This avoids the native-USB reset
   caused by opening Rev1's serial provisioning port and proves bounded cleanup.
 - Native protocol/state tests pass 17/17 with ASan/UBSan. The Rev1 image uses
-  108,948 of 327,680 bytes of internal RAM (33.2%) and 1,831,393 of 2,097,152
+  108,948 of 327,680 bytes of internal RAM (33.2%) and 1,831,501 of 2,097,152
   application bytes (87.3%). The final image's whole-file SHA-256 is
-  `a381e40cf89979f5e69c259a7e4cf3f24276f8552fe0c0e54163e4dbe4390d4c`.
+  `e6d588c6c9dcb7164d2fa4c04841b4ffd370c045629b78ef6b4b6acdfc164eb8`.
   Its ESP app image has the hash-appended flag set, so the partition digest
   written to the board for boot validation is the image's appended SHA-256,
-  `046003f3899befb516aaa97fcd4e0ca16a6e1c932d9e785d355660a825463236`.
+  `295fa3113363f284569222da3467d63d13b5c8fdfc0c808501fce5eac4d67ead`.
   `firmware_image.esp_image_sha256()` independently reproduced that value from
   the built artifact.
 - On that final image, the authorized NomadNet device page reported the stable
