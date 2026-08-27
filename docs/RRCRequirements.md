@@ -4,8 +4,11 @@ Requirements for hosting an interoperable Reticulum Relay Chat (RRC) hub on an
 IMPR-RAD-01 node. The intended minimum viable product is live group text chat
 over the existing Reticulum mesh.
 
-Status: **requirements approved; PR 1 protocol core implemented on
-`feature/rrc-protocol-core`.** Written 2026-08-26. The recommended implementation order is recorded in
+Status: **requirements approved; PR 1 protocol core merged and PR 2 embedded
+hub implemented on `feature/rrc-embedded-hub` with Rev1 automated and physical
+power-cycle acceptance green. PR 3 stock-client/two-board acceptance remains.**
+Written 2026-08-26 and updated 2026-08-27. The recommended implementation order
+is recorded in
 [`docs/FeatureRoadmap.md`](FeatureRoadmap.md).
 
 ## 1. Product goal
@@ -97,7 +100,8 @@ For every incoming Link the hub shall:
 1. enforce the configured concurrent-session cap, tearing down excess Links;
 2. install packet, remote-identified and closed callbacks;
 3. wait for a proven remote identity before accepting application traffic;
-4. require exactly one initial `HELLO` before room or message operations;
+4. require an initial `HELLO` before room or message operations, while treating
+   a retry as idempotent if the client's `WELCOME` was lost;
 5. remove the session from every room when its Link closes; and
 6. ensure every Link and session object is released after close or timeout.
 
@@ -179,8 +183,10 @@ Large content is rejected rather than partially sent.
 - Joining a missing room creates it on demand.
 - A room with no remaining members shall be deleted.
 - Membership belongs to a Link session and is never restored implicitly.
-- A second `HELLO` on an already welcomed session is a protocol error; it shall
-  not silently reset memberships. The hub may return `ERROR` and close the Link.
+- A repeated `HELLO` on an already welcomed session must not reset memberships.
+  It is answered with the same effective `WELCOME` because stock NomadNet retries
+  `HELLO` until it observes that response; this is idempotent recovery, not a new
+  application session.
 - A successful `JOIN` returns `JOINED` to the joiner and may notify existing
   members.
 - A clean `PART` or closed Link removes the member and may send `PARTED` to the
@@ -295,7 +301,10 @@ Do not expose room message bodies through status pages.
   `sgoudsme/tinycbor@0.6.2` only in the isolated native-test environment. Before
   enabling RRC in an embedded target, PR 2 must either supply matching headers
   for the framework binary or compile the pinned package, and must verify that
-  only one TinyCBOR implementation is linked.
+  only one TinyCBOR implementation is linked. PR 2 resolves this by setting the
+  Rev1 environment to compatibility mode `off` and compiling
+  `sgoudsme/tinycbor@0.6.2` source with its matching headers; the dependency and
+  compile logs show that implementation in the final link.
 - Wrap only the CBOR types used by RRC v1: unsigned integers, byte strings,
   UTF-8 strings, arrays, maps, booleans and null where needed.
 - Keep protocol parsing independent from Arduino and Reticulum objects so it can
@@ -386,9 +395,63 @@ still hosted on the Deck, Rev1 did not terminate `rrc.hub`, and LXMF was not the
 carrier for the RRC messages. PR 2 acceptance must repeat the exchange with the
 destination hosted by Rev1.
 
+### 11.5 PR 2 Rev1 acceptance evidence
+
+Automated acceptance on 2026-08-27 used the firmware-hosted destination
+`d36d1371772fca94fb6dc2522d1c4254` over Rev1's UDP Reticulum interface. Its
+announce application data decoded to
+`{"proto":"rrc","v":1,"hub":"IMPR-RAD RRC"}` and the hash remained unchanged
+across flashes, software reboots and a physical power cycle.
+
+- Two independent identities established Links, received `WELCOME` with the
+  configured limits, joined `#rad01-acceptance`, and both observed exact messages
+  `REV1-RRC-A-d394fd` and `REV1-RRC-B-8d7b05` from both senders. Authenticated
+  source hashes matched each Link identity. `PARTED` reached the sender and peer.
+- Negative cases passed for identified-but-pre-HELLO traffic, malformed CBOR,
+  non-member send, forged `K_SRC` and nickname, 281-byte body rejection, and
+  silent handling of an unknown type.
+- A temporary provisioned rate of 10/minute was advertised in `WELCOME`. After
+  the already-consumed setup tokens, four more room messages were accepted and
+  the next received `ERROR: rate limited`. Telemetry recorded 13 RX, 7 accepted,
+  5 forwarded, 5 rejected, 1 rate-limited and 2 malformed envelopes, then the
+  production default of 60/minute was restored and rebooted.
+- A remotely observed identified/no-HELLO Link raised sessions from the live
+  baseline of one to two, then returned exactly to baseline after the 30-second
+  deadline and incremented `hello_timeouts`. This avoids the native-USB reset
+  caused by opening Rev1's serial provisioning port and proves bounded cleanup.
+- Native protocol/state tests pass 17/17 with ASan/UBSan. The Rev1 image uses
+  108,948 of 327,680 bytes of internal RAM (33.2%) and 1,831,393 of 2,097,152
+  application bytes (87.3%). The final image's whole-file SHA-256 is
+  `a381e40cf89979f5e69c259a7e4cf3f24276f8552fe0c0e54163e4dbe4390d4c`.
+  Its ESP app image has the hash-appended flag set, so the partition digest
+  written to the board for boot validation is the image's appended SHA-256,
+  `046003f3899befb516aaa97fcd4e0ca16a6e1c932d9e785d355660a825463236`.
+  `firmware_image.esp_image_sha256()` independently reproduced that value from
+  the built artifact.
+- On that final image, the authorized NomadNet device page reported the stable
+  destination, running state, all configured limits and live counters. A valid
+  `HELLO` sent before Link identification produced no response; after identifying
+  on the same Link, the hub returned `WELCOME` with body/room/rate limits of
+  280 bytes, 4 rooms and 60 messages/minute.
+- After a physical Rev1 power cycle, the device page initially reported zero
+  sessions, rooms and memberships; the hub retained destination
+  `d36d1371772fca94fb6dc2522d1c4254`, the 60/minute setting and all other
+  configured limits. A fresh identified Link received the expected `WELCOME`.
+  Once the stock client reconnected, a separate cleanup probe raised the live
+  session baseline from one to two without joining a room, then teardown returned
+  sessions, identified sessions, rooms and memberships exactly to the live
+  `1/1/1/1` baseline.
+
+First Link requests were intermittently lost even while path discovery remained
+healthy; a refreshed/retried request then established normally. NomadNet already
+retries both Link connection and HELLO. This is recorded as transport-loss
+evidence, not attributed to the RRC state machine.
+
 ## 12. PR plan and merge gates
 
 ### PR 1 — protocol core
+
+Status: **merged in PR #6.**
 
 - RRC constants and typed envelope representation;
 - minimal TinyCBOR wrapper;
@@ -400,6 +463,9 @@ Merge gate: native tests pass without Arduino hardware and match Python-generate
 wire vectors.
 
 ### PR 2 — embedded hub
+
+Status: **implemented, Rev1 acceptance green and ready to merge on
+`feature/rrc-embedded-hub`.**
 
 - persistent `rrc.hub` Destination and discovery announce;
 - Link callbacks, identity/HELLO gating and cleanup;
@@ -414,6 +480,8 @@ If Link teardown or stale cleanup fails, stop and repair microReticulum in a
 small separate PR before extending RRC scope.
 
 ### PR 3 — client and two-board interoperability
+
+Status: **pending after PR 2.**
 
 - reusable headless RRC test tool;
 - NomadNet and Eridanus/Columba instructions;

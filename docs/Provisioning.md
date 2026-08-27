@@ -72,6 +72,19 @@ The Console only depends on the browser's Web Serial, Web Bluetooth, and WebSock
    - **Reticulum / Transport** namespaces (provided by microReticulum itself): identity, transport-enabled state, remote management allow-list, etc.
    - **Interfaces** sub-namespaces: pick the LoRa / UDP interface modes (`gateway`, `full`, `point-to-point`, `access-point`, `roaming`, `boundary`).
 5. Click **Save** on each namespace that has edits. The toolbar shows a draft indicator. If any field had the `REBOOT_REQUIRED` flag, a banner appears at the top of the Console: click **Reboot now**.
+
+On Rev1 builds that include the embedded RRC hub, the **RRC Hub** namespace
+contains reboot-required controls for the enable switch, advertised name,
+announce interval, session and per-session room caps, message-body cap, rate
+limit, and PING/PONG timing. Each numeric field has a hard schema range that
+cannot exceed the firmware's fixed-capacity state. Clients receive the effective
+limits in `WELCOME`.
+
+The same namespace reports the stable `rrc.hub` destination, running state,
+sessions, identified sessions, rooms, memberships, RX/TX, accepted and forwarded
+messages, refusals, rate limiting, malformed input, and each timeout class. The
+NomadNet device page exposes the same operator-safe values at
+`/page/device.mu` with category `rrc`; it never exposes room message bodies.
 6. After the reboot, the Console auto-reconnects (if "auto-reconnect" is checked) and you can confirm the new state on **Node Status**.
 
 For everyday operations (looking at link quality, kicking the node, changing the NomadNet site name), Serial is overkill — switch to **Bluetooth** or **WebSocket** to skip the cable.
