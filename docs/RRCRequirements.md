@@ -4,9 +4,10 @@ Requirements for hosting an interoperable Reticulum Relay Chat (RRC) hub on an
 IMPR-RAD-01 node. The intended minimum viable product is live group text chat
 over the existing Reticulum mesh.
 
-Status: **requirements approved; PR 1 protocol core merged and PR 2 embedded
-hub implemented on `feature/rrc-embedded-hub` with Rev1 automated and physical
-power-cycle acceptance green. PR 3 stock-client/two-board acceptance remains.**
+Status: **requirements approved; PR 1 protocol core merged in PR #6 and PR 2
+embedded hub merged in PR #7. PR 3 is implemented on
+`feature/rrc-client-interop`; its automated, Rev2 and stock-client/two-board
+hardware acceptance is green.**
 Written 2026-08-26 and updated 2026-08-27. The recommended implementation order
 is recorded in
 [`docs/FeatureRoadmap.md`](FeatureRoadmap.md).
@@ -450,6 +451,53 @@ healthy; a refreshed/retried request then established normally. NomadNet already
 retries both Link connection and HELLO. This is recorded as transport-loss
 evidence, not attributed to the RRC state machine.
 
+### 11.6 PR 3 Rev2 and stock-client acceptance evidence
+
+On 2026-08-27, Rev2 was promoted to the same `RRC_PROTOCOL_CORE` and `RRC_HUB`
+feature set as Rev1. The UART build uses 109,452 of 327,680 bytes of internal RAM
+(33.4%) and 1,847,477 of 2,097,152 application bytes (88.1%). The generated app
+image is 1,847,840 bytes with whole-file SHA-256
+`af5db4d500c18ccee6064eeac74cf57fc42a8483dd770ded1363d44bbbb31ccc`.
+After the deliberate no-reset UART upload and physical power cycle, `fixhash`
+wrote the ESP image validation hash
+`906f4fec15f5448cd272837a74c2b93d78756d17f8629877a2f131054650b2fc`.
+Rev2 then returned to `hw_ready`, Wi-Fi, TCP and propagation-node service.
+
+The persistent Rev2 hub destination is
+`736043f85ba10cd1b8f01b6726c7bee9`. A direct one-hop run through Rev2 TCP passed
+the complete two-identity lifecycle with exact messages `REV2-HUB-A-d1a1ba`,
+`REV2-HUB-B-d1a1ba` and `REV2-HUB-RECONNECT-d1a1ba`.
+
+For the mixed automated run, an isolated Reticulum instance had only a TCP
+client to Rev2 at `192.168.1.88:4242`. It resolved Rev1's hub destination
+`d36d1371772fca94fb6dc2522d1c4254` at two hops, proving that the path entered
+Rev2 and crossed LoRa to Rev1. The first strict run reached reconnect but lost
+the final relayed message; the probe deliberately does not retry room messages
+and reported that exact step. Both boards remained healthy. A repeat passed the
+full join, bidirectional message, abrupt disconnect, `PARTED`, same-identity
+reconnect and final message sequence with:
+
+- client A `892b8502760a18fe22e9b4f82272daea`;
+- client B `8248885c04f7e4c8dbda26083947a305`; and
+- exact markers `REV2-LORA-REV1-R2-A-932015`,
+  `REV2-LORA-REV1-R2-B-932015` and
+  `REV2-LORA-REV1-R2-RECONNECT-932015`.
+
+Final stock-client acceptance used the same real topology. Android Eridanus,
+identity/nickname `Lexus`, used Columba Shared Instance attached to Rev1 TCP at
+`192.168.1.54:4242`. A separate stock NomadNet 1.2.8 profile had only the Rev2
+TCP client interface, connected to the Rev1 firmware hub at two hops, and joined
+`#rad01-pr3`. NomadNet received exact message `ERIDANUS-PR3-A-27AUG` from Lexus;
+Eridanus received exact return message `NOMADNET-PR3-B-27AUG`. The isolated
+NomadNet client was then deliberately terminated and both boards still passed
+serial, IP, TCP and propagation-announce health checks.
+
+Eridanus automatically sent `/who rad01-pr3` after joining. Reference `rrcd`
+consumes this extension and returns a private member-list notice. The MVP hub
+does not implement slash commands, so it relayed the request as ordinary room
+text. This does not invalidate RRC v1 messaging, but it is a visible stock-client
+compatibility blemish and is prioritised in the deferred backlog below.
+
 ## 12. PR plan and merge gates
 
 ### PR 1 — protocol core
@@ -467,8 +515,7 @@ wire vectors.
 
 ### PR 2 — embedded hub
 
-Status: **implemented, Rev1 acceptance green and ready to merge on
-`feature/rrc-embedded-hub`.**
+Status: **merged in PR #7 after Rev1 acceptance.**
 
 - persistent `rrc.hub` Destination and discovery announce;
 - Link callbacks, identity/HELLO gating and cleanup;
@@ -484,7 +531,8 @@ small separate PR before extending RRC scope.
 
 ### PR 3 — client and two-board interoperability
 
-Status: **pending after PR 2.**
+Status: **implemented with automated and stock-client hardware acceptance green
+on `feature/rrc-client-interop`.**
 
 - reusable headless RRC test tool;
 - NomadNet and Eridanus/Columba instructions;
@@ -501,13 +549,17 @@ These are valid follow-ups, not hidden MVP requirements:
 
 1. `RESOURCE_ENVELOPE` and Reticulum Resource transfer.
 2. Persistent registered rooms, topics, keys, invites, operators and bans.
-3. Slash commands such as `/who`, `/list`, `/mode` and `/stats`.
-4. Server-side logging or an opt-in archive bot.
-5. Offline history/replay. Prefer an explicit RRC-to-LXMF bridge rather than
+3. Minimal `/who` and `/names` compatibility. Eridanus was observed
+   automatically sending `/who <room>` after `JOIN`; until the hub consumes it,
+   the request appears as ordinary chat. Implement the bounded `rrcd`-compatible
+   private member-list notice first, without pulling moderation into the MVP.
+4. Other slash commands such as `/list`, `/mode` and `/stats`.
+5. Server-side logging or an opt-in archive bot.
+6. Offline history/replay. Prefer an explicit RRC-to-LXMF bridge rather than
    quietly changing RRC's ephemeral contract.
-6. Direct notices and other `rrcd` extensions after capability negotiation.
-7. Multiple/federated hubs. RRC intentionally defines no federation protocol.
-8. Native RRC UI inside Columba. Eridanus covers Android for the MVP.
+7. Direct notices and other `rrcd` extensions after capability negotiation.
+8. Multiple/federated hubs. RRC intentionally defines no federation protocol.
+9. Native RRC UI inside Columba. Eridanus covers Android for the MVP.
 
 ## 14. Definition of done
 
