@@ -118,7 +118,17 @@ RRC::Envelope base_envelope(uint8_t type) {
 
 bool send_envelope(Slot& slot, const RRC::Envelope& envelope) {
     if (!slot.used || !slot.link || slot.link.status() != RNS::Type::Link::ACTIVE) return false;
-    std::array<uint8_t, RRC::MAX_ENVELOPE_BYTES> buffer{};
+    // Deliberately not on the stack. This runs inside Link::receive on the
+    // Arduino loop task, which then descends through Packet -> Destination ->
+    // sha256 -> malloc. Adding a 431-byte frame on top of an already decoded
+    // Envelope and a WelcomeBody was enough to overflow that task's stack: the
+    // board panicked in malloc every time it tried to answer HELLO, which
+    // presented to clients as "identified, sending HELLO" then disconnect.
+    //
+    // Safe as a static because every RRC callback runs on that one loop task
+    // and nothing here re-enters send_envelope; fanout() sends sequentially.
+    static std::array<uint8_t, RRC::MAX_ENVELOPE_BYTES> buffer;
+    buffer.fill(0);
     const RRC::ValidationLimits limits = validation_limits(slot);
     const RRC::Result result = RRC::encode(envelope, buffer.data(), buffer.size(), limits);
     if (!result) {

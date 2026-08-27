@@ -502,6 +502,16 @@ void dump_filesystem(const char* basepath, uint8_t level = 0, uint8_t max_level 
 }
 #endif
 
+// The Reticulum stack runs inside loop(), so every Link callback -- RRC's
+// packet handling, LXMF's store writes, NomadNet page rendering -- executes on
+// the Arduino loop task and then descends through Packet, Destination, sha256
+// and malloc. The 8 KB default was not enough: answering an RRC HELLO overflowed
+// it and panicked the board in the allocator roughly once a minute, which looked
+// like a hub that could be discovered but never joined.
+#if MCU_VARIANT == MCU_ESP32
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+#endif
+
 void setup() {
 
   // Initialise serial communication
