@@ -367,8 +367,25 @@ void handle_packet(const RNS::Bytes& plaintext, const RNS::Packet& packet) {
     ++rx_count;
 
     // Link encryption alone does not prove who is at the other end. Until the
-    // remote-identification callback succeeds, do not parse or answer any
-    // application bytes (including a syntactically valid HELLO).
+    // remote identity is known, do not parse or answer any application bytes
+    // (including a syntactically valid HELLO).
+    //
+    // Do not depend solely on the remote-identified callback to deliver it.
+    // When that callback is missed the session is mute for ever: the client
+    // identifies, sends HELLO, receives nothing, and retries into silence until
+    // its deadline while the Link sits ACTIVE. Hub telemetry showed exactly
+    // that shape -- rx 7, rejected 7, identify_timeouts 1, sessions 0 -- with
+    // stock NomadNet and Eridanus unable to join a hub they could discover.
+    //
+    // Ask the Link for its proven identity instead. This is the same
+    // authenticated value the callback would have carried, so it weakens
+    // nothing: identity still comes from Reticulum, never from K_SRC.
+    if (!hub_state.identity(slot->key) && slot->link) {
+        RRC::IdentityHash hash{};
+        if (copy_identity_hash(slot->link.get_remote_identity(), hash)) {
+            hub_state.identify(slot->key, hash, monotonic_ms());
+        }
+    }
     if (!hub_state.identity(slot->key)) {
         ++rejected_count;
         return;
