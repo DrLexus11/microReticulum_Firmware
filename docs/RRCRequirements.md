@@ -543,6 +543,37 @@ on `feature/rrc-client-interop`.**
 Merge gate: NomadNet and Eridanus exchange exact room messages across the real
 two-board path, reconnect cleanly and leave both boards healthy.
 
+## 12a. Service replies and the room-list bound
+
+`/list` and `/who` are answered as private `NOTICE` text in the formats stock
+clients parse (`_parse_room_list_notice` and `_parse_who_notice` in NomadNet).
+Both replies are a single packet, so both are bounded by the Link MDU.
+
+They are **not** bounded by the advertised `max_msg_body_bytes`. That limit
+exists to bound what clients may send; applying it to the hub's own replies
+truncated the room list silently. Measured on Rev 1 at a 431-byte MDU with
+sixteen rooms:
+
+| Room name length | Reply bytes | Rooms listed |
+| ---: | ---: | ---: |
+| 8 | 166 | 16 of 16 |
+| 14 | 256 | 16 of 16 |
+| 40 (client limit 280) | 277 | 7 of 16 |
+| 40 (MDU budget) | 359 | 9 of 16 |
+
+So all sixteen rooms fit whenever names are roughly twenty characters or
+shorter, which covers realistic use. Longer names truncate, and that is
+inherent: sixteen forty-character names need about 660 bytes and cannot cross a
+431-byte link in one packet.
+
+Truncation cannot be signalled inside the reply, because the client treats every
+line after the header as a room name and a marker would appear as a phantom
+room. A multi-part reply is also unavailable: NomadNet replaces its whole room
+list on each parsed notice, so a second notice would overwrite the first rather
+than extend it. The hub therefore counts truncated replies instead, so an
+operator can see that clients received a partial view rather than having to
+infer it from a short list.
+
 ## 13. Explicitly deferred backlog
 
 These are valid follow-ups, not hidden MVP requirements:

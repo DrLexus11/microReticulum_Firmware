@@ -57,6 +57,7 @@ uint32_t malformed_count = 0;
 uint32_t identify_timeout_count = 0;
 uint32_t hello_timeout_count = 0;
 uint32_t pong_timeout_count = 0;
+uint32_t list_truncated_count = 0;
 uint32_t last_millis = 0;
 uint64_t millis_high = 0;
 uint64_t last_announce_ms = 0;
@@ -107,6 +108,9 @@ RRC::ValidationLimits validation_limits(Slot& slot) {
     return limits;
 }
 
+bool send_envelope(Slot& slot, const RRC::Envelope& envelope,
+                   const std::optional<RRC::ValidationLimits>& override_limits = std::nullopt);
+
 RRC::Envelope base_envelope(uint8_t type) {
     RRC::Envelope envelope;
     envelope.type = type;
@@ -116,7 +120,8 @@ RRC::Envelope base_envelope(uint8_t type) {
     return envelope;
 }
 
-bool send_envelope(Slot& slot, const RRC::Envelope& envelope) {
+bool send_envelope(Slot& slot, const RRC::Envelope& envelope,
+                   const std::optional<RRC::ValidationLimits>& override_limits) {
     if (!slot.used || !slot.link || slot.link.status() != RNS::Type::Link::ACTIVE) return false;
     // Deliberately not on the stack. This runs inside Link::receive on the
     // Arduino loop task, which then descends through Packet -> Destination ->
@@ -129,7 +134,8 @@ bool send_envelope(Slot& slot, const RRC::Envelope& envelope) {
     // and nothing here re-enters send_envelope; fanout() sends sequentially.
     static std::array<uint8_t, RRC::MAX_ENVELOPE_BYTES> buffer;
     buffer.fill(0);
-    const RRC::ValidationLimits limits = validation_limits(slot);
+    const RRC::ValidationLimits limits =
+        override_limits ? *override_limits : validation_limits(slot);
     const RRC::Result result = RRC::encode(envelope, buffer.data(), buffer.size(), limits);
     if (!result) {
         ++rejected_count;
@@ -284,20 +290,42 @@ bool body_starts_with(const RRC::Envelope& envelope, const char* command,
     return true;
 }
 
+// How much text a hub-generated service reply may carry.
+//
+// Deliberately not rrc_hub_max_body_bytes. That limit is advertised to bound
+// what *clients* may send; applying it to our own replies truncated the room
+// list silently -- measured at 7 of 16 rooms with 40-character names. The real
+// constraint on a reply is what fits the negotiated Link MDU, so use that and
+// keep a margin for the fixed envelope fields and CBOR framing.
+size_t service_body_budget(Slot& slot) {
+    const RRC::ValidationLimits limits = validation_limits(slot);
+    constexpr size_t envelope_overhead = 72;
+    return limits.max_envelope_bytes > envelope_overhead
+        ? limits.max_envelope_bytes - envelope_overhead : 0;
+}
+
 void send_notice(Slot& slot, const std::string& text,
                  const std::optional<std::string>& room) {
     RRC::Envelope notice = base_envelope(RRC::T_NOTICE);
     notice.room = room;
     notice.body = RRC::Body::text_value(text);
-    send_envelope(slot, notice);
+    // Validate against the reply budget rather than the client body limit,
+    // otherwise our own encode() rejects a notice that would fit the link.
+    RRC::ValidationLimits limits = validation_limits(slot);
+    limits.max_body_bytes = std::max(limits.max_body_bytes, service_body_budget(slot));
+    send_envelope(slot, notice, limits);
 }
 
 void reply_room_list(Slot& slot) {
     const RRC::AllRoomNames rooms = hub_state.all_rooms();
-    send_notice(slot,
-                RRC::format_room_list(rooms.values.data(), rooms.count,
-                                      rrc_hub_max_body_bytes),
-                std::nullopt);
+    const std::string text =
+        RRC::format_room_list(rooms.values.data(), rooms.count, service_body_budget(slot));
+    // Count what did not fit so an operator can see that a client received a
+    // partial view instead of having to infer it from a short list.
+    size_t listed = 0;
+    for (size_t i = 0; i + 1 < text.size(); i++) if (text[i] == '\n') ++listed;
+    if (rooms.count > listed) ++list_truncated_count;
+    send_notice(slot, text, std::nullopt);
 }
 
 void reply_member_list(Slot& slot, const std::string& room) {
@@ -313,7 +341,7 @@ void reply_member_list(Slot& slot, const std::string& room) {
     }
     send_notice(slot,
                 RRC::format_member_list(room, entries.data(), count,
-                                        rrc_hub_max_body_bytes),
+                                        service_body_budget(slot)),
                 room);
 }
 
