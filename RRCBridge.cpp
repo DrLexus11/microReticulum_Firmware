@@ -68,9 +68,17 @@ uint64_t roster_saved_ms = 0;
 #define RRC_BRIDGE_ROSTER_VERSION 1
 #define RRC_BRIDGE_ROSTER_SAVE_MS 30000
 
+// Matched with room_token_matches rather than string equality, because
+// normalize_room() does not strip a leading '#' -- so a client that joins
+// "#command" lands in a different room than a node provisioned with "command",
+// and the bridge would simply never fire for it. Silently, which is the worst
+// available outcome: the room works, people talk in it, and nobody who was
+// away ever receives anything.
 int find_room(const std::string& name) {
     for (size_t i = 0; i < rooms.size(); i++) {
-        if (rooms[i].used && rooms[i].name == name) return (int)i;
+        if (rooms[i].used && RRC::room_token_matches(rooms[i].name, name)) {
+            return (int)i;
+        }
     }
     return -1;
 }
@@ -338,7 +346,20 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
     *pending = Pending{};
     pending->room = (uint8_t)index;
     pending->timestamp = (double)RNS::Utilities::OS::time();
-    pending->text = nickname.empty() ? text : ("<" + nickname + "> " + text);
+
+    // Name the room in the body as well as the title. A client that shows only
+    // the message line -- which is the common case -- otherwise gives a reader
+    // no way to tell which room a backfilled message came from, and someone
+    // catching up across several rooms sees one undifferentiated list.
+    //
+    // The configured room name is used rather than the token the sender typed,
+    // so "#command" and "command" both read as one room. The hub is not named:
+    // the message is delivered by this node and its source address already
+    // says which node that was.
+    const std::string& label = rooms[index].name;
+    pending->text = nickname.empty()
+        ? ("<" + label + "> " + text)
+        : ("<" + nickname + " / " + label + "> " + text);
 
     for (const auto& member : rooms[index].members) {
         if (!member.used) continue;
