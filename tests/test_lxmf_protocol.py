@@ -247,7 +247,14 @@ def reference_payload_order():
     """
     source = inspect.getsource(LXMessage.pack)
     match = re.search(r"self\.payload\s*=\s*\[(?P<fields>[^\]]+)\]", source)
-    assert match, "could not find the payload assignment in LXMessage.pack"
+    if match is None:
+        # Not an assert: under python -O the check would be stripped and the
+        # next line would fail with an AttributeError on None instead, which is
+        # still a failure but says nothing about what actually went wrong.
+        raise AssertionError(
+            "could not find the payload assignment in LXMessage.pack; the "
+            "reference may have been restructured upstream"
+        )
     return [f.strip().replace("self.", "")
             for f in match.group("fields").split(",")]
 
