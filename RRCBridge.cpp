@@ -12,6 +12,7 @@
 
 bool rrc_bridge_enabled = false;
 char rrc_bridge_rooms[128] = "";
+uint8_t rrc_bridge_history = 20;
 
 namespace {
 
@@ -19,6 +20,7 @@ constexpr size_t PUBLIC_KEY_BYTES = 64;   // encryption key + signing key
 
 struct Member {
     bool used = false;
+    bool backfilled = false;   // has already been sent the catch-up for this room
     RRC::IdentityHash hash{};
     RNS::Bytes public_key;
 };
@@ -27,6 +29,10 @@ struct Room {
     bool used = false;
     std::string name;
     std::array<Member, RRC_BRIDGE_MAX_MEMBERS> members{};
+    // Ring of recent lines, oldest-to-newest by (head + i) % count.
+    char* history = nullptr;          // RRC_BRIDGE_HISTORY_MAX * RRC_BRIDGE_HISTORY_TEXT
+    uint8_t history_head = 0;
+    uint8_t history_count = 0;
 };
 
 struct Pending {
@@ -215,6 +221,56 @@ bool same_identity(const RRC::IdentityHash& a, const RRC::IdentityHash& b) {
     return std::memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
+size_t history_depth() {
+    return rrc_bridge_history > RRC_BRIDGE_HISTORY_MAX
+         ? (size_t)RRC_BRIDGE_HISTORY_MAX : (size_t)rrc_bridge_history;
+}
+
+char* history_slot(Room& room, size_t index) {
+    return room.history + (index * RRC_BRIDGE_HISTORY_TEXT);
+}
+
+void history_append(Room& room, const std::string& line) {
+    if (!room.history || history_depth() == 0) return;
+    const size_t depth = history_depth();
+    const size_t at = (room.history_head + room.history_count) % depth;
+    char* slot = history_slot(room, at);
+    const size_t length = line.size() < (RRC_BRIDGE_HISTORY_TEXT - 1)
+                        ? line.size() : (RRC_BRIDGE_HISTORY_TEXT - 1);
+    std::memcpy(slot, line.data(), length);
+    slot[length] = 0;
+    if (room.history_count < depth) room.history_count++;
+    else room.history_head = (uint8_t)((room.history_head + 1) % depth);
+}
+
+// Assemble the catch-up body. Walks newest-first under a byte budget so a deep
+// history cannot compose a message larger than the store will accept, then
+// emits what fits in chronological order -- reading a conversation backwards
+// is worse than reading less of it.
+std::string history_digest(Room& room) {
+    if (!room.history || room.history_count == 0) return std::string();
+    const size_t depth = history_depth();
+
+    size_t take = 0, budget = 0;
+    for (size_t i = 0; i < room.history_count; i++) {
+        const size_t index = (room.history_head + room.history_count - 1 - i) % depth;
+        const size_t length = std::strlen(history_slot(room, index)) + 1;
+        if (budget + length > RRC_BRIDGE_DIGEST_BUDGET) break;
+        budget += length;
+        take++;
+    }
+    if (take == 0) return std::string();
+
+    std::string out;
+    out.reserve(budget);
+    for (size_t i = 0; i < take; i++) {
+        const size_t index = (room.history_head + room.history_count - take + i) % depth;
+        if (!out.empty()) out += "\n";
+        out += history_slot(room, index);
+    }
+    return out;
+}
+
 // Compose and store one message for one recipient. Returns false when the
 // recipient cannot be addressed or the store refused it -- both are counted as
 // drops rather than retried, because a retry would repeat the same failure and
@@ -252,6 +308,36 @@ bool deliver(const Room& room, const Member& member, const Pending& pending) {
     return true;
 }
 
+// Queue the catch-up for a member seen in this room for the first time.
+//
+// Cheap enough for the Link callback this runs in: it copies text and does no
+// cryptography, like every other publish path here. The composing happens on
+// the main loop.
+void queue_backfill(Room& room, Member& member) {
+    if (member.backfilled) return;
+    member.backfilled = true;          // one attempt; never a retry storm
+    roster_dirty = true;
+
+    const std::string digest = history_digest(room);
+    if (digest.empty()) return;
+
+    for (auto& entry : queue) {
+        if (entry.used) continue;
+        entry = Pending{};
+        entry.room = (uint8_t)(&room - rooms.data());
+        entry.timestamp = (double)RNS::Utilities::OS::time();
+        entry.text = digest;
+        entry.recipients[0] = member.hash;
+        entry.recipient_count = 1;
+        entry.used = true;
+        return;
+    }
+    // No slot free. The catch-up is a courtesy, not a delivery guarantee, and
+    // dropping it is better than displacing traffic already queued for people
+    // who are waiting on it.
+    ++dropped_count;
+}
+
 } // namespace
 
 void rrc_bridge_begin(const RNS::Identity& identity) {
@@ -273,6 +359,21 @@ void rrc_bridge_begin(const RNS::Identity& identity) {
     next_announce_ms = RNS::Utilities::OS::ltime() + RRC_BRIDGE_FIRST_ANNOUNCE_MS;
 
     parse_rooms();
+
+    // PSRAM, explicitly. These are bulk, non-DMA buffers and internal RAM is
+    // the resource this board actually runs out of.
+    for (auto& room : rooms) {
+        if (!room.used || room.history) continue;
+        const size_t bytes = (size_t)RRC_BRIDGE_HISTORY_MAX * RRC_BRIDGE_HISTORY_TEXT;
+#if defined(BOARD_HAS_PSRAM)
+        room.history = (char*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+#endif
+        if (!room.history) room.history = (char*)malloc(bytes);
+        if (room.history) std::memset(room.history, 0, bytes);
+        else printf("[rrc] no memory for %s history; catch-up disabled\n",
+                    room.name.c_str());
+    }
+
     roster_load();
     running = true;
     printf("[rrc] bridge enabled for %u room(s), source <%s>\n",
@@ -313,6 +414,7 @@ void rrc_bridge_remember(const std::string& room, const RNS::Identity& member) {
         slot.hash = hash;
         slot.public_key = public_key;
         roster_dirty = true;
+        queue_backfill(target, slot);
         return;
     }
     // Roster full. Dropping the newcomer rather than evicting an established
@@ -357,9 +459,11 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
     // the message is delivered by this node and its source address already
     // says which node that was.
     const std::string& label = rooms[index].name;
-    pending->text = nickname.empty()
+    const std::string line = nickname.empty()
         ? ("<" + label + "> " + text)
         : ("<" + nickname + " / " + label + "> " + text);
+    pending->text = line;
+    history_append(rooms[index], line);
 
     for (const auto& member : rooms[index].members) {
         if (!member.used) continue;
@@ -419,6 +523,8 @@ void rrc_bridge_loop() {
         return;
     }
 }
+
+size_t rrc_bridge_history_depth() { return history_depth(); }
 
 size_t rrc_bridge_room_count() {
     size_t count = 0;

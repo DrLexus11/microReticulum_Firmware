@@ -148,6 +148,7 @@
 #define PROV_RRC_PONG_TIMEOUT      9
 #define PROV_RRC_BRIDGE_ENABLED    10
 #define PROV_RRC_BRIDGE_ROOMS      11
+#define PROV_RRC_BRIDGE_HISTORY    12
 
 #define PROV_RRC_DESTINATION       32
 #define PROV_RRC_RUNNING           33
@@ -169,6 +170,7 @@
 #define PROV_RRC_BRIDGE_QUEUED     49
 #define PROV_RRC_BRIDGE_DELIVERED  50
 #define PROV_RRC_BRIDGE_DROPPED    51
+#define PROV_RRC_BRIDGE_HISTDEPTH  52
 
 // Set true once Provisioning::Provisioner::begin() has run.
 extern bool provisioning_started;

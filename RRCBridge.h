@@ -89,6 +89,36 @@
 #define RRC_BRIDGE_STORE_QUOTA (LXMF_PN_MAX_MESSAGES / 4)
 #endif
 
+// Recent room traffic kept so that a member joining a bridged room for the
+// first time receives what was said before they arrived.
+//
+// This is the one thing 12c promised and the first implementation did not do:
+// backfill only reached roster members who were absent when a message was
+// sent, and a first-time joiner was never on the roster, so they got nothing.
+//
+// It does not give RRC a message history. Nothing here is ever served over
+// RRC, and the ephemeral contract stock clients rely on is untouched -- the
+// catch-up is composed as one LXMF message and travels the same path as the
+// rest of the bridge. That distinction is the whole reason this is allowed to
+// exist; keep it.
+//
+// The ring lives in PSRAM. 8 MB of it sits idle on both revisions while
+// internal RAM is the scarce resource, and this is exactly the kind of bulk,
+// non-DMA buffer that belongs there.
+#ifndef RRC_BRIDGE_HISTORY_MAX
+#define RRC_BRIDGE_HISTORY_MAX 32          // hard cap; the provisioned depth cannot exceed it
+#endif
+#ifndef RRC_BRIDGE_HISTORY_TEXT
+#define RRC_BRIDGE_HISTORY_TEXT 256        // per line, including attribution
+#endif
+// One catch-up message must still fit the advertised per-message transfer
+// limit, so the digest is assembled newest-first under a byte budget and only
+// then put back in order. Without this a deep history would compose a message
+// the store is required to reject.
+#ifndef RRC_BRIDGE_DIGEST_BUDGET
+#define RRC_BRIDGE_DIGEST_BUDGET 3000
+#endif
+
 // How often the bridge announces the address it sends from, so recipients can
 // recall its identity and actually verify the signatures. Matched to the
 // propagation node's cadence: a client needs to hear this occasionally, and
@@ -105,6 +135,10 @@ extern bool rrc_bridge_enabled;
 // Comma-separated room names, e.g. "general,command". Parsed into the bridged
 // set at begin(); a leading '#' is optional and ignored, as everywhere in RRC.
 extern char rrc_bridge_rooms[128];
+// Lines of catch-up sent to a member joining a bridged room for the first
+// time. 0 disables it; the effective value is clamped to
+// RRC_BRIDGE_HISTORY_MAX.
+extern uint8_t rrc_bridge_history;
 
 void rrc_bridge_begin(const RNS::Identity& hub_identity);
 
@@ -130,6 +164,7 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
 void rrc_bridge_loop();
 
 size_t rrc_bridge_room_count();
+size_t rrc_bridge_history_depth();
 size_t rrc_bridge_member_count();
 size_t rrc_bridge_queue_depth();
 uint32_t rrc_bridge_delivered_count();

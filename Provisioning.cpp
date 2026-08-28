@@ -356,6 +356,14 @@ static void register_provisioning_namespaces() {
           return true;
         },
         []() { return rrc_bridge_rooms; })
+      // Lines of catch-up a member gets on first joining a bridged room. This
+      // is the difference between a command room someone can walk into and one
+      // that only works if you were already there. 0 disables it.
+      .field_int("Join History Lines", PROV_RRC_BRIDGE_HISTORY,
+        FF_REBOOT_REQUIRED, rrc_bridge_history, 0, RRC_BRIDGE_HISTORY_MAX,
+        [](const Value& v) {
+          rrc_bridge_history = static_cast<uint8_t>(v.as_int()); return true;
+        }, []() { return static_cast<fint_t>(rrc_bridge_history); })
 #endif
       .metric_bytes("Destination", PROV_RRC_DESTINATION,
         []() { return rrc_hub_destination_hash(); })
@@ -400,6 +408,8 @@ static void register_provisioning_namespaces() {
         []() { return static_cast<fint_t>(rrc_bridge_delivered_count()); })
       .metric_int("Bridge Dropped", PROV_RRC_BRIDGE_DROPPED,
         []() { return static_cast<fint_t>(rrc_bridge_dropped_count()); })
+      .metric_int("Bridge History Depth", PROV_RRC_BRIDGE_HISTDEPTH,
+        []() { return static_cast<fint_t>(rrc_bridge_history_depth()); })
 #endif
       .end();
 #endif
