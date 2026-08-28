@@ -442,11 +442,35 @@ entire point of the feature.
 about ten seconds, AP down, timers returned to their defaults. RRC acceptance
 passes afterwards and both boards report healthy.
 
-**Still untested:** the return path *while clients are attached* -- the
-`AP Station Retry` deferral and the `AP Max Defer` ceiling that eventually
-overrides it. Testing those needs a device associated to the fallback AP for the
-duration, so it is a two-person test rather than one that can be driven from the
-host alone.
+### Deferral and its ceiling, 2026-08-28
+
+The return path *while a client is attached*, with a phone associated to the
+fallback AP throughout. Retry interval 180 s, deferral ceiling 60 s:
+
+```
+ 29.5s  serving fallback AP "IMPR-RAD-01-Rev1-C7A4" at 10.0.0.1
+209.8s  retry check: stations=1 elapsed=0      ceiling=60000  expired=0
+        fallback AP has 1 client(s) -- deferring station retry
+390.0s  retry check: stations=1 elapsed=180281 ceiling=60000  expired=1
+        fallback AP deferred 180283ms with 1 client(s) -- retrying anyway
+```
+
+Both halves behave as intended: a node serving someone does not drop them to go
+looking for an uplink, and it does not hold out for ever either -- which is what
+stops a continuously occupied building from never rejoining a router that came
+back hours ago.
+
+**How this was nearly got wrong.** A first attempt watched the AP's presence in
+the host's WiFi scan and concluded from 300 s of continuous AP that deferral was
+working but the ceiling was broken. Both halves of that were wrong: the phone had
+never associated, `stations` was 0 throughout, and the node was simply cycling on
+the *idle* retry path. Inferring internal state from whether an SSID appears in a
+scan is not observation. The `retry check` diagnostic -- printing stations,
+elapsed and the ceiling -- settled it in a single run.
+
+Worth remembering for any repeat: with no client attached and a short retry
+interval the AP disappears every cycle, which makes it nearly impossible to join.
+Widen `AP Station Retry` before asking someone to connect.
 
 ### A defect this test uncovered
 
