@@ -150,7 +150,8 @@ Three follow-ups the implementation names: an LXMF reply does not yet appear in
 the room; composed messages carry a zero propagation stamp, which is inert today
 but would be rejected by a peer under item 4a; and bridged messages are
 hub-attested rather than end-to-end signed, because RRC v1 carries no per-sender
-signatures for the bridge to forward.
+signatures for the bridge to forward. These and the rest of what the branch
+leaves open are recorded in [`docs/BridgeBacklog.md`](BridgeBacklog.md).
 
 The encoding a merging client needs is specified and emitted --
 [`docs/BridgeClientContract.md`](BridgeClientContract.md), `rrc.bridge/1`. That
