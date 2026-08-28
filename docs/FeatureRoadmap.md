@@ -146,9 +146,14 @@ provisioned room list in the RRC namespace. An absent member received a room
 message through the propagation store, read by the reference LXMF client with
 a valid signature; §12c records the run and the announce defect it exposed.
 
-Two follow-ups the implementation names: an LXMF reply does not yet appear in
-the room, and composed messages carry a zero propagation stamp, which is inert
-today but would be rejected by a peer under item 4a.
+Three follow-ups the implementation names: an LXMF reply does not yet appear in
+the room; composed messages carry a zero propagation stamp, which is inert today
+but would be rejected by a peer under item 4a; and the bridged encoding is
+human-readable only, so a client cannot yet merge live and bridged messages into
+one conversation. The last of those is specified in
+[`docs/BridgeClientContract.md`](BridgeClientContract.md) and is a prerequisite
+for unifying Eridanus and Columba, since the stitching needs both transports in
+one process sharing one identity and one store.
 
 ### 4a. Propagation node peering between RADs — **pairs with item 4**
 
