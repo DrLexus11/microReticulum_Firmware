@@ -352,6 +352,21 @@ bool deliver(const Room& room, const Member& member, const Pending& pending) {
     recipient.update_hashes();
     if (!recipient) return false;
 
+    // The key and the identity hash are stored as separate fields and reloaded
+    // from a file that a power loss can leave partially written. They must
+    // agree: the delivery destination is derived from the *key*, so a record
+    // whose halves have drifted apart would encrypt a room's traffic to
+    // whoever that key belongs to and address it to them, correctly, with
+    // nothing anywhere reporting a fault. Misdelivering a command room to a
+    // stranger is the one failure here worth a branch on every send.
+    if (recipient.hash().size() != member.hash.size() ||
+        std::memcmp(recipient.hash().data(), member.hash.data(),
+                    member.hash.size()) != 0) {
+        printf("[rrc] roster entry for <%s> does not match its key; not sending\n",
+               RNS::Bytes(member.hash.data(), member.hash.size()).toHex().c_str());
+        return false;
+    }
+
     RNS::Destination destination(recipient, RNS::Type::Destination::OUT,
                                  RNS::Type::Destination::SINGLE,
                                  LXMF_APP_NAME, LXMF_DELIVERY_ASPECT);

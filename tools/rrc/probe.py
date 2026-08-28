@@ -432,15 +432,25 @@ def run_probe(args):
         # Abruptly close B and require A to observe the membership cleanup.
         start_a = client_a.snapshot()
         client_b.teardown()
+        # Same rule as the JOINED and PARTED confirmations: the member list is
+        # optional advisory data, so match the notification and check the list
+        # only when the hub sent one. Requiring it here conflated two different
+        # outcomes -- a hub that never notified, and a hub that notified without
+        # naming who left -- and failed a conformant hub for the second.
         departed = client_a.wait_for(
             start_a,
             lambda value: value.get(K_T) == T_PARTED
-            and value.get(K_ROOM) == args.room
-            and member_list_contains(value, identity_b.hash),
+            and value.get(K_ROOM) == args.room,
             "B disconnect notification",
         )
         if departed is None and args.require_notifications:
             raise ProbeFailure("A did not observe B's disconnect cleanup")
+        if departed is not None and departed.get(K_BODY) is not None:
+            if not member_list_contains(departed, identity_b.hash):
+                raise ProbeFailure(
+                    "A received a disconnect notification for %s whose member "
+                    "list omits the departed member" % args.room
+                )
 
         validate_welcome(client_b.connect(), args.expect_hub_name)
         client_b.join(args.room)
