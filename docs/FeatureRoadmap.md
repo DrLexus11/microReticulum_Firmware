@@ -192,6 +192,33 @@ verbs until the generated interface has real users.
 Add `TCPClientInterface` for normal-time off-site anchoring and monitoring. It
 does not solve the local disaster path, so it follows SoftAP and orphan recovery.
 
+### 9a. Peer identity resolution for NomadNet users — **backlog, investigate before the next field test**
+
+Two NomadNet users in the same RRC room could not message each other or open
+each other's pages: the client asks for the peer's identity, the query goes out,
+and nothing comes back. See
+[`docs/IdentityResolutionBacklog.md`](IdentityResolutionBacklog.md).
+
+Not obviously ours -- the firmware demonstrably serves cached announces in
+response to path requests, including across the LoRa hop, which every RRC
+acceptance run exercises. The likely causes are a client that never announced
+where the asker could hear it, or a NomadNet gap where Columba has a working
+control and NomadNet does not.
+
+It is on the roadmap rather than left as a note because the failure is entirely
+silent: a yellow banner, no error, no counter, no way forward for the user. That
+is the same shape as the worst bugs this project has hit, and it will be
+reported again by the next person who tries to message someone they just met in
+a room.
+
+### 9b. Internet gatewaying — **analysis done, no work scheduled**
+
+Whether a connected node can share access with the mesh. See
+[`docs/InternetGateway.md`](InternetGateway.md): Reticulum does not carry IP, so
+the answer is application-level gateway services rather than connectivity, and
+the bandwidth arithmetic rules out anything but text. An LXMF bridge to email or
+SMS is the highest-value piece and belongs on the blackbox, not the RAD.
+
 ### 10. Optional and research items
 
 - RRC resources, moderation, persistent rooms and offline bridge.
