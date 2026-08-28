@@ -887,7 +887,10 @@ void serial_write(uint8_t byte) {
 		// Logs (on_log, _write printf) keep going to Serial.
 		native_kiss_tcp::write(byte);
 	#elif HAS_BLUETOOTH || HAS_BLE == true
-		if (bt_state != BT_STATE_CONNECTED) {
+		// Not bt_state directly: a missed disconnect callback strands that flag
+		// at CONNECTED and every byte of console and provisioning output then
+		// goes to a client that is not there. See bt_host_is_connected().
+		if (!bt_host_is_connected()) {
 			#if HAS_WIFI
 				if (wifi_host_is_connected()) { wifi_remote_write(byte); }
 				else                          { Serial.write(byte); }

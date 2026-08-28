@@ -170,6 +170,12 @@ uint32_t bt_pairing_started = 0;
       }
     }
 
+
+    // Classic Bluetooth has no equivalent half-open case to guard against here;
+    // this exists so callers can use one predicate on every build. See the BLE
+    // definition for why the distinction matters there.
+    bool bt_host_is_connected() { return bt_state == BT_STATE_CONNECTED; }
+
   #elif HAS_BLE == true
     bool bt_setup_hw(); void bt_security_setup();
     // CBA Why this unused leaked pointer?
@@ -320,6 +326,33 @@ uint32_t bt_pairing_started = 0;
       cable_state = CABLE_STATE_DISCONNECTED;
     }
 
+    // Is a BLE host *actually* attached, as opposed to bt_state saying so?
+    //
+    // bt_state is a cached flag updated by callbacks, and a missed disconnect
+    // callback strands it at BT_STATE_CONNECTED for ever. That is not cosmetic:
+    // the main loop reads the UART only while bt_state != BT_STATE_CONNECTED,
+    // so a phantom BLE client silently captures the console *and* the
+    // provisioning link, and the node cannot be managed or even told to reboot
+    // until someone power-cycles it. Reproduced on Rev 2: the peer's host
+    // dropped the link, the board kept serving Reticulum over the mesh
+    // perfectly, and serial stayed dead.
+    //
+    // Ask the stack instead of trusting the flag. getConnectedCount() is the
+    // server's own view, so if the callback was missed but the stack knows the
+    // client is gone, control returns to the wired console.
+    bool bt_host_is_connected() {
+      if (bt_state != BT_STATE_CONNECTED) return false;
+      if (!SerialBT.connected()) {
+        // The flag outlived the connection. Correct it, so the rest of the
+        // firmware -- and the state metric -- stop reporting a client that is
+        // not there.
+        bt_state = (wireless_kiss_policy_ready && wireless_kiss_allowed)
+                   ? BT_STATE_ON : BT_STATE_OFF;
+        return false;
+      }
+      return true;
+    }
+
     void bt_disconnect_callback(BLEServer *server) {
       uint16_t conn_id = server->getConnId();
       // Serial.printf("Disconnected: %d\n", conn_id);
@@ -401,6 +434,12 @@ uint32_t bt_pairing_started = 0;
   #endif
 
 #elif MCU_VARIANT == MCU_NRF52
+
+  // Classic Bluetooth has no equivalent half-open case to guard against here;
+  // this exists so callers can use one predicate on every build. See the BLE
+  // definition for why the distinction matters there.
+  bool bt_host_is_connected() { return bt_state == BT_STATE_CONNECTED; }
+
     uint32_t pairing_pin = 0;
 
   uint8_t eeprom_read(uint32_t mapped_addr);

@@ -3646,7 +3646,7 @@ void buffer_serial() {
     while (
       c < MAX_CYCLES &&
       #if HAS_WIFI
-      ( (bt_state != BT_STATE_CONNECTED && Serial.available()) || (bt_state == BT_STATE_CONNECTED && SerialBT.available()) || (wr_state >= WR_STATE_ON && wifi_remote_available()) )
+      ( (!bt_host_is_connected() && Serial.available()) || (bt_host_is_connected() && SerialBT.available()) || (wr_state >= WR_STATE_ON && wifi_remote_available()) )
       #else
       ( (bt_state != BT_STATE_CONNECTED && Serial.available()) || (bt_state == BT_STATE_CONNECTED && SerialBT.available()) )
       #endif
@@ -3664,7 +3664,7 @@ void buffer_serial() {
         // above admits a Wi-Fi-only image, where bt_state can never leave
         // BT_STATE_NA and SerialBT is not declared at all.
         #if HAS_BLUETOOTH == true || HAS_BLE == true
-        if      (bt_state == BT_STATE_CONNECTED) { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, SerialBT.read()); } }
+        if      (bt_host_is_connected())         { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, SerialBT.read()); } }
         #else
         if      (false)                          { }
         #endif
