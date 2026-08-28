@@ -112,30 +112,36 @@ Continuous (seen repeatedly with the pairing window closed), at -35 dBm, and
 connectable -- nRF Connect establishes a link. BlueZ resolves every field. A
 phone's Bluetooth settings still does not list it.
 
-**The same boards paired directly from Android's own Bluetooth settings when
-running Meshtastic, which uses NimBLE.** Same hardware, same phone, different
-stack. That rules out the phone, rules out Android's treatment of LE-only
-peripherals, and rules out the advertising payload -- which has now been
-measured rather than assumed.
+**RETRACTED, and worth keeping visible.** This section previously argued that
+the same boards paired directly from Android's Bluetooth settings under
+Meshtastic, and concluded the stack must therefore be the variable. That premise
+was wrong: Meshtastic uses **its own scanner in its own app**, and the device
+only appears in the phone's settings *after* pairing. Our behaviour is the same
+as Meshtastic's, not worse than it.
 
-So the remaining difference is Bluedroid itself, in details that are not visible
-from the fields the Arduino wrapper exposes. Chasing them one at a time against
-an unknown reference is precisely the "plausible fix for an unmeasured fault"
-this project has lost most of its time to. Porting to the stack that is known to
-work on this exact hardware is the cheaper and more honest path.
+So there is **no demonstrated discovery or pairing defect**:
 
-**This is a better reason to port than either previously recorded.** The plan
-originally blamed missing `setSecurityAuth`/`setSecurityIOCap`; both were already
-set. The next hypothesis was the 35-second pairing gate; that was a real defect,
-now fixed, but the device raised a pairing prompt on the phone once the window
-was open, so it was not the blocker either. The size argument (580 KB, measured)
-is real but was never urgent. Discoverability from a phone's own settings is the
-product requirement, and a working reference implementation on the same boards
-is the strongest evidence available that NimBLE delivers it.
+- the advertisement is verifiably correct, above;
+- nRF Connect discovers and connects;
+- the device successfully raised a pairing prompt on the phone once the window
+  was open;
+- and an LE-only peripheral not appearing in Android's settings scan before
+  pairing is normal, for us and for the reference implementation alike.
 
-**Acceptance is unchanged and now has a baseline:** the device must appear in
-Android's Bluetooth settings by name, with no third-party app, exactly as
-Meshtastic does on the same hardware.
+**Which leaves this branch with no functional justification, only the measured
+size one.** 580 KB of flash and 27 KB of RAM is real and worth having, but it is
+an optimisation to schedule, not a defect to fix. Three successive root causes
+have now failed: missing security settings (already present), the 35-second
+pairing gate (real, fixed, not the blocker), and the settings-visibility
+difference (never existed).
+
+Anything further should start from a defect that has been reproduced, not from a
+stack preference.
+
+**Acceptance, if the port is done for size:** identical pairing behaviour to
+today via an app-side scanner, a link that holds, and the flash and RAM figures
+above improved. Not "appears in Android settings" -- nothing does that before
+pairing.
 
 `h2zero/NimBLE-Arduino` 2.5.1 is available and documents a migration path from
 the Bluedroid API, which `BLESerial.cpp` uses directly.
