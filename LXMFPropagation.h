@@ -281,6 +281,25 @@ inline bool lxmf_store_evict_oldest() {
 // is the single most consequential detail in this file: hash the wrong span and
 // every id we advertise is one no client recognises, which presents as messages
 // that sync but never arrive rather than as an error.
+// Remove one message by transient id. The /get purge path predates this and
+// still open-codes the same removal; this exists for callers that hold an id
+// and no index position, such as the RRC bridge enforcing its store quota.
+inline bool lxmf_store_remove(const RNS::Bytes& transient_id) {
+	for (size_t i = 0; i < lxmf_store_index.size(); i++) {
+		if (lxmf_store_index[i].transient_id != transient_id) continue;
+		const std::string path = lxmf_entry_path(transient_id,
+		                                         lxmf_store_index[i].received);
+		if (!RNS::Utilities::OS::remove_file(path.c_str())) {
+			printf("[lxmf] FAILED to remove %s; keeping it in the store index\n",
+			       path.c_str());
+			return false;
+		}
+		lxmf_store_index.erase(lxmf_store_index.begin() + i);
+		return true;
+	}
+	return false;
+}
+
 inline RNS::Bytes lxmf_transient_id(const RNS::Bytes& blob) {
 	if (blob.size() <= LXMF_STAMP_SIZE) return RNS::Bytes();
 	return RNS::Identity::full_hash(blob.left(blob.size() - LXMF_STAMP_SIZE));

@@ -665,6 +665,149 @@ than extend it. The hub therefore counts truncated replies instead, so an
 operator can see that clients received a partial view rather than having to
 infer it from a short list.
 
+## 12c. Persistent rooms and the LXMF bridge (implemented)
+
+RRC is ephemeral by design and that is correct for incident chat, but the stated
+product use is group command, central command and general comms -- a backbone.
+There the question "what did I miss while I was out of range?" is the entire
+point, and mobility guarantees it will be asked: long-lived Links are the part of
+this stack most sensitive to path change.
+
+The answer is **not** to add history to RRC. The ecosystem already has
+store-and-forward, stock clients speak it, we have implemented and accepted it,
+and it survives a node going down. Adding a message store to the hub would
+duplicate that and quietly break the ephemeral contract stock clients expect.
+
+### Two classes of room
+
+Rooms gain a persistence attribute, and the two behave differently on purpose:
+
+| | Ephemeral room | Bridged room |
+| --- | --- | --- |
+| Created | on demand by any `JOIN`, as today | provisioned, exists at boot |
+| Membership | dies with the Link | dies with the Link |
+| Message history | none | mirrored to LXMF |
+| Absent members | miss everything | receive via propagation |
+| Example | `#incident-3f` | `general`, `command` |
+
+Ad-hoc rooms keep today's behaviour exactly. A bootstrapped set -- `general` and
+whatever a deployment needs -- is provisioned and bridged. This matters
+operationally: a responder joining `general` for the first time should see what
+command has said, while a room spun up for one stairwell should not accumulate
+anything.
+
+### What bridging means
+
+For a bridged room, accepted room traffic is additionally packed as an LXMF
+message and handed to the propagation store, addressed so that members who were
+not connected receive it on their next sync. Live members still get the ordinary
+RRC fanout; the bridge is for the absent.
+
+### The four design points, as decided
+
+- **Addressing.** One LXMF message per absent member, which was the option
+  expected to be right for these fleet sizes. The source is the node's own
+  `lxmf`/`delivery` destination, the room name is the message title, and the
+  body is `<nick> text`, so a stock client shows each bridged room as its own
+  conversation rather than one undifferentiated thread. A room delivery
+  identity that members subscribe to remains the cheaper answer if a room ever
+  outgrows per-member fanout.
+
+- **Loop prevention.** Free in this direction, and the reason is worth stating
+  rather than assuming: nothing in the bridge injects into RRC, and RRC ingress
+  is only ever an envelope arriving on a Link. The moment LXMF replies are made
+  to appear in the room, loop prevention stops being free and has to be built
+  on LXMF's transient-id tracking, as originally described.
+
+- **Store pressure.** Bridged traffic is capped at a quarter of the store
+  (`RRC_BRIDGE_STORE_QUOTA`) and evicted against that quota before the store's
+  own cap is consulted, so a busy room fills its own share and never a
+  resident's mail. The quota counts what this node composed during the current
+  uptime: a stored blob's source is inside its ciphertext, so after a reboot
+  ours are indistinguishable and revert to oldest-first eviction. The store
+  stays bounded either way; only the fairness lapses, and only until the room
+  is next busy.
+
+- **Provisioning.** RRC namespace 113, fields 10 (enable) and 11 (a
+  comma-separated room list, `#` optional and names normalized as everywhere
+  else in RRC). Both reboot-required, since the bridge is constructed with the
+  hub. Metrics 48-51 report roster size, queue depth, deliveries and drops.
+
+### The roster, which is what makes it work
+
+Membership dies with the Link, so an absent member is by definition one the hub
+holds no session for and can no longer ask anything of. The bridge therefore
+keeps its own roster per bridged room, capturing each member's **public key**
+from the Link when they join. That key is what lets the hub address someone
+later, and taking it from the Link rather than from an announce means the hub
+can reach any member it has ever met, even one whose announce it never heard.
+
+The roster is persisted (`/rrc_roster`, debounced to at most one write per 30
+seconds). This is not an optimisation: a restarted hub that has forgotten its
+roster delivers nothing to anyone until every member has joined again, while
+presenting exactly like a healthy idle bridge -- the silent-failure signature
+that has cost this project more time than anything else.
+
+Bounds, as everywhere else: `RRC_BRIDGE_MAX_ROOMS` (4), `RRC_BRIDGE_MAX_MEMBERS`
+(16 per room) and `RRC_BRIDGE_QUEUE_DEPTH` (8 messages). A full roster drops the
+newcomer rather than evicting an established member, on the grounds that a
+command room's standing membership matters more than admitting the latest
+arrival.
+
+### Where the work happens
+
+Composing costs a signature and an encryption per recipient, and it deliberately
+does not happen on the path that handles room traffic: that path runs inside a
+Reticulum callback, where this project has already lost a board to a stack
+overflow. Accepting a message only resolves recipients and copies text; the
+cryptography is done one recipient per iteration of the main loop.
+
+`LXMFCompose.h` is the only place in the firmware that constructs LXMF, and it
+should stay that way -- everything else treats messages as opaque, which is what
+makes a propagation node fit on this hardware at all. Its layout is pinned to
+the Python reference by `tests/test_lxmf_protocol.py`, because a malformed
+composed message is worse than a malformed stored one: it syncs perfectly and is
+then discarded inside someone else's client with no error reaching us.
+
+### Verified end to end
+
+On Rev 2, 2026-08-28. A member joined `command`, disconnected, a second member
+posted while she was away, and she received the message by syncing the node's
+propagation store with the reference LXMF client:
+
+    from    : cd2e55faf7d4029e6af12ea2533abd98
+    title   : 'command'
+    content : '<bob> BRIDGE-TEST-...'
+    signature : VALID
+
+Hub metrics for the run were roster 2, delivered 1, dropped 0 -- one message
+composed, addressed to the absent member only and not to the one who was
+present and had already received the live fanout. The roster also survived a
+reflash and reboot (`bridge roster loaded: 3 member(s)`), which is the property
+that stops a restarted hub from silently delivering nothing.
+
+**What that test caught.** The first run returned the correct title and content
+with `signature: INVALID`, which was not a signing fault. LXMF validates by
+recalling the source identity from an announce, and nothing had ever announced
+the bridge's `lxmf`/`delivery` address, so the client could not attempt
+validation and reported `SOURCE_UNKNOWN`. Both outcomes set
+`signature_validated = False`, so a correctly signed message is
+indistinguishable from a forged one unless `unverified_reason` is read. The
+bridge now announces that address 45 seconds after boot and every 30 minutes
+after, and the same test returns `signature: VALID`.
+
+The lesson generalises: composing correctly is necessary and not sufficient. A
+message can be byte-perfect and still be shown as untrusted because the
+recipient has no way to learn who sent it.
+
+### Not yet done
+
+- **The reverse direction.** An LXMF reply does not appear in the room. Adding
+  it brings the loop-prevention work described above.
+- **Propagation stamps.** Composed messages carry a zero stamp, which is inert
+  because a node strips the stamp before serving and these never cross an ingest
+  gate. Peering (roadmap 4a) validates stamps and would reject them.
+
 ## 13. Explicitly deferred backlog
 
 These are valid follow-ups, not hidden MVP requirements:

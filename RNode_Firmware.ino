@@ -3317,6 +3317,32 @@ static void heap_watch() {
          (unsigned)avail, (unsigned)total,
          (unsigned)(total ? (avail * 100 / total) : 0),
          (unsigned)ESP.getMinFreeHeap(), (unsigned long)(millis() / 1000));
+
+#if MCU_VARIANT == MCU_ESP32 && defined(HAS_RNS)
+  // Why this line exists, next to a heap total that already looked sufficient:
+  // Rev 1 was observed sliding from its recorded 25% free baseline to 3% over
+  // roughly three and a half hours and then software-restarting, taking its
+  // TCP listener and every Link down with it. A single free-bytes figure
+  // cannot say why. These four can:
+  //
+  //   internal vs psram  -- whether the spill threshold is doing its job, or
+  //                         whether growth is in allocations too small or too
+  //                         DMA-bound to leave internal RAM;
+  //   largest            -- exhaustion or fragmentation. A healthy free total
+  //                         with a small largest block is fragmentation, and
+  //                         no amount of capping tables will fix it;
+  //   paths              -- the table is capped at 2000 records on a board
+  //                         with 240 KB of internal RAM, four times what this
+  //                         same file gives boards that have external flash.
+  //                         If this number climbs with the curve, that is the
+  //                         consumer and the cap is the fix.
+  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u\n",
+         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+         (unsigned)RNS::Transport::path_table().size(),
+         (unsigned)RNS::Transport::path_table_maxsize());
+#endif
 }
 #endif
 
