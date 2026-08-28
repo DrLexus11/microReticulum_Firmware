@@ -302,11 +302,20 @@ resetting the attempt counter and switching `desired_method` to `PROPAGATED`).
 Duplicate suppression is already handled by transient-id tracking, so the same
 message arriving twice is discarded rather than shown twice.
 
-If it appears not to work, the cause is almost always that no outbound
-propagation node is configured -- exactly the condition recorded in
+Columba implements it too, in both backends, so this is not a NomadNet-only
+convenience. `NativeDeliveryAttemptLifecycle.kt` runs a state machine -- a
+failed direct attempt moves to `FALLBACK_SCHEDULED`, then re-submits with
+`desiredMethod = PROPAGATED`, the attempt counter reset and a distinct
+failed-callback attached, surfacing as `RETRYING_PROPAGATED` in the UI. The
+Python backend mirrors it in `event_bridge.py`, gated on `try_propagation_on_fail`
+**and** a configured `outbound_propagation_node`. There is no user-facing toggle:
+it is automatic once a propagation node is set.
+
+That gate is the whole story when it appears not to work -- no outbound
+propagation node configured, exactly the condition recorded in
 `docs/Messaging.md` §2, where clients had the option enabled and had nothing to
 fall back to. Both RADs are propagation nodes now, so the remedy is client
-configuration rather than firmware.
+configuration rather than firmware, on our side or Columba's.
 
 **Propagation-node peering.** LXMF nodes do sync to each other -- see item 4a.
 The mechanism is push-based offer-and-request rather than a DNS-style zone
