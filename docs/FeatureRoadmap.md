@@ -148,12 +148,17 @@ a valid signature; §12c records the run and the announce defect it exposed.
 
 Three follow-ups the implementation names: an LXMF reply does not yet appear in
 the room; composed messages carry a zero propagation stamp, which is inert today
-but would be rejected by a peer under item 4a; and the bridged encoding is
-human-readable only, so a client cannot yet merge live and bridged messages into
-one conversation. The last of those is specified in
-[`docs/BridgeClientContract.md`](BridgeClientContract.md) and is a prerequisite
-for unifying Eridanus and Columba, since the stitching needs both transports in
-one process sharing one identity and one store.
+but would be rejected by a peer under item 4a; and bridged messages are
+hub-attested rather than end-to-end signed, because RRC v1 carries no per-sender
+signatures for the bridge to forward.
+
+The encoding a merging client needs is specified and emitted --
+[`docs/BridgeClientContract.md`](BridgeClientContract.md), `rrc.bridge/1`. That
+was the prerequisite for unifying Eridanus and Columba, since the stitching
+needs both transports in one process sharing one identity and one store. What
+remains open there is §5: whether the backbone needs end-to-end sender
+attribution, which shapes a client's data model rather than just its
+rendering.
 
 ### 4a. Propagation node peering between RADs — **pairs with item 4**
 

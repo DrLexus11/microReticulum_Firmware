@@ -41,11 +41,12 @@ joins a bridged room for the first time.
 - **title** -- the room name.
 - **content** -- `<nick / room> text`, or `<room> text` when no nickname is
   known. A catch-up message carries several such lines separated by newlines.
-- **fields** -- empty.
+- **fields** -- the `rrc.bridge/1` metadata of §3.
 
-This is deliberately readable in stock NomadNet, Sideband and Columba, and it is
-enough for a human. It is **not** enough for a client that wants one merged
-conversation, for four reasons:
+The body is deliberately readable in stock NomadNet, Sideband and Columba, and
+it is enough for a human. It is **not** enough on its own for a client that
+wants one merged conversation, which is why §3 exists. Reading the body alone
+fails for four reasons:
 
 1. **The sender is a display string.** RRC's own definition of done requires
    that Link identity, not a nickname, controls attribution
