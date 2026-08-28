@@ -289,13 +289,26 @@ uint32_t bt_pairing_started = 0;
     }
 
     bool bt_security_request_callback() {
-      if (bt_allow_pairing) {
-          // Serial.println("Accepting security request");
-          return true;
-        } else {
-          // Serial.println("Rejecting security request");
-          return false;
-        }
+      if (bt_allow_pairing) return true;
+
+      // A bonded peer coming back is not a new pairing attempt, and refusing it
+      // makes bonding pointless.
+      //
+      // This rejected every security request outside the 35-second pairing
+      // window, including one from a phone that had already bonded. The phone
+      // reports "device is not ready to pair", so reconnecting meant opening
+      // the window again by hand -- on a node that may be on a rooftop. A bond
+      // that must be re-authorised on every connect is not a bond.
+      //
+      // Accepting when a bond exists does widen the door: a stranger in range
+      // can still attempt a pairing while one is stored. They gain nothing
+      // without the passkey, which is the same protection that guards the
+      // pairing window itself -- and on a display-less board that passkey is
+      // BLE_FIXED_PASSKEY, which is the weakness worth fixing, rather than
+      // this. Clearing bonds (CMD_BT_UNPAIR) closes the door again.
+      if (esp_ble_get_bond_device_num() > 0) return true;
+
+      return false;
     }
 
     void bt_authentication_complete_callback(esp_ble_auth_cmpl_t auth_result) {
