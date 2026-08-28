@@ -123,10 +123,14 @@ private:
   int ConnectedDeviceCount;
   void SetupSerialService();
 
-  uint16_t peerMTU;
+public:
+  // Public so the connect callback can log what was negotiated. A silently
+  // wrong MTU is what made this class drop most of every frame.
+  uint16_t peerMTU = 0;
   uint16_t maxTransferSize = BLE_BUFFER_SIZE;
-
   bool checkMTU();
+
+private:
 
   const char *BLE_SERIAL_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
   const char *BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";

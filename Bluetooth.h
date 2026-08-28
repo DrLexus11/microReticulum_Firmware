@@ -346,6 +346,14 @@ uint32_t bt_pairing_started = 0;
     void bt_connect_callback(BLEServer *server) {
       uint16_t conn_id = server->getConnId();
       printf("[bt] connected (conn=%u state=%d)\n", (unsigned)conn_id, (int)bt_state);
+      // Learn the negotiated MTU now that a peer is attached, so notifications
+      // are sized to what it can actually receive.
+      if (SerialBT.checkMTU()) {
+        printf("[bt] mtu negotiated: %u (payload %u)\n",
+               (unsigned)SerialBT.peerMTU, (unsigned)SerialBT.maxTransferSize);
+      } else {
+        printf("[bt] mtu not negotiated; holding %u\n", (unsigned)SerialBT.maxTransferSize);
+      }
       // Serial.printf("Connected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;

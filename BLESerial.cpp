@@ -88,12 +88,29 @@ size_t BLESerial::write(uint8_t byte) {
     if (ble_server->getConnectedCount() <= 0) { return 0; } else {
       this->transmitBuffer[this->transmitBufferLength] = byte;
       this->transmitBufferLength++;
-      if (this->transmitBufferLength == maxTransferSize) { flush(); }
+      if (this->transmitBufferLength >= maxTransferSize) { flush(); }
       return 1;
     }
   } else {
     return 0;
   }
+}
+
+// Clamp what we notify to what the peer negotiated.
+//
+// maxTransferSize was fixed at BLE_BUFFER_SIZE and never adjusted -- checkMTU()
+// was declared, never defined and never called, and peerMTU was never assigned.
+// A notification larger than the negotiated MTU does not fragment: the tail is
+// dropped, without error, on every frame.
+bool BLESerial::checkMTU() {
+  if (ble_server == nullptr || ble_server->getConnectedCount() <= 0) return false;
+  const uint16_t negotiated = ble_server->getPeerMTU(ble_server->getConnId());
+  if (negotiated < MIN_MTU) return false;
+  peerMTU = negotiated;
+  // Three bytes of ATT notification header come off the usable payload.
+  const uint16_t usable = (uint16_t)(negotiated - 3);
+  maxTransferSize = (usable < BLE_BUFFER_SIZE) ? usable : (uint16_t)BLE_BUFFER_SIZE;
+  return true;
 }
 
 void BLESerial::flush() {
@@ -120,6 +137,13 @@ void BLESerial::begin(const char *name) {
   ConnectedDeviceCount = 0;
   device_name = (name != nullptr) ? name : "";
   BLEDevice::init(name);
+
+  // Without this Bluedroid keeps its 23-byte default, whatever the client asks
+  // for -- Columba requests 512 and would still have been held to a 20-byte
+  // payload. Combined with the un-clamped buffer below, that silently truncated
+  // every KISS frame longer than 20 bytes: the link came up, pairing worked, and
+  // no Reticulum traffic survived.
+  BLEDevice::setMTU(BLE_BUFFER_SIZE);
 
   esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9); 
   esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
