@@ -84,6 +84,7 @@ size_t BLESerial::write(const uint8_t *buffer, size_t bufferSize) {
 }
 
 size_t BLESerial::write(uint8_t byte) {
+  if (peerMTU == 0) { checkMTU(); }
   if (bt_client_authenticated()) {
     if (ble_server->getConnectedCount() <= 0) { return 0; } else {
       this->transmitBuffer[this->transmitBufferLength] = byte;
@@ -114,6 +115,16 @@ bool BLESerial::checkMTU() {
 }
 
 void BLESerial::flush() {
+  // Resolve the MTU lazily rather than at connect. The peer negotiates it
+  // *after* the GATT connect callback fires, so asking there always returned
+  // nothing and left the size at the truncating default. By the time anything
+  // is actually being sent it has settled.
+  if (peerMTU == 0) {
+    if (checkMTU()) {
+      printf("[bt] mtu negotiated: %u (payload %u)\n",
+             (unsigned)peerMTU, (unsigned)maxTransferSize);
+    }
+  }
   if (this->transmitBufferLength > 0) {
     TxCharacteristic->setValue(this->transmitBuffer, this->transmitBufferLength);
     this->transmitBufferLength = 0;
