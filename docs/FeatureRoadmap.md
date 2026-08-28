@@ -162,6 +162,30 @@ Scope: accept peer sync selectively -- bounded by hop depth via
 peer-received ones during eviction, so a peer's backlog cannot displace the
 people actually attached to this node.
 
+**This is not blocked on Rev 3, an EEPROM change or an SD card.** The store cap
+is 512 KB inside a 1.88 MB filesystem, so 1.4 MB of that partition is unused
+today, and RAD-to-RAD peering moves the same small text messages the node
+already accepts from clients. What makes a Linux peer inadvisable is the size
+*asymmetry* -- a 500 MB backlog against a 512 KB store -- not our absolute
+capacity, and that asymmetry is unchanged by any amount of extra flash we could
+add.
+
+Two real constraints on growing the store, for whenever that is wanted:
+
+- `LXMF_PN_MAX_MESSAGES` (128) and `LXMF_PN_MAX_BYTES` (512 KB) are already
+  consistent with each other at the 4 KB per-message limit -- 128 x 4 KB is
+  exactly 512 KB -- so raising one without the other achieves nothing.
+- `lxmf_store_load()` reads **every stored file in full at boot** merely to
+  recover the destination hash from its first 16 bytes: about 512 KB of reads
+  today, and 2 MB at 512 messages. Putting the destination hash in the filename,
+  as the transient id already is, would make the boot index cost a directory
+  listing instead of a full read. That is the change that actually unlocks a
+  larger store, and it is a software change, not a hardware one.
+
+An SD card or a larger flash would raise the ceiling much further and is worth
+having on Rev 3 for other reasons, but neither is a prerequisite for peering two
+RADs.
+
 ### 5. Bluetooth Low Energy overhaul — **after the flash-headroom work**
 
 Replace the Bluedroid BLE implementation with a NimBLE one that a phone can pair
