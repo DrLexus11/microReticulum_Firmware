@@ -138,13 +138,13 @@ Why this is ahead of the Bluetooth work:
 Deliberately **not** in scope: adding a message store to the RRC hub. That
 duplicates LXMF and breaks the ephemeral contract stock clients rely on.
 
-**Status: implemented, not yet verified end to end.** All four open questions
-are decided and recorded in §12c -- per-member addressing, loop prevention
-(free in this direction, and the doc says why it stops being free), a store
-quota so a busy room cannot evict residents' mail, and a provisioned room list
-in the RRC namespace. What remains is the test that actually settles it:
-reading a bridged message in a stock client on hardware. Until that passes,
-treat this as unproven rather than done.
+**Status: implemented and verified end to end on hardware (2026-08-28).** All
+four open questions are decided and recorded in §12c -- per-member addressing,
+loop prevention (free in this direction, and the doc says why it stops being
+free), a store quota so a busy room cannot evict residents' mail, and a
+provisioned room list in the RRC namespace. An absent member received a room
+message through the propagation store, read by the reference LXMF client with
+a valid signature; §12c records the run and the announce defect it exposed.
 
 Two follow-ups the implementation names: an LXMF reply does not yet appear in
 the room, and composed messages carry a zero propagation stamp, which is inert

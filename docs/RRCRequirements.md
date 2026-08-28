@@ -769,11 +769,39 @@ the Python reference by `tests/test_lxmf_protocol.py`, because a malformed
 composed message is worse than a malformed stored one: it syncs perfectly and is
 then discarded inside someone else's client with no error reaching us.
 
+### Verified end to end
+
+On Rev 2, 2026-08-28. A member joined `command`, disconnected, a second member
+posted while she was away, and she received the message by syncing the node's
+propagation store with the reference LXMF client:
+
+    from    : cd2e55faf7d4029e6af12ea2533abd98
+    title   : 'command'
+    content : '<bob> BRIDGE-TEST-...'
+    signature : VALID
+
+Hub metrics for the run were roster 2, delivered 1, dropped 0 -- one message
+composed, addressed to the absent member only and not to the one who was
+present and had already received the live fanout. The roster also survived a
+reflash and reboot (`bridge roster loaded: 3 member(s)`), which is the property
+that stops a restarted hub from silently delivering nothing.
+
+**What that test caught.** The first run returned the correct title and content
+with `signature: INVALID`, which was not a signing fault. LXMF validates by
+recalling the source identity from an announce, and nothing had ever announced
+the bridge's `lxmf`/`delivery` address, so the client could not attempt
+validation and reported `SOURCE_UNKNOWN`. Both outcomes set
+`signature_validated = False`, so a correctly signed message is
+indistinguishable from a forged one unless `unverified_reason` is read. The
+bridge now announces that address 45 seconds after boot and every 30 minutes
+after, and the same test returns `signature: VALID`.
+
+The lesson generalises: composing correctly is necessary and not sufficient. A
+message can be byte-perfect and still be shown as untrusted because the
+recipient has no way to learn who sent it.
+
 ### Not yet done
 
-- **End-to-end verification against a real client.** Nothing here has been read
-  by NomadNet, Sideband or Columba yet. That test is what decides whether the
-  composed messages are actually readable, and it needs hardware.
 - **The reverse direction.** An LXMF reply does not appear in the room. Adding
   it brings the loop-prevention work described above.
 - **Propagation stamps.** Composed messages carry a zero stamp, which is inert
