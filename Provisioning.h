@@ -76,6 +76,10 @@
 // whole Reticulum stack runs there, so this is the number that goes to zero
 // before the board panics in the allocator with no other warning.
 #define PROV_METRICS_DEV_STACK  5
+#define PROV_METRICS_DEV_HEAP     6
+#define PROV_METRICS_DEV_HEAPBLK  7
+#define PROV_METRICS_DEV_PSRAM    8
+#define PROV_METRICS_DEV_UPTIME   9
 
 #define PROV_METRICS_LORA_FREQ  1
 #define PROV_METRICS_LORA_BW    2

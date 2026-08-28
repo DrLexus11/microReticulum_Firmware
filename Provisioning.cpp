@@ -619,6 +619,32 @@ static void register_provisioning_namespaces() {
     // the metric at 0 on the platforms where it does work.
     .metric_int("Loop Stack Free Min", PROV_METRICS_DEV_STACK,
       []() { return (fint_t)loop_stack_free_min; })
+    // Memory, over provisioning rather than only on the console.
+    //
+    // The periodic [heap] line goes to whichever KISS host is attached, so on
+    // a node with a client connected -- the normal state for a deployed board
+    // -- it is not visible on the USB console at all. That is exactly when
+    // memory matters: Rev 1 was found sliding to 3% free and restarting under
+    // a client it was serving, and the console said nothing because the client
+    // was receiving the evidence.
+    //
+    // Internal free and the largest internal block are reported separately
+    // because they fail differently: a healthy total with a small largest
+    // block is fragmentation, which capping tables does not fix. PSRAM free is
+    // here to show whether the spill threshold is doing anything at all --
+    // 8 MB sitting idle beside an exhausted internal heap is the signature
+    // this board has already produced once.
+    .metric_int("Heap Internal Free", PROV_METRICS_DEV_HEAP,
+      []() { return (fint_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL); })
+    .metric_int("Heap Largest Block", PROV_METRICS_DEV_HEAPBLK,
+      []() { return (fint_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL); })
+    .metric_int("PSRAM Free", PROV_METRICS_DEV_PSRAM,
+      []() { return (fint_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM); })
+    // Uptime makes a restart visible to anything polling metrics. Without it a
+    // board that reboots between two polls is indistinguishable from one that
+    // stayed up, which is how Rev 1's restarts went unnoticed for so long.
+    .metric_int("Uptime Seconds", PROV_METRICS_DEV_UPTIME,
+      []() { return (fint_t)(millis() / 1000); })
 #endif
     .metric_float("Battery Voltage", PROV_METRICS_DEV_BATV, []() { return battery_voltage; })
     .metric_float("Battery Percent", PROV_METRICS_DEV_BATP, []() { return battery_percent; })
