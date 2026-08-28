@@ -665,6 +665,60 @@ than extend it. The hub therefore counts truncated replies instead, so an
 operator can see that clients received a partial view rather than having to
 infer it from a short list.
 
+## 12c. Persistent rooms and the LXMF bridge (planned)
+
+RRC is ephemeral by design and that is correct for incident chat, but the stated
+product use is group command, central command and general comms -- a backbone.
+There the question "what did I miss while I was out of range?" is the entire
+point, and mobility guarantees it will be asked: long-lived Links are the part of
+this stack most sensitive to path change.
+
+The answer is **not** to add history to RRC. The ecosystem already has
+store-and-forward, stock clients speak it, we have implemented and accepted it,
+and it survives a node going down. Adding a message store to the hub would
+duplicate that and quietly break the ephemeral contract stock clients expect.
+
+### Two classes of room
+
+Rooms gain a persistence attribute, and the two behave differently on purpose:
+
+| | Ephemeral room | Bridged room |
+| --- | --- | --- |
+| Created | on demand by any `JOIN`, as today | provisioned, exists at boot |
+| Membership | dies with the Link | dies with the Link |
+| Message history | none | mirrored to LXMF |
+| Absent members | miss everything | receive via propagation |
+| Example | `#incident-3f` | `general`, `command` |
+
+Ad-hoc rooms keep today's behaviour exactly. A bootstrapped set -- `general` and
+whatever a deployment needs -- is provisioned and bridged. This matters
+operationally: a responder joining `general` for the first time should see what
+command has said, while a room spun up for one stairwell should not accumulate
+anything.
+
+### What bridging means
+
+For a bridged room, accepted room traffic is additionally packed as an LXMF
+message and handed to the propagation store, addressed so that members who were
+not connected receive it on their next sync. Live members still get the ordinary
+RRC fanout; the bridge is for the absent.
+
+Design points that need deciding before implementation:
+
+- **Addressing.** A room is not an LXMF destination. Either the hub sends one
+  LXMF message per absent member (simple, costs airtime per member) or a room
+  gets its own delivery identity that members subscribe to (cheaper, more
+  machinery). The first is probably right for the fleet sizes involved.
+- **Loop prevention.** A bridged message must not re-enter the room when it is
+  delivered. LXMF's transient-id tracking gives the mechanism; the hub must not
+  re-broadcast what it originated.
+- **Store pressure.** The propagation store is 512 KB and capped at 128
+  messages. A busy bridged room could evict residents' direct messages. Room
+  traffic and personal mail competing for one store needs a policy before this
+  ships, not after.
+- **Provisioning.** Which rooms are bridged has to be configurable per node,
+  which means a room list in the RRC namespace rather than a compile-time set.
+
 ## 13. Explicitly deferred backlog
 
 These are valid follow-ups, not hidden MVP requirements:

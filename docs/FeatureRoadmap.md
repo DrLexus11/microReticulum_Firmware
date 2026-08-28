@@ -116,7 +116,53 @@ Explicitly **not** in scope: `-Os` and `--gc-sections` are already applied. The
 `-O0` visible on the compile line is overridden by a later `-Os`, and proposing
 those flags is a false lead this document exists to close.
 
-### 4. Bluetooth Low Energy overhaul — **after the flash-headroom work**
+### 4. RRC persistent rooms and the LXMF bridge — **critical for the command backbone**
+
+Give rooms a persistence attribute and bridge the persistent ones to LXMF, per
+[`docs/RRCRequirements.md`](RRCRequirements.md) §12c. Ad-hoc rooms keep today's
+ephemeral behaviour; a provisioned set such as `general` is bridged, so members
+who were out of range receive what they missed on their next sync.
+
+Why this is ahead of the Bluetooth work:
+
+- the stated product is group command and central command over this mesh, and a
+  command net where "what did I miss" has no answer is not a command net;
+- mobility makes it certain rather than hypothetical -- RRC's long-lived Links
+  are the most path-sensitive part of the stack, so responders *will* drop and
+  rejoin;
+- it needs no new protocol. LXMF store-and-forward is built, accepted and spoken
+  by stock clients, and the propagation node is running on both boards; and
+- Bluetooth improves how a phone attaches, which matters less than whether the
+  messages were there when it did.
+
+Deliberately **not** in scope: adding a message store to the RRC hub. That
+duplicates LXMF and breaks the ephemeral contract stock clients rely on.
+
+Open questions are recorded in §12c -- per-member versus per-room addressing,
+loop prevention, and the fact that a busy bridged room and residents' personal
+mail would compete for one 512 KB store. That last one needs a policy before
+this ships.
+
+### 4a. Propagation node peering between RADs — **pairs with item 4**
+
+LXMF already supports propagation nodes syncing to each other: `autopeer`,
+`autopeer_maxdepth`, static peers and the `/offer` path, with each node offering
+transient ids and peers requesting what they lack. Our firmware **declines all
+peer offers** -- a deliberate v1 choice recorded in `docs/Messaging.md`, on the
+grounds that a Linux node's 500 MB backlog would evict residents' messages from a
+512 KB store.
+
+That reasoning holds for a Linux peer and not for the case we actually have: two
+RADs in one deployment, with identical caps, where a message stored on Rev 1 is
+currently invisible to a client syncing with Rev 2. Clients pick one propagation
+node; without peering, which one they picked silently decides what they receive.
+
+Scope: accept peer sync selectively -- bounded by hop depth via
+`autopeer_maxdepth`, and with locally-originated messages preferred over
+peer-received ones during eviction, so a peer's backlog cannot displace the
+people actually attached to this node.
+
+### 5. Bluetooth Low Energy overhaul — **after the flash-headroom work**
 
 Replace the Bluedroid BLE implementation with a NimBLE one that a phone can pair
 from its own Bluetooth settings, per
@@ -154,14 +200,14 @@ Reticulum `BLEInterface` only after that. A partial port that pairs and then
 drops is worse than the current state, because it looks like a broken product
 rather than a missing feature.
 
-### 5. Propagation-node operational controls and occupancy page
+### 6. Propagation-node operational controls and occupancy page
 
 Add provisioning controls for enable/disable, limits, occupancy and purge, then
 surface those counters on a NomadNet page. This closes the operator-visibility
 gap in [`docs/PropagationNodeTODO.md`](PropagationNodeTODO.md) without requiring
 an RTC.
 
-### 6. Resilience release gates and orphan recovery
+### 7. Resilience release gates and orphan recovery
 
 Hardware-verify the existing announce jitter and duty-cycle telemetry, define a
 production duty-cycle configuration, then implement the listen-first orphan
@@ -171,7 +217,7 @@ This is more important than internet-oriented convenience features, but follows
 SoftAP because resident attachment is useful immediately and the orphan state
 machine needs longer fleet-level timing tests.
 
-### 7. Wall-time adoption and propagation expiry
+### 8. Wall-time adoption and propagation expiry
 
 Adopt trustworthy wall time from an authenticated client request, then implement
 message expiry. A Rev3 battery-backed RTC will improve cold-start behaviour, but
@@ -180,19 +226,19 @@ firmware time adoption can be designed and tested on Rev1/Rev2 first.
 Peer sync remains after this work because it depends on stable time semantics
 and introduces substantial LoRa airtime cost.
 
-### 8. Resource API Stage 1
+### 9. Resource API Stage 1
 
 Build the host-side schema-to-OpenAPI/Swagger generator proposed in
 [`docs/ResourceAPI.md`](ResourceAPI.md). It provides industrial evaluation value
 without firmware or protocol changes. Defer collections, events and new device
 verbs until the generated interface has real users.
 
-### 9. Outbound TCP client
+### 10. Outbound TCP client
 
 Add `TCPClientInterface` for normal-time off-site anchoring and monitoring. It
 does not solve the local disaster path, so it follows SoftAP and orphan recovery.
 
-### 9a. Peer identity resolution for NomadNet users — **backlog, investigate before the next field test**
+### 10a. Peer identity resolution for NomadNet users — **backlog, investigate before the next field test**
 
 Two NomadNet users in the same RRC room could not message each other or open
 each other's pages: the client asks for the peer's identity, the query goes out,
@@ -211,7 +257,7 @@ is the same shape as the worst bugs this project has hit, and it will be
 reported again by the next person who tries to message someone they just met in
 a room.
 
-### 9b. Internet gatewaying — **analysis done, no work scheduled**
+### 10b. Internet gatewaying — **analysis done, no work scheduled**
 
 Whether a connected node can share access with the mesh. See
 [`docs/InternetGateway.md`](InternetGateway.md): Reticulum does not carry IP, so
@@ -219,7 +265,31 @@ the answer is application-level gateway services rather than connectivity, and
 the bandwidth arithmetic rules out anything but text. An LXMF bridge to email or
 SMS is the highest-value piece and belongs on the blackbox, not the RAD.
 
-### 10. Optional and research items
+### Already solved upstream — do not build these
+
+Recorded because both were about to be scoped as work, and both already exist.
+
+**Direct-then-propagate delivery.** The choice between a direct and a propagated
+message is not one the sender should have to make, and LXMF agrees: NomadNet's
+`try_propagation_on_send_fail` retries a failed direct message as a propagated
+one automatically, and it **defaults to on** (`NomadNetworkApp.py` sets
+`try_propagation_on_fail = True`; `Conversation.py` performs the retry by
+resetting the attempt counter and switching `desired_method` to `PROPAGATED`).
+Duplicate suppression is already handled by transient-id tracking, so the same
+message arriving twice is discarded rather than shown twice.
+
+If it appears not to work, the cause is almost always that no outbound
+propagation node is configured -- exactly the condition recorded in
+`docs/Messaging.md` §2, where clients had the option enabled and had nothing to
+fall back to. Both RADs are propagation nodes now, so the remedy is client
+configuration rather than firmware.
+
+**Propagation-node peering.** LXMF nodes do sync to each other -- see item 4a.
+The mechanism is push-based offer-and-request rather than a DNS-style zone
+transfer, but the effect is what was being asked for. It is our firmware that
+declines to participate, not the protocol that lacks it.
+
+### 11. Optional and research items
 
 - RRC resources, moderation, persistent rooms and offline bridge.
 - Propagation-node peer sync.
