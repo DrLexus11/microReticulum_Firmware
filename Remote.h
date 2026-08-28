@@ -70,6 +70,25 @@ extern RNS::Interface udp_interface;
 uint8_t wifi_mode = WIFI_OFF;
 bool wifi_init_ran = false;
 
+// --- SoftAP fallback timing, provisionable at runtime ---
+//
+// The Config.h values are the defaults; these are what the code reads. Correct
+// values depend on the building -- how slow the router is to boot, how long a
+// resident may hold the node before it goes looking for an uplink again -- and
+// a deployed node should not need a reflash to change them.
+//
+// Seconds on the wire, milliseconds in use: an operator setting a fallback
+// delay does not think in milliseconds, and the provisioning schema should not
+// make them.
+uint32_t wifi_ap_fallback_ms = WIFI_AP_FALLBACK_MS;
+uint32_t wifi_ap_retry_sta_ms = WIFI_AP_RETRY_STA_MS;
+uint32_t wifi_ap_max_defer_ms = WIFI_AP_MAX_DEFER_MS;
+
+// Mirrors WiFi.softAPgetStationNum() so provisioning can report it without
+// pulling the WiFi headers into that translation unit. Updated wherever the
+// fallback state machine already asks.
+uint8_t wifi_ap_client_count = 0;
+
 // --- SoftAP fallback state (see WIFI_AP_FALLBACK_MS in Config.h) ---
 // True while we are serving our OWN access point because the configured
 // station network could not be reached. Distinct from wifi_mode == WR_WIFI_AP,
@@ -99,6 +118,25 @@ uint8_t wifi_remote_mode() { return wifi_mode; }
 
 bool wifi_is_connected() { return (wr_wifi_status == WL_CONNECTED); }
 bool wifi_host_is_connected() { if (connection) { return true; } else { return false; } }
+
+extern void eeprom_update(int mapped_addr, uint8_t byte);
+
+// Persist the station SSID to EEPROM.
+//
+// Lives here rather than in Provisioning.cpp because config_addr() and
+// ADDR_CONF_SSID come from Config.h, whose macros collide with the Provisioning
+// headers and cannot be included there. wifi_remote_init() reloads wr_ssid from
+// EEPROM on every boot, so a provisioning setter that wrote only the variable
+// accepted the value and then silently reverted on reboot.
+void wifi_persist_ssid(const char* ssid) {
+	const size_t length = ssid ? strnlen(ssid, 32) : 0;
+	for (uint8_t i = 0; i < 32; i++) {
+		eeprom_update(config_addr(ADDR_CONF_SSID + i),
+		              i < length ? (uint8_t)ssid[i] : 0x00);
+	}
+	strncpy(wr_ssid, ssid ? ssid : "", sizeof(wr_ssid) - 1);
+	wr_ssid[sizeof(wr_ssid) - 1] = 0x00;
+}
 
 // Build the fallback AP SSID: node name plus a MAC suffix.
 //
@@ -459,7 +497,7 @@ void wifi_update_status() {
     // a network that does not exist.
     bool never_configured = (wr_ssid[0] == 0x00);
     if (wifi_sta_failing_since == 0) { wifi_sta_failing_since = millis(); }
-    if (never_configured || (millis() - wifi_sta_failing_since >= WIFI_AP_FALLBACK_MS)) {
+    if (never_configured || (millis() - wifi_sta_failing_since >= wifi_ap_fallback_ms)) {
       printf("[WiFi] %s -- falling back to own AP\n",
              never_configured ? "no station network configured"
                               : "station network unreachable");
@@ -471,16 +509,32 @@ void wifi_update_status() {
   }
 
 #if WIFI_AP_FALLBACK_MS > 0
+  // Keep the client-count mirror truthful whenever the fallback is up, and
+  // clear it the moment it is not.
+  //
+  // Updating it only inside the retry window was wrong three ways: it went stale
+  // for a whole retry interval (ten minutes by default), it kept its last value
+  // for ever once the node rejoined the station network, and -- worst -- it
+  // never updated at all on a node with no configured SSID, because that block
+  // is gated on `wr_ssid` being set. A never-provisioned node is exactly the one
+  // that goes straight to AP mode and stays there, so the operator asking "is
+  // anyone actually connected to this thing?" would always have been told zero.
+  if (wifi_ap_fallback_active) {
+    wifi_ap_client_count = WiFi.softAPgetStationNum();
+  } else if (wifi_ap_client_count != 0) {
+    wifi_ap_client_count = 0;
+  }
+
   // While serving the fallback AP, look for the configured network again --
   // but ONLY when nobody is associated. Dropping a resident mid-message to go
   // chase an uplink is the wrong trade; the uplink can wait until they leave.
   if (wifi_ap_fallback_active && wr_ssid[0] != 0x00 &&
-      millis() - wifi_ap_last_sta_retry >= WIFI_AP_RETRY_STA_MS) {
+      millis() - wifi_ap_last_sta_retry >= wifi_ap_retry_sta_ms) {
     wifi_ap_last_sta_retry = millis();
-    uint8_t stations = WiFi.softAPgetStationNum();
+    const uint8_t stations = wifi_ap_client_count;
     if (stations > 0 && wifi_ap_deferring_since == 0) { wifi_ap_deferring_since = millis(); }
     bool defer_expired = (wifi_ap_deferring_since != 0 &&
-                          millis() - wifi_ap_deferring_since >= WIFI_AP_MAX_DEFER_MS);
+                          millis() - wifi_ap_deferring_since >= wifi_ap_max_defer_ms);
     if (stations > 0 && !defer_expired) {
       // Someone is using us; the uplink can wait.
       printf("[WiFi] fallback AP has %u client(s) -- deferring station retry\n",

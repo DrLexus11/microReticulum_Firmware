@@ -8,8 +8,26 @@ Target deployment: rooftop "blackbox" relays on apartment buildings, IMPR-RAD
 nodes inside apartments, residents attaching with phones. Nodes must survive
 losing their relay and re-absorb automatically when a field team restores one.
 
-Status: **design proposal.** Written 2026-08-23. Verified facts are marked as
-such; everything else is a proposal.
+Status: **the SoftAP fallback described here is implemented and shipped.**
+Written 2026-08-23 as a proposal; corrected 2026-08-27 once the behaviour had
+been in the firmware for some time and the status line had not kept up.
+
+`Remote.h` implements the fallback state machine -- `wifi_build_ap_ssid()`,
+`wifi_remote_start_ap_fallback()`, the station-failure timer, the retry window
+and the bounded deferral while clients are associated. The knobs are
+`WIFI_AP_FALLBACK_MS`, `WIFI_AP_RETRY_STA_MS` and `WIFI_AP_MAX_DEFER_MS` in
+`Config.h`.
+
+The timing is provisionable at runtime as of 2026-08-27, and the acceptance was
+run deliberately on 2026-08-27 and 28 -- automatic fallback, the AP seen from a
+host, LoRa working alongside it, and the return path in both its deferring and
+its overriding form. The evidence is at the end of this document.
+
+What remains: a **per-node PSK policy**. The MAC-derived key is a speed bump
+rather than a credential -- see `docs/PrivateMesh.md` §6a -- and secure
+deployments need something better. Secure-node interaction is also still
+untested. Anything below still marked as a proposal should be read with that in
+mind.
 
 ---
 
@@ -336,3 +354,141 @@ it.
 - ESP-WIFI-MESH.
 - Changes to Reticulum core routing. The stack already heals; the work is
   keeping nodes on a common PHY and attached to something.
+
+---
+
+## Acceptance evidence
+
+### Operator test, before 2026-08-27
+
+Reported by the operator and recorded here because it covers more of the
+acceptance list than the roadmap credited:
+
+- The node raised its own AP and it was joinable using the **MAC-derived,
+  device-specific PSK**.
+- A Columba interface was configured for **10.0.0.1** and attached over TCP.
+- Traffic was observed going **Columba -> Rev 1 TCP -> Rev 1 LoRa -> Rev 2 ->
+  the wider network hosted by the Deck.**
+
+That last path is the important one. It demonstrates the AP, the TCP attachment
+and the LoRa hop working *simultaneously* on one node -- which is the
+coexistence question the acceptance list asks about, answered in the affirmative
+rather than by argument.
+
+**What it does not cover.** The test exercised the fallback while it was up; it
+did not exercise the *transitions*. Specifically untested:
+
+1. The automatic trigger -- a healthy node watching its station network fail and
+   raising the AP on its own after `wifi_ap_fallback_ms`, rather than being
+   configured into that state.
+2. The return path -- rejoining the station network once it comes back, and the
+   deferral that holds that off while a resident is associated.
+3. The deferral ceiling -- `wifi_ap_max_defer_ms` forcing a retry with clients
+   still attached.
+4. Secure-node interaction.
+
+Items 1 to 3 are now much cheaper to test, because the timers are provisionable
+at runtime: an AP fallback delay of 30 s and a retry of 60 s turn a 2-minute and
+10-minute wait into something observable in a single sitting, and the values can
+be put back afterwards without a reflash.
+
+### Provisioning surface, 2026-08-27
+
+`PROV_NS_NETWORK` (102) now carries the fallback timing as live-apply fields, in
+seconds:
+
+| Field | Id | Range | Default |
+| --- | ---: | --- | ---: |
+| AP Fallback Delay | 5 | 30-3600 s | 120 |
+| AP Station Retry | 6 | 60-86400 s | 600 |
+| AP Max Defer | 7 | 60-86400 s | 14400 |
+
+and read-only state as metrics: AP active (32), AP clients (33), AP SSID (34).
+
+Verified on Rev 1: a write of 45 s applied live and read back; a write of 10 s
+was **refused** with a constraint violation on field 5 and left the previous
+value intact, rather than being silently clamped.
+
+The floors are deliberate. A fallback delay under 30 seconds deserts a router
+that is merely rebooting, and a retry interval under a minute means a node
+serving residents keeps dropping their AP to go looking for an uplink.
+
+### Automatic fallback transition, 2026-08-27
+
+The transition the earlier test could not cover, exercised deliberately on
+Rev 1 and observed from the host.
+
+**Method.** Fallback delay turned down to 30 s over provisioning (live apply),
+the station SSID set to a name that does not exist, and the node rebooted.
+
+**Result.** The node failed to associate, raised its own access point, and left
+the LAN:
+
+```
+ping 192.168.1.54      -> 100% packet loss
+AP active              -> 1
+AP SSID                -> IMPR-RAD-01-Rev1-C7A4
+STA SSID               -> RAD01-FALLBACK-TEST-NOPE
+```
+
+Seen from the Deck's own WiFi scan, alongside the building router:
+
+```
+IMPR-RAD-01-Rev1-C7A4:100:WPA2      <- the node
+FiberHGW_ZTXK5F_2.4GHz:72:WPA2      <- the router it could not reach
+```
+
+Node name plus MAC suffix, WPA2, strongest signal in the room. A resident with
+a phone sees it in the normal WiFi list with no special software, which is the
+entire point of the feature.
+
+**Recovery.** Correct SSID restored over provisioning, node rejoined the LAN in
+about ten seconds, AP down, timers returned to their defaults. RRC acceptance
+passes afterwards and both boards report healthy.
+
+### Deferral and its ceiling, 2026-08-28
+
+The return path *while a client is attached*, with a phone associated to the
+fallback AP throughout. Retry interval 180 s, deferral ceiling 60 s:
+
+```
+ 29.5s  serving fallback AP "IMPR-RAD-01-Rev1-C7A4" at 10.0.0.1
+209.8s  retry check: stations=1 elapsed=0      ceiling=60000  expired=0
+        fallback AP has 1 client(s) -- deferring station retry
+390.0s  retry check: stations=1 elapsed=180281 ceiling=60000  expired=1
+        fallback AP deferred 180283ms with 1 client(s) -- retrying anyway
+```
+
+Both halves behave as intended: a node serving someone does not drop them to go
+looking for an uplink, and it does not hold out for ever either -- which is what
+stops a continuously occupied building from never rejoining a router that came
+back hours ago.
+
+**How this was nearly got wrong.** A first attempt watched the AP's presence in
+the host's WiFi scan and concluded from 300 s of continuous AP that deferral was
+working but the ceiling was broken. Both halves of that were wrong: the phone had
+never associated, `stations` was 0 throughout, and the node was simply cycling on
+the *idle* retry path. Inferring internal state from whether an SSID appears in a
+scan is not observation. The `retry check` diagnostic -- printing stations,
+elapsed and the ceiling -- settled it in a single run.
+
+Worth remembering for any repeat: with no client attached and a short retry
+interval the AP disappears every cycle, which makes it nearly impossible to join.
+Widen `AP Station Retry` before asking someone to connect.
+
+### A defect this test uncovered
+
+The station SSID could not be set over provisioning at all. `wifi_remote_init()`
+reloads `wr_ssid` from EEPROM on every boot, while the provisioning setter wrote
+only the RAM variable -- so a change was accepted, answered "reboot required",
+and silently reverted. The field looked settable and was not.
+
+Two neighbouring fields were worse: **IP Address** had its setter body commented
+out entirely, and **WiFi Mode** was `return true;` with no body at all. All three
+acknowledged writes that did nothing.
+
+The SSID setter now persists through the same EEPROM path the KISS
+`CMD_CONF_SSID` command uses. IP Address and WiFi Mode are now **read-only
+metrics**, because reporting a value honestly is better than accepting a write
+and discarding it -- static addressing belongs in a deliberate change rather
+than a stub that pretends.

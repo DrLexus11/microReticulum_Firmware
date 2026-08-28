@@ -14,9 +14,11 @@
 
 #include "Provisioning.h"
 
-// For MCU_VARIANT / MCU_ESP32, used to guard the loop-stack metric. These
-// otherwise arrive only through an incidental include chain, and a platform
-// guard that depends on one is a guard waiting to be silently inverted.
+// For MCU_VARIANT / MCU_ESP32 and the HAS_* / WIFI_AP_* feature macros used to
+// guard optional fields below. These otherwise arrive only through an
+// incidental include chain, and a guard that depends on one is a guard waiting
+// to be silently inverted -- an undefined macro makes `X > 0` read as `0 > 0`
+// and the fields vanish with no error. That has now happened twice here.
 #include "Boards.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
@@ -94,6 +96,19 @@ extern IPAddress wr_device_ip;
 extern uint16_t udp_port;
 extern uint8_t wifi_mode;
 extern char wr_ssid[33];
+extern void wifi_persist_ssid(const char* ssid);
+// Guarded on HAS_WIFI alone. Config.h cannot be included in this translation
+        // unit -- its macros collide with the Provisioning headers -- so
+        // WIFI_AP_FALLBACK_MS is not visible here. Testing an invisible macro is
+        // how these fields silently disappeared the first time.
+#if HAS_WIFI == true
+extern uint32_t wifi_ap_fallback_ms;
+extern uint32_t wifi_ap_retry_sta_ms;
+extern uint32_t wifi_ap_max_defer_ms;
+extern bool wifi_ap_fallback_active;
+extern char wifi_ap_ssid[33];
+extern uint8_t wifi_ap_client_count;
+#endif
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
 extern RNS::Interface tcp_server_interface;
@@ -746,18 +761,69 @@ static void register_provisioning_namespaces() {
   //if (wifi_mode != WR_WIFI_OFF && udp_interface) {
     Provisioner::instance()
       .register_namespace("RNode Network Config", PROV_NS_NETWORK)
-        .field_string("IP Address", PROV_NET_IP, FF_REBOOT_REQUIRED,
-          wr_device_ip.toString().c_str(), 15,
-          [](const Value& v) { /*wr_device_ip = v.as_string();*/ return true; })
+        // Read-only on purpose. The setter here was commented out, so the
+        // field accepted an address, answered "reboot required" and discarded
+        // it. Reporting the current address honestly is better than pretending
+        // it can be set; static addressing is configured over KISS
+        // (CMD_CONF_IP) and belongs in a deliberate change, not a stub.
+        .metric_string("IP Address", PROV_NET_IP,
+          []() { return std::string(wr_device_ip.toString().c_str()); })
         .field_int("UDP Port", PROV_NET_PORT, FF_REBOOT_REQUIRED,
           (fint_t)udp_port, (fint_t)1024, (fint_t)65535,
           [](const Value& v) { udp_port = (uint32_t)v.as_int(); return true; })
+        // Persisted to EEPROM, not just to RAM. wifi_remote_init() reloads
+        // wr_ssid from EEPROM on every boot, so a setter that touched only the
+        // variable accepted the value, reported "reboot required", and then
+        // silently reverted -- the field looked settable and was not. This is
+        // the same EEPROM path the KISS CMD_CONF_SSID command already uses.
         .field_string("WiFi SSID", PROV_NET_SSID, FF_REBOOT_REQUIRED,
           wr_ssid, 32,
-          [](const Value& v) { strncpy(wr_ssid, v.as_string().c_str(), sizeof(wr_ssid)); return true; })
-        .field_string("WiFi Mode", PROV_NET_MODE, FF_REBOOT_REQUIRED,
-          std::to_string(wifi_mode).c_str(), 0,
-          [](const Value& v) { return true; })
+          [](const Value& v) {
+            const std::string ssid = v.as_string();
+            if (ssid.size() > 32) return false;
+            wifi_persist_ssid(ssid.c_str());
+            return true;
+          })
+        // Likewise read-only: the setter accepted anything and did nothing.
+        .metric_string("WiFi Mode", PROV_NET_MODE,
+          []() { return std::to_string(wifi_mode); })
+// Guarded on HAS_WIFI alone. Config.h cannot be included in this translation
+        // unit -- its macros collide with the Provisioning headers -- so
+        // WIFI_AP_FALLBACK_MS is not visible here. Testing an invisible macro is
+        // how these fields silently disappeared the first time.
+#if HAS_WIFI == true
+        // FF_LIVE_APPLY: these are read on each pass of the fallback state
+        // machine, so a change takes effect without a reboot. That matters --
+        // the operator most likely to adjust them is standing in a building
+        // whose network has just failed, which is the worst moment to ask a
+        // node to restart.
+        //
+        // Lower bounds are deliberate. A fallback delay under 30 s deserts a
+        // router that is merely rebooting, and a retry interval under a minute
+        // means a node serving residents keeps dropping its AP to go looking
+        // for an uplink.
+        .field_int("AP Fallback Delay (s)", PROV_NET_AP_FALLBACK_S, FF_LIVE_APPLY,
+          (fint_t)(wifi_ap_fallback_ms / 1000), (fint_t)30, (fint_t)3600,
+          [](const Value& v) { wifi_ap_fallback_ms = (uint32_t)v.as_int() * 1000UL; return true; },
+          []() { return (fint_t)(wifi_ap_fallback_ms / 1000); })
+        .field_int("AP Station Retry (s)", PROV_NET_AP_RETRY_S, FF_LIVE_APPLY,
+          (fint_t)(wifi_ap_retry_sta_ms / 1000), (fint_t)60, (fint_t)86400,
+          [](const Value& v) { wifi_ap_retry_sta_ms = (uint32_t)v.as_int() * 1000UL; return true; },
+          []() { return (fint_t)(wifi_ap_retry_sta_ms / 1000); })
+        .field_int("AP Max Defer (s)", PROV_NET_AP_MAX_DEFER_S, FF_LIVE_APPLY,
+          (fint_t)(wifi_ap_max_defer_ms / 1000), (fint_t)60, (fint_t)86400,
+          [](const Value& v) { wifi_ap_max_defer_ms = (uint32_t)v.as_int() * 1000UL; return true; },
+          []() { return (fint_t)(wifi_ap_max_defer_ms / 1000); })
+        // Read-only state. Without these an operator cannot tell whether a node
+        // is on the building network or serving its own, which is the first
+        // question to ask about a node that has gone quiet.
+        .metric_int("AP Fallback Active", PROV_NET_AP_ACTIVE,
+          []() { return (fint_t)(wifi_ap_fallback_active ? 1 : 0); })
+        .metric_int("AP Clients", PROV_NET_AP_CLIENTS,
+          []() { return (fint_t)wifi_ap_client_count; })
+        .metric_string("AP SSID", PROV_NET_AP_SSID,
+          []() { return wifi_ap_fallback_active ? std::string(wifi_ap_ssid) : std::string(); })
+#endif
       .end();
   //}
 #endif

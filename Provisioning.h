@@ -108,6 +108,16 @@
 #define PROV_NET_PORT           2
 #define PROV_NET_SSID           3
 #define PROV_NET_MODE           4
+// SoftAP fallback timing, in SECONDS on the wire. The firmware keeps
+// milliseconds internally; an operator choosing how long a node waits before
+// deserting a rebooting router should not have to think in milliseconds.
+#define PROV_NET_AP_FALLBACK_S  5
+#define PROV_NET_AP_RETRY_S     6
+#define PROV_NET_AP_MAX_DEFER_S 7
+// Read-only: is the node currently serving its own AP, and to how many clients.
+#define PROV_NET_AP_ACTIVE      32
+#define PROV_NET_AP_CLIENTS     33
+#define PROV_NET_AP_SSID        34
 
 #define PROV_IFAC_LORA_ENABLED     1
 #define PROV_IFAC_LORA_NETNAME     2
