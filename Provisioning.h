@@ -62,6 +62,7 @@
 #define PROV_BT_STATE             32
 #define PROV_BT_PASSKEY           33
 #define PROV_BT_DEVNAME           34
+#define PROV_BT_BONDS             35
 
 #define PROV_GENERAL_KISS_LOG        1
 #define PROV_GENERAL_LORA_MODE       2

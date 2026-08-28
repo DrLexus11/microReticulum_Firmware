@@ -39,6 +39,7 @@ void bt_stop();
 void bt_conf_save(bool);
 void bt_enable_pairing();
 void bt_disable_pairing();
+int bt_bonded_peer_count();
 
 // Mirrors Config.h, which is the source of truth. These are reported to hosts
 // over KISS, so they are effectively protocol constants and do not drift.
@@ -355,6 +356,12 @@ static void register_provisioning_namespaces() {
         []() { return static_cast<fint_t>(pairing_pin); })
       .metric_string("Device Name", PROV_BT_DEVNAME,
         []() { return bt_devname; })
+      // Whether a bond is actually stored. A phone reporting "not ready to
+      // pair" on reconnect looks identical whether the node has forgotten the
+      // bond or is refusing a peer it remembers, and those have opposite
+      // fixes. This is the number that tells them apart.
+      .metric_int("Bonded Peers", PROV_BT_BONDS,
+        []() { return static_cast<fint_t>(bt_bonded_peer_count()); })
       .end();
 #endif
 

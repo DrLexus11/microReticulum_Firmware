@@ -217,6 +217,8 @@ uint32_t bt_pairing_started = 0;
       }
     }
 
+    int bt_bonded_peer_count() { return esp_ble_get_bond_device_num(); }
+
     void bt_debond_all() {
       // Serial.println("Debonding all");
       int dev_num = esp_ble_get_bond_device_num();
@@ -248,7 +250,13 @@ uint32_t bt_pairing_started = 0;
       bt_state = BT_STATE_ON;
     }
 
+    // Pairing telemetry. These print rather than stay commented out because
+    // the pairing path has now failed three times in a row for reasons that
+    // were invisible from outside: a phone reporting "not ready to pair" looks
+    // the same whether the request was refused, the passkey was never entered,
+    // or authentication failed afterwards. bt_state ends up ON in every case.
     void bt_passkey_notify_callback(uint32_t passkey) {
+      printf("[bt] passkey notify: %lu\n", (unsigned long)passkey);
       // Serial.printf("Got passkey notification: %d\n", passkey);
       if (bt_allow_pairing) {
         bt_ssp_pin = passkey;
@@ -289,6 +297,8 @@ uint32_t bt_pairing_started = 0;
     }
 
     bool bt_security_request_callback() {
+      printf("[bt] security request (window=%d bonds=%d)\n",
+             (int)bt_allow_pairing, esp_ble_get_bond_device_num());
       if (bt_allow_pairing) return true;
 
       // A bonded peer coming back is not a new pairing attempt, and refusing it
@@ -312,6 +322,9 @@ uint32_t bt_pairing_started = 0;
     }
 
     void bt_authentication_complete_callback(esp_ble_auth_cmpl_t auth_result) {
+      printf("[bt] auth complete: success=%d reason=0x%02x bonds_now=%d\n",
+             (int)auth_result.success, (unsigned)auth_result.fail_reason,
+             esp_ble_get_bond_device_num());
       if (auth_result.success == true) {
         // Serial.println("Authentication success");
         ble_authenticated = true;
@@ -332,6 +345,7 @@ uint32_t bt_pairing_started = 0;
 
     void bt_connect_callback(BLEServer *server) {
       uint16_t conn_id = server->getConnId();
+      printf("[bt] connected (conn=%u state=%d)\n", (unsigned)conn_id, (int)bt_state);
       // Serial.printf("Connected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;
@@ -368,6 +382,7 @@ uint32_t bt_pairing_started = 0;
 
     void bt_disconnect_callback(BLEServer *server) {
       uint16_t conn_id = server->getConnId();
+      printf("[bt] disconnected (bonds=%d)\n", esp_ble_get_bond_device_num());
       // Serial.printf("Disconnected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;
@@ -694,6 +709,7 @@ uint32_t bt_pairing_started = 0;
   }
 
   void bt_debond_all() { }
+  int bt_bonded_peer_count() { return 0; }
 
   void update_bt() {
     if (bt_allow_pairing && millis()-bt_pairing_started >= BT_PAIRING_TIMEOUT) {
