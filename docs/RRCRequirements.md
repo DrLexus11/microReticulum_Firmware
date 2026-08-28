@@ -665,7 +665,7 @@ than extend it. The hub therefore counts truncated replies instead, so an
 operator can see that clients received a partial view rather than having to
 infer it from a short list.
 
-## 12c. Persistent rooms and the LXMF bridge (planned)
+## 12c. Persistent rooms and the LXMF bridge (implemented)
 
 RRC is ephemeral by design and that is correct for incident chat, but the stated
 product use is group command, central command and general comms -- a backbone.
@@ -703,21 +703,82 @@ message and handed to the propagation store, addressed so that members who were
 not connected receive it on their next sync. Live members still get the ordinary
 RRC fanout; the bridge is for the absent.
 
-Design points that need deciding before implementation:
+### The four design points, as decided
 
-- **Addressing.** A room is not an LXMF destination. Either the hub sends one
-  LXMF message per absent member (simple, costs airtime per member) or a room
-  gets its own delivery identity that members subscribe to (cheaper, more
-  machinery). The first is probably right for the fleet sizes involved.
-- **Loop prevention.** A bridged message must not re-enter the room when it is
-  delivered. LXMF's transient-id tracking gives the mechanism; the hub must not
-  re-broadcast what it originated.
-- **Store pressure.** The propagation store is 512 KB and capped at 128
-  messages. A busy bridged room could evict residents' direct messages. Room
-  traffic and personal mail competing for one store needs a policy before this
-  ships, not after.
-- **Provisioning.** Which rooms are bridged has to be configurable per node,
-  which means a room list in the RRC namespace rather than a compile-time set.
+- **Addressing.** One LXMF message per absent member, which was the option
+  expected to be right for these fleet sizes. The source is the node's own
+  `lxmf`/`delivery` destination, the room name is the message title, and the
+  body is `<nick> text`, so a stock client shows each bridged room as its own
+  conversation rather than one undifferentiated thread. A room delivery
+  identity that members subscribe to remains the cheaper answer if a room ever
+  outgrows per-member fanout.
+
+- **Loop prevention.** Free in this direction, and the reason is worth stating
+  rather than assuming: nothing in the bridge injects into RRC, and RRC ingress
+  is only ever an envelope arriving on a Link. The moment LXMF replies are made
+  to appear in the room, loop prevention stops being free and has to be built
+  on LXMF's transient-id tracking, as originally described.
+
+- **Store pressure.** Bridged traffic is capped at a quarter of the store
+  (`RRC_BRIDGE_STORE_QUOTA`) and evicted against that quota before the store's
+  own cap is consulted, so a busy room fills its own share and never a
+  resident's mail. The quota counts what this node composed during the current
+  uptime: a stored blob's source is inside its ciphertext, so after a reboot
+  ours are indistinguishable and revert to oldest-first eviction. The store
+  stays bounded either way; only the fairness lapses, and only until the room
+  is next busy.
+
+- **Provisioning.** RRC namespace 113, fields 10 (enable) and 11 (a
+  comma-separated room list, `#` optional and names normalized as everywhere
+  else in RRC). Both reboot-required, since the bridge is constructed with the
+  hub. Metrics 48-51 report roster size, queue depth, deliveries and drops.
+
+### The roster, which is what makes it work
+
+Membership dies with the Link, so an absent member is by definition one the hub
+holds no session for and can no longer ask anything of. The bridge therefore
+keeps its own roster per bridged room, capturing each member's **public key**
+from the Link when they join. That key is what lets the hub address someone
+later, and taking it from the Link rather than from an announce means the hub
+can reach any member it has ever met, even one whose announce it never heard.
+
+The roster is persisted (`/rrc_roster`, debounced to at most one write per 30
+seconds). This is not an optimisation: a restarted hub that has forgotten its
+roster delivers nothing to anyone until every member has joined again, while
+presenting exactly like a healthy idle bridge -- the silent-failure signature
+that has cost this project more time than anything else.
+
+Bounds, as everywhere else: `RRC_BRIDGE_MAX_ROOMS` (4), `RRC_BRIDGE_MAX_MEMBERS`
+(16 per room) and `RRC_BRIDGE_QUEUE_DEPTH` (8 messages). A full roster drops the
+newcomer rather than evicting an established member, on the grounds that a
+command room's standing membership matters more than admitting the latest
+arrival.
+
+### Where the work happens
+
+Composing costs a signature and an encryption per recipient, and it deliberately
+does not happen on the path that handles room traffic: that path runs inside a
+Reticulum callback, where this project has already lost a board to a stack
+overflow. Accepting a message only resolves recipients and copies text; the
+cryptography is done one recipient per iteration of the main loop.
+
+`LXMFCompose.h` is the only place in the firmware that constructs LXMF, and it
+should stay that way -- everything else treats messages as opaque, which is what
+makes a propagation node fit on this hardware at all. Its layout is pinned to
+the Python reference by `tests/test_lxmf_protocol.py`, because a malformed
+composed message is worse than a malformed stored one: it syncs perfectly and is
+then discarded inside someone else's client with no error reaching us.
+
+### Not yet done
+
+- **End-to-end verification against a real client.** Nothing here has been read
+  by NomadNet, Sideband or Columba yet. That test is what decides whether the
+  composed messages are actually readable, and it needs hardware.
+- **The reverse direction.** An LXMF reply does not appear in the room. Adding
+  it brings the loop-prevention work described above.
+- **Propagation stamps.** Composed messages carry a zero stamp, which is inert
+  because a node strips the stamp before serving and these never cross an ingest
+  gate. Peering (roadmap 4a) validates stamps and would reject them.
 
 ## 13. Explicitly deferred backlog
 

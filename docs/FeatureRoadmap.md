@@ -138,10 +138,17 @@ Why this is ahead of the Bluetooth work:
 Deliberately **not** in scope: adding a message store to the RRC hub. That
 duplicates LXMF and breaks the ephemeral contract stock clients rely on.
 
-Open questions are recorded in §12c -- per-member versus per-room addressing,
-loop prevention, and the fact that a busy bridged room and residents' personal
-mail would compete for one 512 KB store. That last one needs a policy before
-this ships.
+**Status: implemented, not yet verified end to end.** All four open questions
+are decided and recorded in §12c -- per-member addressing, loop prevention
+(free in this direction, and the doc says why it stops being free), a store
+quota so a busy room cannot evict residents' mail, and a provisioned room list
+in the RRC namespace. What remains is the test that actually settles it:
+reading a bridged message in a stock client on hardware. Until that passes,
+treat this as unproven rather than done.
+
+Two follow-ups the implementation names: an LXMF reply does not yet appear in
+the room, and composed messages carry a zero propagation stamp, which is inert
+today but would be rejected by a peer under item 4a.
 
 ### 4a. Propagation node peering between RADs — **pairs with item 4**
 
