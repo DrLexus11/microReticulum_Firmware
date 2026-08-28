@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "LXMFCompose.h"
+#include "RRCHub.h"
 #include "LXMFPropagation.h"
 
 bool rrc_bridge_enabled = false;
@@ -42,8 +43,10 @@ std::array<Room, RRC_BRIDGE_MAX_ROOMS> rooms{};
 std::array<Pending, RRC_BRIDGE_QUEUE_DEPTH> queue{};
 
 RNS::Identity hub_identity{RNS::Type::NONE};
+RNS::Destination hub_delivery{RNS::Type::NONE};
 RNS::Bytes hub_delivery_hash;
 bool running = false;
+uint64_t next_announce_ms = 0;
 
 // Transient ids of messages this node composed, oldest first, so the quota can
 // evict our own before the store's cap starts evicting anyone's.
@@ -106,6 +109,30 @@ void parse_rooms() {
         slot++;
         if (comma >= list.size()) break;
     }
+}
+
+// Announce the delivery destination the bridge sends from.
+//
+// Without this the messages arrive, decrypt and display correctly, and are
+// still shown as unverified: LXMF validates a signature by recalling the
+// source identity from an announce, and if it has never heard one it reports
+// SOURCE_UNKNOWN rather than a bad signature. The two are indistinguishable in
+// LXMessage.signature_validated, which is exactly how this was nearly missed
+// -- the first end-to-end test showed "signature: INVALID" on a message whose
+// signature was fine.
+//
+// Field order and types match LXMRouter.get_announce_app_data():
+// msgpack [display_name, stamp_cost, [supported_functionality]].
+RNS::Bytes delivery_app_data() {
+	MsgPack::Packer packer;
+	packer.serialize(MsgPack::arr_size_t(3));
+	const std::string name(rrc_hub_name);
+	if (name.empty()) packer.serialize(MsgPack::object::nil_t());
+	else packer.packBinary((const uint8_t*)name.data(), name.size());
+	packer.serialize(MsgPack::object::nil_t());   // no delivery stamp cost
+	packer.serialize(MsgPack::arr_size_t(1));
+	packer.serialize((uint8_t)0x00);              // SF_COMPRESSION
+	return RNS::Bytes(packer.data(), packer.size());
 }
 
 void roster_save() {
@@ -230,6 +257,13 @@ void rrc_bridge_begin(const RNS::Identity& identity) {
     hub_delivery_hash = delivery.hash();
     if (hub_delivery_hash.size() != LXMF_DESTINATION_LEN) return;
 
+    // Held as an IN destination so it can announce; the OUT copy above was
+    // only ever needed for its hash.
+    hub_delivery = RNS::Destination(identity, RNS::Type::Destination::IN,
+                                    RNS::Type::Destination::SINGLE,
+                                    LXMF_APP_NAME, LXMF_DELIVERY_ASPECT);
+    next_announce_ms = RNS::Utilities::OS::ltime() + RRC_BRIDGE_FIRST_ANNOUNCE_MS;
+
     parse_rooms();
     roster_load();
     running = true;
@@ -326,6 +360,13 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
 
 void rrc_bridge_loop() {
     if (!running) return;
+
+    if (hub_delivery && RNS::Utilities::OS::ltime() >= next_announce_ms) {
+        hub_delivery.announce(delivery_app_data());
+        next_announce_ms = RNS::Utilities::OS::ltime() + RRC_BRIDGE_ANNOUNCE_MS;
+        printf("[rrc] announced bridge delivery address <%s>\n",
+               hub_delivery_hash.toHex().c_str());
+    }
 
     if (roster_dirty &&
         RNS::Utilities::OS::ltime() - roster_saved_ms >= RRC_BRIDGE_ROSTER_SAVE_MS) {

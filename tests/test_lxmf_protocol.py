@@ -344,6 +344,36 @@ class ComposedMessageLayoutTests(unittest.TestCase):
         identity = RNS.Identity()
         self.assertEqual(64, len(identity.sign(b"probe")))
 
+    def test_bridge_announces_the_address_it_sends_from(self):
+        """Composing correctly is not enough; the source must be recallable.
+
+        LXMF validates a signature by recalling the source identity from an
+        announce. With no announce it reports SOURCE_UNKNOWN, and
+        signature_validated is False either way -- so a perfectly signed
+        message shows as unverified and looks identical to a broken one. The
+        first end-to-end bridge test hit exactly this.
+        """
+        from RNS.vendor import umsgpack as msgpack
+
+        bridge = os.path.join(os.path.dirname(HEADER), "RRCBridge.cpp")
+        with open(bridge, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("delivery_app_data", source,
+                      "the bridge must publish its delivery address")
+        self.assertIn(".announce(", source)
+
+        # Field order and types, from LXMRouter.get_announce_app_data():
+        # [display_name, stamp_cost, [supported_functionality]].
+        reference = msgpack.packb([b"IMPR-RAD RRC", None, [0x00]])
+        self.assertEqual(0x93, reference[0], "three-element array")
+        self.assertEqual(0xC4, reference[1], "display name packs as bin")
+        self.assertEqual(0xC0, reference[-3], "absent stamp cost packs as nil")
+        self.assertEqual(0x91, reference[-2], "functionality is a one-element array")
+        self.assertEqual(0x00, reference[-1], "SF_COMPRESSION is 0x00")
+
+        self.assertIn("arr_size_t(3)", source)
+        self.assertIn("nil_t", source)
+
 
 if __name__ == "__main__":
     unittest.main()

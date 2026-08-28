@@ -89,6 +89,17 @@
 #define RRC_BRIDGE_STORE_QUOTA (LXMF_PN_MAX_MESSAGES / 4)
 #endif
 
+// How often the bridge announces the address it sends from, so recipients can
+// recall its identity and actually verify the signatures. Matched to the
+// propagation node's cadence: a client needs to hear this occasionally, and
+// every announce is airtime off a shared half-duplex channel.
+#ifndef RRC_BRIDGE_ANNOUNCE_MS
+#define RRC_BRIDGE_ANNOUNCE_MS 1800000     // 30 minutes
+#endif
+#ifndef RRC_BRIDGE_FIRST_ANNOUNCE_MS
+#define RRC_BRIDGE_FIRST_ANNOUNCE_MS 45000 // shortly after boot, before any traffic
+#endif
+
 // Provisioned configuration (RRC namespace).
 extern bool rrc_bridge_enabled;
 // Comma-separated room names, e.g. "general,command". Parsed into the bridged
