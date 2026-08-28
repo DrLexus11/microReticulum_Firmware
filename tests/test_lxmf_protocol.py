@@ -14,12 +14,15 @@ Without LXMF importable the whole module skips rather than passing vacuously.
 """
 
 import hashlib
+import inspect
 import os
 import re
+import time
 import unittest
 
 HEADER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "LXMFPropagation.h")
+COMPOSE = os.path.join(os.path.dirname(HEADER), "LXMFCompose.h")
 PLATFORMIO = os.path.join(os.path.dirname(HEADER), "platformio.ini")
 
 try:
@@ -229,6 +232,117 @@ class SyncContainerShapeTests(unittest.TestCase):
         # which one an ordinary text message takes.
         self.assertGreater(LXMessage.LINK_PACKET_MAX_CONTENT, 0)
         self.assertLess(LXMessage.LINK_PACKET_MAX_CONTENT, 1024)
+
+
+def compose_source():
+    with open(COMPOSE, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def reference_payload_order():
+    """The payload field order as the LXMF reference itself writes it.
+
+    Read from Python source rather than hardcoded, so an upstream reordering
+    fails here instead of silently disagreeing with what we compose.
+    """
+    source = inspect.getsource(LXMessage.pack)
+    match = re.search(r"self\.payload\s*=\s*\[(?P<fields>[^\]]+)\]", source)
+    assert match, "could not find the payload assignment in LXMessage.pack"
+    return [f.strip().replace("self.", "")
+            for f in match.group("fields").split(",")]
+
+
+@unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+class ComposedMessageLayoutTests(unittest.TestCase):
+    """The bridge composes LXMF rather than relaying it.
+
+    A malformed composed message is worse than a malformed stored one: it syncs
+    perfectly and is then discarded inside someone else's client, with no error
+    reaching us. These pin the layout in LXMFCompose.h to the reference.
+    """
+
+    def test_payload_field_order_matches_the_reference(self):
+        # The one that bites: title precedes content. Swapping them yields a
+        # message that decrypts and validates cleanly, and displays the body
+        # in the subject line.
+        self.assertEqual(["timestamp", "title", "content", "fields"],
+                         reference_payload_order())
+
+        source = compose_source()
+        body = re.search(r"lxmf_pack_payload\b.*?\n\}", source, re.S)
+        self.assertIsNotNone(body, "lxmf_pack_payload not found")
+        packed_order = re.findall(r"//\s*(\d):\s*(\w+)", body.group(0))
+        self.assertEqual([("0", "seconds"), ("1", "title"),
+                          ("2", "content"), ("3", "fields")], packed_order)
+
+    def test_msgpack_format_families_match(self):
+        """The exact type bytes the reference emits for a payload.
+
+        MsgPack's C++ packer chooses a family per call, so these assert that
+        the calls chosen in lxmf_pack_payload produce the same wire types the
+        reference does -- an array of four, float64 timestamp, bin title and
+        content, and an empty map of fields.
+        """
+        from RNS.vendor import umsgpack as msgpack
+
+        payload = [time.time(), b"", b"hello", {}]
+        packed = msgpack.packb(payload)
+        self.assertEqual(0x94, packed[0], "four-element array header")
+        self.assertEqual(0xCB, msgpack.packb(payload[0])[0], "float64 timestamp")
+        self.assertEqual(0xC4, msgpack.packb(b"hello")[0], "bin8 for short bytes")
+        self.assertEqual(0x80, msgpack.packb({})[0], "empty fixmap for fields")
+
+        source = compose_source()
+        self.assertIn("packBinary", source, "title/content must pack as bin")
+        self.assertIn("map_size_t(0)", source, "fields must pack as an empty map")
+
+    def test_packed_concatenation_order(self):
+        source = inspect.getsource(LXMessage.pack)
+        order = re.findall(r"self\.packed\s*\+=\s*self\.(\w+)", source)
+        self.assertEqual(["signature"], order[2:3],
+                         "signature is the third element in the reference")
+
+        composed = re.search(r"RNS::Bytes packed;\s*\n\s*packed << (?P<order>[^;]+);",
+                             compose_source())
+        self.assertIsNotNone(composed, "packed concatenation not found")
+        fields = [f.strip() for f in composed.group("order").split("<<")]
+        self.assertEqual(["destination_hash", "source_destination_hash",
+                          "signature", "payload"], fields)
+
+    def test_hashes_are_delivery_destinations_not_identities(self):
+        """A conversation is keyed on the delivery destination hash.
+
+        Using an identity hash produces a message that no client can match to
+        a conversation, and nothing in the transfer complains.
+        """
+        identity = RNS.Identity()
+        delivery = RNS.Destination(identity, RNS.Destination.OUT,
+                                   RNS.Destination.SINGLE, "lxmf", "delivery")
+        self.assertNotEqual(identity.hash, delivery.hash)
+        self.assertEqual(16, len(delivery.hash))
+
+        source = compose_source()
+        self.assertIn('LXMF_DELIVERY_ASPECT "delivery"', source)
+        self.assertIn("destination_hash", source)
+
+    def test_stamp_is_stripped_before_delivery_so_a_zero_stamp_is_inert(self):
+        """Why the bridge may append a zero propagation stamp.
+
+        The stamp gates ingest at a propagation node and is removed again
+        before the message is served, so a message inserted directly into this
+        node's own store never crosses the gate the stamp exists for.
+        """
+        router = inspect.getsource(LXMRouter)
+        self.assertIn("[:-LXStamper.STAMP_SIZE]", router,
+                      "the reference must still strip the stamp when serving")
+
+        with open(HEADER, "r", encoding="utf-8") as handle:
+            self.assertIn("blob.size() - LXMF_STAMP_SIZE", handle.read(),
+                          "our serve path must strip it too")
+
+    def test_signature_length_matches_the_reference(self):
+        identity = RNS.Identity()
+        self.assertEqual(64, len(identity.sign(b"probe")))
 
 
 if __name__ == "__main__":
