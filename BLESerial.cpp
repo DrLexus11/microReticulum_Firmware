@@ -228,6 +228,17 @@ void BLESerial::end() { BLEDevice::deinit(); }
 void BLESerial::onWrite(BLECharacteristic *characteristic) {
   if (characteristic->getUUID().toString() == BLE_RX_UUID) {
     auto value = characteristic->getValue();
+    // Does the host's data reach us at all? The board sends nothing to the
+    // phone, which means it never has anything to answer -- and that is either
+    // because the commands never arrive or because they arrive and are not
+    // consumed. This separates the two, and it is the only place that can.
+    rx_bytes_total += value.length();
+    if (rx_writes_logged < 6) {
+      rx_writes_logged++;
+      printf("[bt] rx write: %u bytes (total %lu) first=0x%02x\n",
+             (unsigned)value.length(), (unsigned long)rx_bytes_total,
+             value.length() ? (unsigned)(uint8_t)value[0] : 0);
+    }
     for (int i = 0; i < value.length(); i++) { rx_buffer.push(value[i]); }
   }
 }

@@ -128,6 +128,8 @@ public:
   // wrong MTU is what made this class drop most of every frame.
   uint16_t peerMTU = 0;
   bool mtu_probe_logged = false;
+  unsigned long rx_bytes_total = 0;
+  uint8_t rx_writes_logged = 0;
   uint16_t maxTransferSize = BLE_BUFFER_SIZE;
   bool checkMTU();
 
