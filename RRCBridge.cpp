@@ -479,6 +479,13 @@ void rrc_bridge_remember(const std::string& room, const RNS::Identity& member) {
                 existing.public_key = public_key;   // keys can be re-issued
                 roster_dirty = true;
             }
+            // Still a candidate for catch-up. The roster is persisted but the
+            // backfilled flag is not, so after a restart every known member is
+            // owed one again -- which is right, because a restart is exactly
+            // when they are most likely to have missed something. Without this
+            // the catch-up only ever reached a member never seen before during
+            // the current uptime, and never anyone at all after a reboot.
+            queue_backfill(target, existing);
             return;
         }
     }
