@@ -322,8 +322,19 @@ uint32_t bt_pairing_started = 0;
     }
 
     void bt_authentication_complete_callback(esp_ble_auth_cmpl_t auth_result) {
-      printf("[bt] auth complete: success=%d reason=0x%02x bonds_now=%d\n",
+      // auth_mode is the field that matters, not success. Both GATT
+      // characteristics are declared ESP_GATT_PERM_*_ENC_MITM, so a bond formed
+      // without MITM authentication -- Just Works, auth_mode without the 0x04
+      // bit -- leaves every read, write and subscribe refused for insufficient
+      // authentication. The client then connects, finds it cannot do anything,
+      // and retries: exactly the loop observed, with no bytes ever written.
+      printf("[bt] auth complete: success=%d reason=0x%02x auth_mode=0x%02x "
+             "(mitm=%d bond=%d sc=%d) bonds_now=%d\n",
              (int)auth_result.success, (unsigned)auth_result.fail_reason,
+             (unsigned)auth_result.auth_mode,
+             (int)((auth_result.auth_mode & 0x04) != 0),
+             (int)((auth_result.auth_mode & 0x01) != 0),
+             (int)((auth_result.auth_mode & 0x08) != 0),
              esp_ble_get_bond_device_num());
       if (auth_result.success == true) {
         // Serial.println("Authentication success");
