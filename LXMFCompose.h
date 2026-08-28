@@ -79,8 +79,13 @@
 
 // Pack the LXMF payload array. Kept separate so the test can compare exactly
 // this against msgpack.packb() without the surrounding crypto.
+// `fields` is raw msgpack for the fields map, spliced in whole. Passing it
+// pre-packed keeps this function free of any knowledge of what a caller wants
+// to attach, and lets the expensive part -- building the map -- happen
+// wherever the data already lives rather than here.
 inline RNS::Bytes lxmf_pack_payload(double timestamp, const RNS::Bytes& title,
-                                    const RNS::Bytes& content) {
+                                    const RNS::Bytes& content,
+                                    const RNS::Bytes& fields = RNS::Bytes()) {
 	// An empty Bytes has a null data pointer, and an empty title is the normal
 	// case for room traffic, so never hand that pointer to packBinary().
 	static const uint8_t empty = 0;
@@ -92,8 +97,10 @@ inline RNS::Bytes lxmf_pack_payload(double timestamp, const RNS::Bytes& title,
 	packer.serialize(timestamp);                     // 0: seconds since epoch, float64
 	packer.packBinary(title_data, title.size());     // 1: title
 	packer.packBinary(content_data, content.size()); // 2: content
-	packer.serialize(MsgPack::map_size_t(0));        // 3: fields (none)
-	return RNS::Bytes(packer.data(), packer.size());
+	if (!fields) packer.serialize(MsgPack::map_size_t(0));  // 3: fields (none)
+	RNS::Bytes packed(packer.data(), packer.size());
+	if (fields) packed << fields;                    // 3: fields, pre-packed
+	return packed;
 }
 
 // Build the signed, unencrypted message. Exposed for testing; the bridge wants
@@ -102,14 +109,15 @@ inline RNS::Bytes lxmf_compose_packed(const RNS::Identity& source_identity,
                                       const RNS::Bytes& source_destination_hash,
                                       const RNS::Bytes& destination_hash,
                                       double timestamp, const RNS::Bytes& title,
-                                      const RNS::Bytes& content) {
+                                      const RNS::Bytes& content,
+                                      const RNS::Bytes& fields = RNS::Bytes()) {
 	if (!source_identity ||
 	    source_destination_hash.size() != LXMF_DESTINATION_LEN ||
 	    destination_hash.size() != LXMF_DESTINATION_LEN) {
 		return RNS::Bytes();
 	}
 
-	const RNS::Bytes payload = lxmf_pack_payload(timestamp, title, content);
+	const RNS::Bytes payload = lxmf_pack_payload(timestamp, title, content, fields);
 
 	RNS::Bytes hashed_part;
 	hashed_part << destination_hash << source_destination_hash << payload;
@@ -135,10 +143,11 @@ inline RNS::Bytes lxmf_compose_propagated(const RNS::Identity& source_identity,
                                           const RNS::Bytes& source_destination_hash,
                                           RNS::Destination& recipient_destination,
                                           double timestamp, const RNS::Bytes& title,
-                                          const RNS::Bytes& content) {
+                                          const RNS::Bytes& content,
+                                          const RNS::Bytes& fields = RNS::Bytes()) {
 	const RNS::Bytes packed = lxmf_compose_packed(
 		source_identity, source_destination_hash, recipient_destination.hash(),
-		timestamp, title, content);
+		timestamp, title, content, fields);
 	if (!packed) return RNS::Bytes();
 
 	// Everything after the destination hash is encrypted to the recipient; the

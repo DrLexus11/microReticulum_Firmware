@@ -435,8 +435,8 @@ void handle_room_traffic(Slot& slot, RRC::Envelope envelope, uint64_t now_ms) {
     // main loop, not in this callback.
     if (envelope.body.kind == RRC::BodyKind::Text && rrc_bridge_bridged(room)) {
         rrc_bridge_publish(room, hub_state.nickname(slot.key).value_or(""),
-                           *identity, envelope.body.text,
-                           member_hashes(members));
+                           *identity, envelope.message_id, envelope.timestamp_ms,
+                           envelope.body.text, member_hashes(members));
     }
 #endif
 }

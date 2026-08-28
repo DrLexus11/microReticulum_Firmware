@@ -109,8 +109,28 @@
 #define RRC_BRIDGE_HISTORY_MAX 32          // hard cap; the provisioned depth cannot exceed it
 #endif
 #ifndef RRC_BRIDGE_HISTORY_TEXT
-#define RRC_BRIDGE_HISTORY_TEXT 256        // per line, including attribution
+#define RRC_BRIDGE_HISTORY_TEXT 288        // message text, per line
 #endif
+#ifndef RRC_BRIDGE_HISTORY_NICK
+#define RRC_BRIDGE_HISTORY_NICK 40         // display name, per line
+#endif
+
+// Structured metadata for clients that merge live RRC and bridged LXMF into
+// one conversation. Stock clients ignore unknown fields, so this costs them
+// nothing and the human-readable body is unchanged.
+//
+// The identifier is versioned because the shape will change: message ids and
+// sender identities are enough to deduplicate and order today, and per-sender
+// signatures are the obvious next addition if rooms ever need end-to-end
+// attribution rather than the hub's word for it.
+//
+// See docs/BridgeClientContract.md.
+#ifndef RRC_BRIDGE_FIELD_TYPE
+#define RRC_BRIDGE_FIELD_TYPE "rrc.bridge/1"
+#endif
+#define LXMF_FIELD_CUSTOM_TYPE 0xFB
+#define LXMF_FIELD_CUSTOM_DATA 0xFC
+#define LXMF_FIELD_CUSTOM_META 0xFD
 // One catch-up message must still fit the advertised per-message transfer
 // limit, so the digest is assembled newest-first under a byte budget and only
 // then put back in order. Without this a deep history would compose a message
@@ -157,7 +177,9 @@ void rrc_bridge_remember(const std::string& room, const RNS::Identity& member);
 // Presence is passed in rather than looked up so the bridge stays independent
 // of hub state; the caller already has the member list it just fanned out to.
 void rrc_bridge_publish(const std::string& room, const std::string& nickname,
-                        const RRC::IdentityHash& sender, const std::string& text,
+                        const RRC::IdentityHash& sender,
+                        const RRC::MessageId& message_id, uint64_t timestamp_ms,
+                        const std::string& text,
                         const std::vector<RRC::IdentityHash>& present);
 
 // Compose and store at most one message per call, from the main loop.

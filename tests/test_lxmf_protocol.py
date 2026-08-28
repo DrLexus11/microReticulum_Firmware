@@ -271,7 +271,14 @@ class ComposedMessageLayoutTests(unittest.TestCase):
         source = compose_source()
         body = re.search(r"lxmf_pack_payload\b.*?\n\}", source, re.S)
         self.assertIsNotNone(body, "lxmf_pack_payload not found")
-        packed_order = re.findall(r"//\s*(\d):\s*(\w+)", body.group(0))
+        # Position 3 is written by two branches -- an empty map when no fields
+        # were supplied, or a pre-packed map spliced in -- so collapse repeats
+        # and assert the order of the positions themselves.
+        packed_order = []
+        for position, name in re.findall(r"//\s*(\d):\s*(\w+)", body.group(0)):
+            if packed_order and packed_order[-1][0] == position:
+                continue
+            packed_order.append((position, name))
         self.assertEqual([("0", "seconds"), ("1", "title"),
                           ("2", "content"), ("3", "fields")], packed_order)
 

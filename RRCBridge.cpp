@@ -25,12 +25,24 @@ struct Member {
     RNS::Bytes public_key;
 };
 
+// One room message, kept whole rather than pre-formatted. The readable body is
+// derived from this; so is the structured metadata. Keeping the parts means a
+// client can be given identity, id and original time, none of which survive
+// being flattened into a display string.
+struct Line {
+    RRC::MessageId id{};
+    RRC::IdentityHash sender{};
+    uint64_t timestamp_ms = 0;
+    char nick[RRC_BRIDGE_HISTORY_NICK] = {0};
+    char text[RRC_BRIDGE_HISTORY_TEXT] = {0};
+};
+
 struct Room {
     bool used = false;
     std::string name;
     std::array<Member, RRC_BRIDGE_MAX_MEMBERS> members{};
     // Ring of recent lines, oldest-to-newest by (head + i) % count.
-    char* history = nullptr;          // RRC_BRIDGE_HISTORY_MAX * RRC_BRIDGE_HISTORY_TEXT
+    Line* history = nullptr;          // RRC_BRIDGE_HISTORY_MAX entries
     uint8_t history_head = 0;
     uint8_t history_count = 0;
 };
@@ -40,6 +52,7 @@ struct Pending {
     uint8_t room = 0;
     double timestamp = 0;
     std::string text;
+    RNS::Bytes fields;          // pre-packed; built off the crypto path
     std::array<RRC::IdentityHash, RRC_BRIDGE_MAX_MEMBERS> recipients{};
     uint8_t recipient_count = 0;
     uint8_t next = 0;
@@ -226,49 +239,107 @@ size_t history_depth() {
          ? (size_t)RRC_BRIDGE_HISTORY_MAX : (size_t)rrc_bridge_history;
 }
 
-char* history_slot(Room& room, size_t index) {
-    return room.history + (index * RRC_BRIDGE_HISTORY_TEXT);
+void copy_bounded(char* target, size_t capacity, const std::string& value) {
+    const size_t length = value.size() < (capacity - 1) ? value.size() : (capacity - 1);
+    std::memcpy(target, value.data(), length);
+    target[length] = 0;
 }
 
-void history_append(Room& room, const std::string& line) {
+void history_append(Room& room, const Line& line) {
     if (!room.history || history_depth() == 0) return;
     const size_t depth = history_depth();
     const size_t at = (room.history_head + room.history_count) % depth;
-    char* slot = history_slot(room, at);
-    const size_t length = line.size() < (RRC_BRIDGE_HISTORY_TEXT - 1)
-                        ? line.size() : (RRC_BRIDGE_HISTORY_TEXT - 1);
-    std::memcpy(slot, line.data(), length);
-    slot[length] = 0;
+    room.history[at] = line;
     if (room.history_count < depth) room.history_count++;
     else room.history_head = (uint8_t)((room.history_head + 1) % depth);
 }
 
-// Assemble the catch-up body. Walks newest-first under a byte budget so a deep
-// history cannot compose a message larger than the store will accept, then
-// emits what fits in chronological order -- reading a conversation backwards
-// is worse than reading less of it.
-std::string history_digest(Room& room) {
-    if (!room.history || room.history_count == 0) return std::string();
+// A selection of lines to send as one message. A live relay is a selection of
+// one and a catch-up is a selection of many, so both paths below build the same
+// body and the same metadata from the same code.
+struct Selection {
+    std::array<const Line*, RRC_BRIDGE_HISTORY_MAX> lines{};
+    size_t count = 0;
+};
+
+// Newest-first under a byte budget, returned in chronological order. The budget
+// keeps a deep history from composing a message larger than the store is
+// required to accept; the reordering is because reading a conversation
+// backwards is worse than reading less of it.
+Selection history_select(Room& room) {
+    Selection selection;
+    if (!room.history || room.history_count == 0) return selection;
     const size_t depth = history_depth();
 
     size_t take = 0, budget = 0;
     for (size_t i = 0; i < room.history_count; i++) {
         const size_t index = (room.history_head + room.history_count - 1 - i) % depth;
-        const size_t length = std::strlen(history_slot(room, index)) + 1;
+        const size_t length = std::strlen(room.history[index].text) + 32;
         if (budget + length > RRC_BRIDGE_DIGEST_BUDGET) break;
         budget += length;
         take++;
     }
-    if (take == 0) return std::string();
-
-    std::string out;
-    out.reserve(budget);
     for (size_t i = 0; i < take; i++) {
         const size_t index = (room.history_head + room.history_count - take + i) % depth;
+        selection.lines[selection.count++] = &room.history[index];
+    }
+    return selection;
+}
+
+std::string selection_text(const Selection& selection, const std::string& label) {
+    std::string out;
+    for (size_t i = 0; i < selection.count; i++) {
+        const Line& line = *selection.lines[i];
         if (!out.empty()) out += "\n";
-        out += history_slot(room, index);
+        if (line.nick[0]) { out += "<"; out += line.nick; out += " / "; out += label; out += "> "; }
+        else              { out += "<"; out += label; out += "> "; }
+        out += line.text;
     }
     return out;
+}
+
+// Field order and types are docs/BridgeClientContract.md 3. Built here, on the
+// callback path, because it is pure serialisation -- the cryptography that must
+// not run here happens later, on the main loop.
+RNS::Bytes selection_fields(const Room& room, const Selection& selection) {
+    if (selection.count == 0) return RNS::Bytes();
+    const RNS::Bytes hub = rrc_hub_destination_hash();
+
+    MsgPack::Packer packer;
+    packer.serialize(MsgPack::map_size_t(3));
+
+    packer.serialize((uint8_t)LXMF_FIELD_CUSTOM_TYPE);
+    packer.pack(RRC_BRIDGE_FIELD_TYPE);
+
+    packer.serialize((uint8_t)LXMF_FIELD_CUSTOM_DATA);
+    packer.serialize(MsgPack::map_size_t(3));
+    packer.serialize((uint8_t)0);
+    packer.pack(room.name.c_str());
+    packer.serialize((uint8_t)1);
+    packer.packBinary(hub.data(), hub.size());
+    packer.serialize((uint8_t)2);
+    packer.serialize(MsgPack::arr_size_t(selection.count));
+    for (size_t i = 0; i < selection.count; i++) {
+        const Line& line = *selection.lines[i];
+        packer.serialize(MsgPack::arr_size_t(5));
+        packer.packBinary(line.id.data(), line.id.size());
+        packer.packBinary(line.sender.data(), line.sender.size());
+        packer.pack(line.nick);
+        packer.serialize((uint64_t)line.timestamp_ms);
+        packer.pack(line.text);
+    }
+
+    // Lets a client tell a short history from a truncated one. Without the
+    // oldest timestamp it cannot know whether a gap it sees is real, and a
+    // command log that hides its own gaps is worse than one that admits them.
+    packer.serialize((uint8_t)LXMF_FIELD_CUSTOM_META);
+    packer.serialize(MsgPack::map_size_t(2));
+    packer.serialize((uint8_t)0);
+    packer.serialize((uint64_t)history_depth());
+    packer.serialize((uint8_t)1);
+    packer.serialize((uint64_t)(room.history_count ? room.history[room.history_head].timestamp_ms : 0));
+
+    return RNS::Bytes(packer.data(), packer.size());
 }
 
 // Compose and store one message for one recipient. Returns false when the
@@ -292,7 +363,7 @@ bool deliver(const Room& room, const Member& member, const Pending& pending) {
 
     const RNS::Bytes blob = lxmf_compose_propagated(
         hub_identity, hub_delivery_hash, destination,
-        pending.timestamp, title, content);
+        pending.timestamp, title, content, pending.fields);
     if (!blob) return false;
 
     // Keep bridged traffic inside its share of the store before the store's own
@@ -318,7 +389,9 @@ void queue_backfill(Room& room, Member& member) {
     member.backfilled = true;          // one attempt; never a retry storm
     roster_dirty = true;
 
-    const std::string digest = history_digest(room);
+    const Selection selection = history_select(room);
+    if (selection.count == 0) return;
+    const std::string digest = selection_text(selection, room.name);
     if (digest.empty()) return;
 
     for (auto& entry : queue) {
@@ -327,6 +400,7 @@ void queue_backfill(Room& room, Member& member) {
         entry.room = (uint8_t)(&room - rooms.data());
         entry.timestamp = (double)RNS::Utilities::OS::time();
         entry.text = digest;
+        entry.fields = selection_fields(room, selection);
         entry.recipients[0] = member.hash;
         entry.recipient_count = 1;
         entry.used = true;
@@ -364,11 +438,11 @@ void rrc_bridge_begin(const RNS::Identity& identity) {
     // the resource this board actually runs out of.
     for (auto& room : rooms) {
         if (!room.used || room.history) continue;
-        const size_t bytes = (size_t)RRC_BRIDGE_HISTORY_MAX * RRC_BRIDGE_HISTORY_TEXT;
+        const size_t bytes = (size_t)RRC_BRIDGE_HISTORY_MAX * sizeof(Line);
 #if defined(BOARD_HAS_PSRAM)
-        room.history = (char*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+        room.history = (Line*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
 #endif
-        if (!room.history) room.history = (char*)malloc(bytes);
+        if (!room.history) room.history = (Line*)malloc(bytes);
         if (room.history) std::memset(room.history, 0, bytes);
         else printf("[rrc] no memory for %s history; catch-up disabled\n",
                     room.name.c_str());
@@ -424,7 +498,9 @@ void rrc_bridge_remember(const std::string& room, const RNS::Identity& member) {
 }
 
 void rrc_bridge_publish(const std::string& room, const std::string& nickname,
-                        const RRC::IdentityHash& sender, const std::string& text,
+                        const RRC::IdentityHash& sender,
+                        const RRC::MessageId& message_id, uint64_t timestamp_ms,
+                        const std::string& text,
                         const std::vector<RRC::IdentityHash>& present) {
     if (!running || text.empty()) return;
     const int index = find_room(room);
@@ -458,12 +534,22 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
     // so "#command" and "command" both read as one room. The hub is not named:
     // the message is delivered by this node and its source address already
     // says which node that was.
-    const std::string& label = rooms[index].name;
-    const std::string line = nickname.empty()
-        ? ("<" + label + "> " + text)
-        : ("<" + nickname + " / " + label + "> " + text);
-    pending->text = line;
+    Line line;
+    line.id = message_id;
+    line.sender = sender;
+    line.timestamp_ms = timestamp_ms;
+    copy_bounded(line.nick, sizeof(line.nick), nickname);
+    copy_bounded(line.text, sizeof(line.text), text);
+
+    // Recorded before the selection is built, so the message being relayed is
+    // the newest entry of the catch-up anyone joining a moment later receives.
     history_append(rooms[index], line);
+
+    Selection one;
+    one.lines[0] = &line;
+    one.count = 1;
+    pending->text = selection_text(one, rooms[index].name);
+    pending->fields = selection_fields(rooms[index], one);
 
     for (const auto& member : rooms[index].members) {
         if (!member.used) continue;
