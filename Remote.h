@@ -33,7 +33,29 @@
 
 #define WIFI_UPDATE_INTERVAL_MS 500
 #define WR_SOCKET_TIMEOUT 6
-#define WR_READ_TIMEOUT_MS 6500
+// How long a *connected* client may go without sending readable bytes before
+// the listener reclaims its slot.
+//
+// This was 6500 ms, which is incompatible with how Reticulum keeps a TCP
+// interface alive. RNS sets SO_KEEPALIVE with TCP_KEEPIDLE=5s and lets the
+// kernel prove liveness (TCPInterface.py, set_timeouts_linux); an idle
+// Reticulum link deliberately sends no application data at all, sometimes for
+// minutes. At 6.5 seconds this server therefore closed healthy links on a
+// schedule, and the client reconnected immediately: Rev 1 was observed
+// accepting 17 connections in 200 seconds from one Columba instance -- one
+// every 11.8 seconds, indefinitely.
+//
+// Each of those cycles allocates and frees lwIP socket state, which is
+// DMA-capable internal RAM and so never spills to PSRAM whatever
+// PSRAM_MALLOC_THRESHOLD is set to. That is the shape of the internal-heap
+// slide that takes this board off the air, and it is why the timeout matters
+// far beyond a slot being held.
+//
+// Five minutes still reclaims a genuinely wedged client -- the case the
+// original short timeout was reaching for -- while leaving normal quiet
+// traffic alone. Peer death is detected long before that by TCP keepalive,
+// which is what connected() reports on.
+#define WR_READ_TIMEOUT_MS 300000
 #define WR_RECONNECT_INTERVAL_MS 10000
 
 uint32_t wifi_update_interval_ms = WIFI_UPDATE_INTERVAL_MS;
