@@ -6,23 +6,26 @@ the branch is sequenced and what must be true before it starts.
 
 ---
 
-## Do not start stage 1 yet
+## Blocker status
 
-This branch is deliberately opened early so the work has a home, but it is
-**blocked on the flash-headroom work** on `feature/flash-headroom`. Two reasons,
-both concrete:
+1. **Space -- cleared.** The repartition is merged. `impr-rad01-rev2-uart` now
+   links at **44.5% of a 4 MB application partition** (1867893 bytes), against
+   the 90.2% of 2 MB that made a stack swap impossible. Both stacks can be
+   linked at once with room to spare.
+2. **The size argument -- still unmeasured.** The claim that NimBLE returns
+   headroom rests on a link-map reading that proved unreliable: it attributed
+   44 MB to a 1.8 MB image. `RAD01_NO_BLE` does not compile, so no
+   Bluetooth-free image has ever been built to compare against. Until that
+   number exists, "NimBLE is smaller" is folklore, and the first commit below is
+   what turns it into a number.
 
-1. **There is nowhere to put it.** `impr-rad01-rev2` is at 90.2% of a 2 MB
-   application partition. A stack replacement briefly links both stacks, and
-   that does not fit.
-2. **The size argument is unmeasured.** The claim that NimBLE returns headroom
-   rests on a link-map reading that proved unreliable -- it attributed 44 MB to
-   a 1.8 MB image. `RAD01_NO_BLE` does not compile, so nobody has built a
-   Bluetooth-free image to compare against. Until that number exists, "NimBLE is
-   smaller" is folklore.
-
-Start when the partition is enlarged and a Bluetooth-free image size is
-recorded.
+3. **Carried in from the bridge branch:** Rev 1 resets roughly every two hours
+   for reasons not yet known, with ample heap free and with no observer
+   attached. See [`CarriedIssues.md`](CarriedIssues.md). This matters here
+   specifically: a dropped BLE link at the two-hour mark could be the new stack
+   or could be that, and stage 1 acceptance below asks for a 30-minute hold
+   which sits uncomfortably close. Run acceptance on Rev 2, or settle the resets
+   first.
 
 ## First commit on this branch should be the measurement
 
