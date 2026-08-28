@@ -93,6 +93,53 @@ The Reticulum `BLEInterface` only after stage 1 is proven on hardware. Do not
 combine them: stage 1 is a stack swap with a crisp pass/fail, stage 2 is a new
 interface with its own framing and MTU concerns.
 
+## The evidence that actually justifies the port
+
+Recorded because the branch's original justification did not survive contact
+with the code, and this one is worth more than either of the two guesses that
+preceded it.
+
+**The advertisement is now provably correct, and the phone still cannot see it.**
+Verified from the Deck's own adapter against a running Rev 2:
+
+    Device 80:B5:4E:F4:C7:C5 (public)
+        Name:        RNode 87D8
+        Appearance:  0x0080 (128)   Icon: computer
+        UUID:        Nordic UART Service (6e400001-...)
+        AdvertisingFlags: 06     -- LE General Discoverable | BR/EDR Not Supported
+
+Continuous (seen repeatedly with the pairing window closed), at -35 dBm, and
+connectable -- nRF Connect establishes a link. BlueZ resolves every field. A
+phone's Bluetooth settings still does not list it.
+
+**The same boards paired directly from Android's own Bluetooth settings when
+running Meshtastic, which uses NimBLE.** Same hardware, same phone, different
+stack. That rules out the phone, rules out Android's treatment of LE-only
+peripherals, and rules out the advertising payload -- which has now been
+measured rather than assumed.
+
+So the remaining difference is Bluedroid itself, in details that are not visible
+from the fields the Arduino wrapper exposes. Chasing them one at a time against
+an unknown reference is precisely the "plausible fix for an unmeasured fault"
+this project has lost most of its time to. Porting to the stack that is known to
+work on this exact hardware is the cheaper and more honest path.
+
+**This is a better reason to port than either previously recorded.** The plan
+originally blamed missing `setSecurityAuth`/`setSecurityIOCap`; both were already
+set. The next hypothesis was the 35-second pairing gate; that was a real defect,
+now fixed, but the device raised a pairing prompt on the phone once the window
+was open, so it was not the blocker either. The size argument (580 KB, measured)
+is real but was never urgent. Discoverability from a phone's own settings is the
+product requirement, and a working reference implementation on the same boards
+is the strongest evidence available that NimBLE delivers it.
+
+**Acceptance is unchanged and now has a baseline:** the device must appear in
+Android's Bluetooth settings by name, with no third-party app, exactly as
+Meshtastic does on the same hardware.
+
+`h2zero/NimBLE-Arduino` 2.5.1 is available and documents a migration path from
+the Bluedroid API, which `BLESerial.cpp` uses directly.
+
 ## Watch items specific to this branch
 
 - **Bond persistence across reboot and firmware update.** If bonds do not
