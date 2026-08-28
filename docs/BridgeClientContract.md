@@ -4,9 +4,10 @@ How a client presents one continuous room conversation when the messages arrive
 by two different routes: live over an RRC Link, and after the fact over LXMF
 from the bridge.
 
-This is a **design contract, not an implemented feature**. The fields described
-in §3 are not emitted yet. What ships today is §2, and §2 alone is not enough
-to stitch reliably -- that is the reason this document exists.
+§3 is **implemented and emitted**. §2 describes the human-readable body, which
+is unchanged and is what stock clients still see; §3 is the structured
+metadata a merging client should read instead. §5 is a product decision that
+remains open.
 
 ## 1. Why there are two routes at all
 
@@ -59,7 +60,7 @@ conversation, for four reasons:
 4. **One timestamp covers a whole catch-up.** The digest collapses many messages
    under the moment it was composed, so time-ordered merging is impossible.
 
-## 3. The proposed encoding: `rrc.bridge/1`
+## 3. The encoding: `rrc.bridge/1`
 
 LXMF reserves fields for exactly this and stock clients ignore what they do not
 recognise, so adding these changes nothing for existing software.
@@ -136,9 +137,10 @@ in one process, sharing one identity and one message store.
 Two things to settle before that work starts, because both are cheaper to
 decide than to retrofit:
 
-- **Emit the §3 fields first.** A client built against §2 will grow body-parsing
-  that has to be torn out later, and the wire format is easier to change while
-  there is one implementation of it.
+- **§3 is done**, so a client can be built against the fields from the start
+  rather than growing body-parsing that has to be torn out.
 - **Decide §5.** Whether rooms need end-to-end sender attribution determines
   whether RRC v1 is the final protocol for the backbone or an interim one, and
-  that shapes the client's data model rather than just its rendering.
+  that shapes the client's data model rather than just its rendering. The
+  identifier is versioned so that adding per-sender signatures later is a
+  `rrc.bridge/2`, not a break.
