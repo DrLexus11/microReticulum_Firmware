@@ -146,6 +146,53 @@ pairing.
 `h2zero/NimBLE-Arduino` 2.5.1 is available and documents a migration path from
 the Bluedroid API, which `BLESerial.cpp` uses directly.
 
+## Outcome: Bluetooth works, on Bluedroid, with no port
+
+Tested on Rev 2 after the advertising fix and the provisioning surface:
+
+- **Discovery** -- found by an app-side scanner. The advertisement is verifiably
+  correct: name, appearance, general-discoverable flags, service UUID in the scan
+  response, continuous, -35 dBm, connectable, every field resolved by BlueZ.
+- **Pairing** -- the pairing window opens over provisioning, and the device
+  raises a pairing prompt on the phone.
+- **Link stability** -- held from connection until the operator disconnected it,
+  reported as holding "like never before".
+
+That is stage 1's acceptance met, without a single line of NimBLE.
+
+**What likely fixed the link, stated as a possibility rather than a finding.**
+The advertising rewrite is the only change on this branch that touches the radio
+path: previously the 31-byte advertisement carried flags, TX power, a connection
+interval hint and an 18-byte 128-bit service UUID, with the name displaced into
+the scan response. It is now well-formed and comfortably within budget. Whether
+that is what improved the hold is *not measured* -- there is no controlled
+before/after of link duration, only an operator impression against prior
+experience. Do not write it up as proven.
+
+## What this branch is now for
+
+Size, and nothing else. 580 KB of flash and 27 KB of RAM, measured. That is
+worth having and it is an optimisation to schedule, not a defect to fix.
+
+Anything further should start from a defect that has been reproduced. One
+candidate remains genuinely untested: a long hold **with traffic across it**.
+The half-open-link problem -- `serial_write()` blocking on `notify()` -- is still
+only documented, never reproduced, and an idle link does not exercise it.
+
+## A constraint found on the way, unrelated to any stack
+
+**A connected BLE client takes over the KISS host, and the serial console and
+provisioning link go silent with it.** Diagnostics and provisioning *responses*
+both route to whichever host is attached, so while nRF Connect was connected the
+board appeared dead over UART -- no output, no answers -- while `uptime` later
+proved it had run continuously throughout.
+
+This is the same behaviour that hid the `[heap]` line while Columba held the TCP
+link, and it is worth treating as a real operational limit: a field node cannot
+be managed over serial while a phone is attached to it, and a board that looks
+hung may simply be talking to someone else. Any future diagnosis of "the board
+stopped responding" should rule this out first.
+
 ## Watch items specific to this branch
 
 - **Bond persistence across reboot and firmware update.** If bonds do not
