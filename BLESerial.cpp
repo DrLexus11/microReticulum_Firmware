@@ -254,7 +254,21 @@ void BLESerial::SetupSerialService() {
 
   TxCharacteristic = SerialService->createCharacteristic(BLE_TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);
   TxCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM);
-  TxCharacteristic->addDescriptor(new BLE2902());
+
+  // The CCCD needs write permission of its own, and it was never given any.
+  //
+  // A client enables notifications by *writing* this descriptor. The
+  // characteristic was declared read-only-under-MITM and the descriptor
+  // inherited nothing, so the subscribe could be refused -- and a client that
+  // cannot subscribe has no reason to go on and send commands. Observed
+  // exactly: connect, a full bond (auth_mode 0x0d: bond + MITM + SC), and then
+  // not one byte ever written to the RX characteristic, over and over.
+  //
+  // Granting it the same authenticated access as the characteristic keeps the
+  // security requirement identical while making the subscribe possible.
+  BLE2902 *tx_cccd = new BLE2902();
+  tx_cccd->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
+  TxCharacteristic->addDescriptor(tx_cccd);
   TxCharacteristic->setNotifyProperty(true);
   TxCharacteristic->setReadProperty(true);
 
