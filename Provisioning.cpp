@@ -22,6 +22,7 @@
 #include "Boards.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
+#include "RRCBridge.h"
 #endif
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
@@ -338,6 +339,32 @@ static void register_provisioning_namespaces() {
           rrc_hub_pong_timeout_seconds = static_cast<uint32_t>(v.as_int());
           return true;
         }, []() { return static_cast<fint_t>(rrc_hub_pong_timeout_seconds); })
+#if defined(RRC_LXMF_BRIDGE)
+      // Which rooms outlive a member's connection. Ad-hoc rooms stay ephemeral;
+      // these are mirrored to LXMF so a responder who was out of range receives
+      // them on their next sync. See docs/RRCRequirements.md 12c.
+      .field_bool("Bridge to LXMF", PROV_RRC_BRIDGE_ENABLED, FF_REBOOT_REQUIRED,
+        rrc_bridge_enabled,
+        [](const Value& v) { rrc_bridge_enabled = v.as_bool(); return true; },
+        []() { return rrc_bridge_enabled; })
+      .field_string("Bridged Rooms", PROV_RRC_BRIDGE_ROOMS, FF_REBOOT_REQUIRED,
+        rrc_bridge_rooms, sizeof(rrc_bridge_rooms)-1,
+        [](const Value& v) {
+          const std::string& list = v.as_string();
+          if (list.size() >= sizeof(rrc_bridge_rooms)) return false;
+          snprintf(rrc_bridge_rooms, sizeof(rrc_bridge_rooms), "%s", list.c_str());
+          return true;
+        },
+        []() { return rrc_bridge_rooms; })
+      // Lines of catch-up a member gets on first joining a bridged room. This
+      // is the difference between a command room someone can walk into and one
+      // that only works if you were already there. 0 disables it.
+      .field_int("Join History Lines", PROV_RRC_BRIDGE_HISTORY,
+        FF_REBOOT_REQUIRED, rrc_bridge_history, 0, RRC_BRIDGE_HISTORY_MAX,
+        [](const Value& v) {
+          rrc_bridge_history = static_cast<uint8_t>(v.as_int()); return true;
+        }, []() { return static_cast<fint_t>(rrc_bridge_history); })
+#endif
       .metric_bytes("Destination", PROV_RRC_DESTINATION,
         []() { return rrc_hub_destination_hash(); })
       .metric_bool("Running", PROV_RRC_RUNNING,
@@ -370,6 +397,20 @@ static void register_provisioning_namespaces() {
         []() { return static_cast<fint_t>(rrc_hub_hello_timeout_count()); })
       .metric_int("PONG Timeouts", PROV_RRC_PONG_TIMEOUTS,
         []() { return static_cast<fint_t>(rrc_hub_pong_timeout_count()); })
+#if defined(RRC_LXMF_BRIDGE)
+      // Roster size is the one to watch: a bridged room with no roster
+      // delivers nothing and looks identical to a healthy idle one.
+      .metric_int("Bridge Roster", PROV_RRC_BRIDGE_MEMBERS,
+        []() { return static_cast<fint_t>(rrc_bridge_member_count()); })
+      .metric_int("Bridge Queued", PROV_RRC_BRIDGE_QUEUED,
+        []() { return static_cast<fint_t>(rrc_bridge_queue_depth()); })
+      .metric_int("Bridge Delivered", PROV_RRC_BRIDGE_DELIVERED,
+        []() { return static_cast<fint_t>(rrc_bridge_delivered_count()); })
+      .metric_int("Bridge Dropped", PROV_RRC_BRIDGE_DROPPED,
+        []() { return static_cast<fint_t>(rrc_bridge_dropped_count()); })
+      .metric_int("Bridge History Depth", PROV_RRC_BRIDGE_HISTDEPTH,
+        []() { return static_cast<fint_t>(rrc_bridge_history_depth()); })
+#endif
       .end();
 #endif
 
@@ -588,6 +629,32 @@ static void register_provisioning_namespaces() {
     // the metric at 0 on the platforms where it does work.
     .metric_int("Loop Stack Free Min", PROV_METRICS_DEV_STACK,
       []() { return (fint_t)loop_stack_free_min; })
+    // Memory, over provisioning rather than only on the console.
+    //
+    // The periodic [heap] line goes to whichever KISS host is attached, so on
+    // a node with a client connected -- the normal state for a deployed board
+    // -- it is not visible on the USB console at all. That is exactly when
+    // memory matters: Rev 1 was found sliding to 3% free and restarting under
+    // a client it was serving, and the console said nothing because the client
+    // was receiving the evidence.
+    //
+    // Internal free and the largest internal block are reported separately
+    // because they fail differently: a healthy total with a small largest
+    // block is fragmentation, which capping tables does not fix. PSRAM free is
+    // here to show whether the spill threshold is doing anything at all --
+    // 8 MB sitting idle beside an exhausted internal heap is the signature
+    // this board has already produced once.
+    .metric_int("Heap Internal Free", PROV_METRICS_DEV_HEAP,
+      []() { return (fint_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL); })
+    .metric_int("Heap Largest Block", PROV_METRICS_DEV_HEAPBLK,
+      []() { return (fint_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL); })
+    .metric_int("PSRAM Free", PROV_METRICS_DEV_PSRAM,
+      []() { return (fint_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM); })
+    // Uptime makes a restart visible to anything polling metrics. Without it a
+    // board that reboots between two polls is indistinguishable from one that
+    // stayed up, which is how Rev 1's restarts went unnoticed for so long.
+    .metric_int("Uptime Seconds", PROV_METRICS_DEV_UPTIME,
+      []() { return (fint_t)(millis() / 1000); })
 #endif
     .metric_float("Battery Voltage", PROV_METRICS_DEV_BATV, []() { return battery_voltage; })
     .metric_float("Battery Percent", PROV_METRICS_DEV_BATP, []() { return battery_percent; })

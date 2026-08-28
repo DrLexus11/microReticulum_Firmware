@@ -76,6 +76,10 @@
 // whole Reticulum stack runs there, so this is the number that goes to zero
 // before the board panics in the allocator with no other warning.
 #define PROV_METRICS_DEV_STACK  5
+#define PROV_METRICS_DEV_HEAP     6
+#define PROV_METRICS_DEV_HEAPBLK  7
+#define PROV_METRICS_DEV_PSRAM    8
+#define PROV_METRICS_DEV_UPTIME   9
 
 #define PROV_METRICS_LORA_FREQ  1
 #define PROV_METRICS_LORA_BW    2
@@ -142,6 +146,9 @@
 #define PROV_RRC_RATE_PER_MINUTE   7
 #define PROV_RRC_PING_INTERVAL     8
 #define PROV_RRC_PONG_TIMEOUT      9
+#define PROV_RRC_BRIDGE_ENABLED    10
+#define PROV_RRC_BRIDGE_ROOMS      11
+#define PROV_RRC_BRIDGE_HISTORY    12
 
 #define PROV_RRC_DESTINATION       32
 #define PROV_RRC_RUNNING           33
@@ -159,6 +166,11 @@
 #define PROV_RRC_IDENT_TIMEOUTS    45
 #define PROV_RRC_HELLO_TIMEOUTS    46
 #define PROV_RRC_PONG_TIMEOUTS     47
+#define PROV_RRC_BRIDGE_MEMBERS    48
+#define PROV_RRC_BRIDGE_QUEUED     49
+#define PROV_RRC_BRIDGE_DELIVERED  50
+#define PROV_RRC_BRIDGE_DROPPED    51
+#define PROV_RRC_BRIDGE_HISTDEPTH  52
 
 // Set true once Provisioning::Provisioner::begin() has run.
 extern bool provisioning_started;

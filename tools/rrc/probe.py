@@ -259,29 +259,49 @@ class RRCClient:
     def join(self, room):
         start = self.snapshot()
         self.send(T_JOIN, room=room)
+        # The member list in JOINED is optional advisory data (RRCRequirements
+        # 7, type 11), so matching on it makes the probe reject conformant
+        # hubs that omit it -- rrcd sends JOINED with no body at all, and this
+        # predicate reported that as "did not receive JOINED" while the join
+        # had in fact succeeded. Match the confirmation; verify the list only
+        # when the hub chose to send one.
         joined = self.wait_for(
             start,
             lambda value: value.get(K_T) == T_JOINED
-            and value.get(K_ROOM) == room
-            and member_list_contains(value, self.identity.hash),
+            and value.get(K_ROOM) == room,
             "JOINED for %s" % room,
         )
         if joined is None:
             raise ProbeFailure("%s did not receive JOINED for %s" % (self.nickname, room))
+        if joined.get(K_BODY) is not None and not member_list_contains(
+            joined, self.identity.hash
+        ):
+            raise ProbeFailure(
+                "%s received JOINED for %s carrying a member list that omits it"
+                % (self.nickname, room)
+            )
         return joined
 
     def part(self, room):
         start = self.snapshot()
         self.send(T_PART, room=room)
+        # Same optional-advisory member list as JOINED: match the confirmation,
+        # check the list only when one was sent.
         parted = self.wait_for(
             start,
             lambda value: value.get(K_T) == T_PARTED
-            and value.get(K_ROOM) == room
-            and member_list_contains(value, self.identity.hash),
+            and value.get(K_ROOM) == room,
             "PARTED for %s" % room,
         )
         if parted is None:
             raise ProbeFailure("%s did not receive PARTED for %s" % (self.nickname, room))
+        if parted.get(K_BODY) is not None and not member_list_contains(
+            parted, self.identity.hash
+        ):
+            raise ProbeFailure(
+                "%s received PARTED for %s carrying a member list that omits it"
+                % (self.nickname, room)
+            )
         return parted
 
     def wait_message(self, start, room, body, source, nickname):
@@ -419,7 +439,7 @@ def run_probe(args):
             and member_list_contains(value, identity_b.hash),
             "B disconnect notification",
         )
-        if departed is None:
+        if departed is None and args.require_notifications:
             raise ProbeFailure("A did not observe B's disconnect cleanup")
 
         validate_welcome(client_b.connect(), args.expect_hub_name)
@@ -468,6 +488,15 @@ def build_parser():
         default=os.environ.get("RNS_CONFIGDIR"),
         help="Reticulum config directory (default: RNS_CONFIGDIR or normal user config)",
     )
+    # PARTED on a peer's disconnect is a notification the spec makes optional
+    # ("may notify existing members", RRCRequirements 7). Our firmware sends
+    # it and its acceptance depends on it, so this stays on by default; turn
+    # it off to run the probe against a conformant hub that omits it, such as
+    # rrcd.
+    parser.add_argument("--no-require-notifications", dest="require_notifications",
+                        action="store_false", default=True,
+                        help="tolerate a hub that does not notify members of "
+                             "joins and disconnects")
     parser.add_argument("--json", action="store_true")
     return parser
 
