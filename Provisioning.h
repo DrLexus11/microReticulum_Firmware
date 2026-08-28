@@ -54,6 +54,14 @@
 #define PROV_NS_IFAC_UDP        111
 #define PROV_NS_SECURE_NODE     112
 #define PROV_NS_RRC             113
+#define PROV_NS_BLUETOOTH       114
+
+#define PROV_BT_ENABLED            1
+#define PROV_BT_PAIR               2
+
+#define PROV_BT_STATE             32
+#define PROV_BT_PASSKEY           33
+#define PROV_BT_DEVNAME           34
 
 #define PROV_GENERAL_KISS_LOG        1
 #define PROV_GENERAL_LORA_MODE       2

@@ -23,6 +23,30 @@
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #include "RRCBridge.h"
+
+#if (HAS_BLUETOOTH == true || HAS_BLE == true) && MCU_VARIANT == MCU_ESP32
+// Declared rather than included. Config.h cannot be included here -- it collides
+// on macro names -- and Bluetooth.h is a definitions header pulled into the
+// sketch translation unit. These all have external linkage, so declaring them
+// links correctly, and doing it explicitly keeps the guard above resting only on
+// macros Boards.h actually provides. Guarding on a macro this file cannot see
+// has silently dropped provisioning fields twice in this project.
+extern uint8_t bt_state;
+extern uint32_t pairing_pin;
+extern char bt_devname[11];
+void bt_start();
+void bt_stop();
+void bt_conf_save(bool);
+void bt_enable_pairing();
+void bt_disable_pairing();
+
+// Mirrors Config.h, which is the source of truth. These are reported to hosts
+// over KISS, so they are effectively protocol constants and do not drift.
+#define PROV_BT_STATE_NA        0xff
+#define PROV_BT_STATE_OFF       0x00
+#define PROV_BT_STATE_PAIRING   0x02
+#define PROV_BT_STATE_CONNECTED 0x03
+#endif
 #endif
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
@@ -283,6 +307,57 @@ static void register_provisioning_namespaces() {
 #endif
 
 #if defined(RRC_HUB)
+#if (HAS_BLUETOOTH == true || HAS_BLE == true) && MCU_VARIANT == MCU_ESP32
+  // ----- Bluetooth -----
+  //
+  // There was no provisioning surface for Bluetooth at all, and that is most of
+  // why pairing "did not work". The stack is configured correctly --
+  // ESP_LE_AUTH_REQ_SC_MITM_BOND and ESP_IO_CAP_OUT are already set, which is
+  // bonding, MITM and Secure Connections with a display-only IO capability --
+  // but bt_security_request_callback() rejects every pairing attempt unless
+  // bt_allow_pairing is true, and that is only true for 35 seconds after an
+  // explicit trigger. Until now the only triggers were a KISS frame nothing
+  // sends by hand and a five-second button hold.
+  //
+  // So a phone tapping the device in its Bluetooth settings was refused, while
+  // a GATT explorer that never requests pairing appeared to work. That is the
+  // reported symptom exactly, and it is not a stack defect.
+  //
+  // The passkey is exposed because on a board with no display there is
+  // otherwise no way to learn it. It is BLE_FIXED_PASSKEY on such boards, a
+  // compile-time constant, so this reveals nothing the firmware image does not
+  // already contain -- and it is read over the same link that can already
+  // reflash and reconfigure the node.
+  Provisioner::instance()
+    .register_namespace("Bluetooth", PROV_NS_BLUETOOTH)
+      .field_bool("Enabled", PROV_BT_ENABLED, FF_LIVE_APPLY,
+        bt_state != PROV_BT_STATE_OFF && bt_state != PROV_BT_STATE_NA,
+        [](const Value& v) {
+          if (v.as_bool()) { bt_start(); bt_conf_save(true); }
+          else             { bt_stop();  bt_conf_save(false); }
+          return true;
+        },
+        []() { return bt_state != PROV_BT_STATE_OFF && bt_state != PROV_BT_STATE_NA; })
+      // Write true to open the pairing window. Not a stored setting: it is a
+      // momentary action, and it reads back false because the window closes
+      // itself after BT_PAIRING_TIMEOUT.
+      .field_bool("Pair Now", PROV_BT_PAIR, FF_LIVE_APPLY, false,
+        [](const Value& v) {
+          if (!v.as_bool()) { bt_disable_pairing(); return true; }
+          if (bt_state == PROV_BT_STATE_OFF) { bt_start(); bt_conf_save(true); }
+          if (bt_state != PROV_BT_STATE_CONNECTED) { bt_enable_pairing(); }
+          return true;
+        },
+        []() { return bt_state == PROV_BT_STATE_PAIRING; })
+      .metric_int("State", PROV_BT_STATE,
+        []() { return static_cast<fint_t>(bt_state); })
+      .metric_int("Pairing Passkey", PROV_BT_PASSKEY,
+        []() { return static_cast<fint_t>(pairing_pin); })
+      .metric_string("Device Name", PROV_BT_DEVNAME,
+        []() { return bt_devname; })
+      .end();
+#endif
+
   // ----- Ephemeral RRC group-chat hub -----
   // Configuration is persisted and applied on reboot because the Destination,
   // bounded state engine and timers are constructed during RNS startup.
