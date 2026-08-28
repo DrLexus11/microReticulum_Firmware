@@ -106,11 +106,23 @@ size_t BLESerial::write(uint8_t byte) {
 bool BLESerial::checkMTU() {
   if (ble_server == nullptr || ble_server->getConnectedCount() <= 0) return false;
   const uint16_t negotiated = ble_server->getPeerMTU(ble_server->getConnId());
-  if (negotiated < MIN_MTU) return false;
+  if (negotiated < MIN_MTU) {
+    if (!mtu_probe_logged) {
+      mtu_probe_logged = true;
+      printf("[bt] mtu probe: peer reports %u, below MIN_MTU %u; still %u\n",
+             (unsigned)negotiated, (unsigned)MIN_MTU, (unsigned)maxTransferSize);
+    }
+    return false;
+  }
   peerMTU = negotiated;
   // Three bytes of ATT notification header come off the usable payload.
   const uint16_t usable = (uint16_t)(negotiated - 3);
   maxTransferSize = (usable < BLE_BUFFER_SIZE) ? usable : (uint16_t)BLE_BUFFER_SIZE;
+  // Logged here rather than at the call sites: write() resolves this silently
+  // on the first byte, so a log in flush() never fired and the absence of a
+  // line looked like a failure when it was not.
+  printf("[bt] mtu negotiated: %u (payload %u)\n",
+         (unsigned)peerMTU, (unsigned)maxTransferSize);
   return true;
 }
 

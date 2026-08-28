@@ -127,6 +127,7 @@ public:
   // Public so the connect callback can log what was negotiated. A silently
   // wrong MTU is what made this class drop most of every frame.
   uint16_t peerMTU = 0;
+  bool mtu_probe_logged = false;
   uint16_t maxTransferSize = BLE_BUFFER_SIZE;
   bool checkMTU();
 

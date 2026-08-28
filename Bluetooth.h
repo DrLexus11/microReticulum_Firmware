@@ -350,6 +350,7 @@ uint32_t bt_pairing_started = 0;
       // -- so it is resolved lazily on the first write. Reset it here so each
       // new peer is measured rather than inheriting the last one's value.
       SerialBT.peerMTU = 0;
+      SerialBT.mtu_probe_logged = false;
       // Serial.printf("Connected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;
