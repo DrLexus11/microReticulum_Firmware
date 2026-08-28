@@ -49,11 +49,32 @@ number.
 
 Pairing and link stability, in one reviewable piece:
 
-- NimBLE in place of Bluedroid, behind the existing `HAS_BLE` gate.
-- `setSecurityAuth(BOND | MITM | SC)` and `setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY)`.
-  These two lines are the actual defect: without bonding the phone cannot store
-  the pairing, and without a declared IO capability the OS has no pairing dialog
-  to present. That is why nRF Connect worked and Settings did not.
+**The stated defect was wrong, and this was checked before porting anything.**
+Bluedroid already sets `ESP_LE_AUTH_REQ_SC_MITM_BOND` -- bonding, MITM and
+Secure Connections -- and `ESP_IO_CAP_OUT`, which is display-only. Those are
+exactly the settings this plan proposed to add via `setSecurityAuth` and
+`setSecurityIOCap`. Porting to NimBLE and setting them would have changed
+nothing about pairing, and the port would then have been credited with a fix it
+did not make.
+
+The real reason a phone could not pair is a gate, not a stack.
+`bt_security_request_callback()` returns false unless `bt_allow_pairing` is set,
+and that is only true for 35 seconds after an explicit trigger -- a KISS frame
+nothing sends by hand, or a five-second button hold. A phone tapping the device
+in its Bluetooth settings is refused outright; a GATT explorer that never
+requests pairing connects fine. That is the reported symptom precisely.
+
+Fixed by giving Bluetooth a provisioning surface (namespace 114): enable, a
+"Pair Now" action that opens the window, and read-back of state, device name and
+the pairing passkey -- which on a display-less board was otherwise unknowable,
+so pairing could not be completed even with the window open.
+
+What remains for a NimBLE port is therefore **size and link stability, not
+pairing**:
+
+- NimBLE in place of Bluedroid, behind the existing `HAS_BLE` gate. All
+  Bluetooth costs 580 KB of flash and 27 KB of RAM (measured, `FlashHeadroom.md`
+  §3.2), which is the ceiling on what the port can return.
 - Keep the existing passkey policy: random with a display, `BLE_FIXED_PASSKEY`
   otherwise. That part was never wrong.
 - Decouple BLE delivery from the main loop. A half-open link currently blocks
