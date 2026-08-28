@@ -18,12 +18,16 @@ and the bounded deferral while clients are associated. The knobs are
 `WIFI_AP_FALLBACK_MS`, `WIFI_AP_RETRY_STA_MS` and `WIFI_AP_MAX_DEFER_MS` in
 `Config.h`.
 
-What remains is **not implementation**: the settings are compile-time only with
-no provisioning surface, and the acceptance listed in
-[`docs/FeatureRoadmap.md`](FeatureRoadmap.md) -- AP/STA transitions, recovery
-timing, client reconnection, secure-node interaction and LoRa coexistence -- has
-not been run as a deliberate exercise. Anything below still marked as a proposal
-should be read with that in mind.
+The timing is provisionable at runtime as of 2026-08-27, and the acceptance was
+run deliberately on 2026-08-27 and 28 -- automatic fallback, the AP seen from a
+host, LoRa working alongside it, and the return path in both its deferring and
+its overriding form. The evidence is at the end of this document.
+
+What remains: a **per-node PSK policy**. The MAC-derived key is a speed bump
+rather than a credential -- see `docs/PrivateMesh.md` §6a -- and secure
+deployments need something better. Secure-node interaction is also still
+untested. Anything below still marked as a proposal should be read with that in
+mind.
 
 ---
 

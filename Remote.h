@@ -509,14 +509,29 @@ void wifi_update_status() {
   }
 
 #if WIFI_AP_FALLBACK_MS > 0
+  // Keep the client-count mirror truthful whenever the fallback is up, and
+  // clear it the moment it is not.
+  //
+  // Updating it only inside the retry window was wrong three ways: it went stale
+  // for a whole retry interval (ten minutes by default), it kept its last value
+  // for ever once the node rejoined the station network, and -- worst -- it
+  // never updated at all on a node with no configured SSID, because that block
+  // is gated on `wr_ssid` being set. A never-provisioned node is exactly the one
+  // that goes straight to AP mode and stays there, so the operator asking "is
+  // anyone actually connected to this thing?" would always have been told zero.
+  if (wifi_ap_fallback_active) {
+    wifi_ap_client_count = WiFi.softAPgetStationNum();
+  } else if (wifi_ap_client_count != 0) {
+    wifi_ap_client_count = 0;
+  }
+
   // While serving the fallback AP, look for the configured network again --
   // but ONLY when nobody is associated. Dropping a resident mid-message to go
   // chase an uplink is the wrong trade; the uplink can wait until they leave.
   if (wifi_ap_fallback_active && wr_ssid[0] != 0x00 &&
       millis() - wifi_ap_last_sta_retry >= wifi_ap_retry_sta_ms) {
     wifi_ap_last_sta_retry = millis();
-    uint8_t stations = WiFi.softAPgetStationNum();
-    wifi_ap_client_count = stations;
+    const uint8_t stations = wifi_ap_client_count;
     if (stations > 0 && wifi_ap_deferring_since == 0) { wifi_ap_deferring_since = millis(); }
     bool defer_expired = (wifi_ap_deferring_since != 0 &&
                           millis() - wifi_ap_deferring_since >= wifi_ap_max_defer_ms);

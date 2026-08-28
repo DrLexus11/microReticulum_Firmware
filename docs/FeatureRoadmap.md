@@ -43,7 +43,7 @@ and has passed automated and stock NomadNet/Eridanus mixed-board acceptance. Do
 not expand it into history, Resources, moderation or a Columba fork during the
 MVP.
 
-### 2. Automatic disaster SoftAP — **implemented; provisioning and acceptance outstanding**
+### 2. Automatic disaster SoftAP — **implemented and accepted; PSK policy outstanding**
 
 **Correction, 2026-08-27.** This item claimed the fallback was unimplemented. It
 is not: `Remote.h` has carried the state machine for some time --
@@ -52,16 +52,21 @@ timer, the retry window and the bounded deferral while clients are associated.
 The roadmap simply was not updated when it landed, and the stale line was read
 as a plan. Believing a roadmap over the source is how work gets scheduled twice.
 
-What actually remains:
+**Update, 2026-08-28.** Two of the three remaining items are now done, and this
+entry has been corrected a second time rather than left to go stale again:
 
-1. **A provisioning surface.** `WIFI_AP_FALLBACK_MS`, `WIFI_AP_RETRY_STA_MS` and
-   `WIFI_AP_MAX_DEFER_MS` are compile-time constants in `Config.h`. A deployed
-   node cannot have its fallback timing adjusted without a reflash, which is the
-   wrong shape for a behaviour whose correct values depend on the building.
-2. **Deliberate acceptance**, per the list below. The behaviour works in normal
-   use, but the transitions have never been exercised on purpose.
-3. **A per-node PSK policy.** The MAC-derived key is a speed bump, not a
-   credential -- see `docs/PrivateMesh.md` §6a.
+1. ~~A provisioning surface.~~ **Done.** The three timers are live-apply fields
+   in `PROV_NS_NETWORK`, in seconds, alongside read-only AP state. Verified by
+   writing them on hardware without a reboot, and by an out-of-range write being
+   refused rather than clamped.
+2. ~~Deliberate acceptance.~~ **Done.** Automatic fallback on station failure,
+   the AP observed from a host's own WiFi scan, LoRa working alongside it, and
+   the return path in both forms -- deferring while a client is attached, then
+   overriding that deferral at the ceiling. Evidence in
+   [`docs/MeshResilience.md`](MeshResilience.md).
+3. **A per-node PSK policy** -- still outstanding. The MAC-derived key is a
+   speed bump, not a credential; see `docs/PrivateMesh.md` §6a. Secure-node
+   interaction is also still untested.
 
 Why it was placed second:
 
