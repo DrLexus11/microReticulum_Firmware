@@ -22,6 +22,7 @@
 #include "Boards.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
+#include "RRCBridge.h"
 #endif
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
@@ -338,6 +339,24 @@ static void register_provisioning_namespaces() {
           rrc_hub_pong_timeout_seconds = static_cast<uint32_t>(v.as_int());
           return true;
         }, []() { return static_cast<fint_t>(rrc_hub_pong_timeout_seconds); })
+#if defined(RRC_LXMF_BRIDGE)
+      // Which rooms outlive a member's connection. Ad-hoc rooms stay ephemeral;
+      // these are mirrored to LXMF so a responder who was out of range receives
+      // them on their next sync. See docs/RRCRequirements.md 12c.
+      .field_bool("Bridge to LXMF", PROV_RRC_BRIDGE_ENABLED, FF_REBOOT_REQUIRED,
+        rrc_bridge_enabled,
+        [](const Value& v) { rrc_bridge_enabled = v.as_bool(); return true; },
+        []() { return rrc_bridge_enabled; })
+      .field_string("Bridged Rooms", PROV_RRC_BRIDGE_ROOMS, FF_REBOOT_REQUIRED,
+        rrc_bridge_rooms, sizeof(rrc_bridge_rooms)-1,
+        [](const Value& v) {
+          const std::string& list = v.as_string();
+          if (list.size() >= sizeof(rrc_bridge_rooms)) return false;
+          snprintf(rrc_bridge_rooms, sizeof(rrc_bridge_rooms), "%s", list.c_str());
+          return true;
+        },
+        []() { return rrc_bridge_rooms; })
+#endif
       .metric_bytes("Destination", PROV_RRC_DESTINATION,
         []() { return rrc_hub_destination_hash(); })
       .metric_bool("Running", PROV_RRC_RUNNING,
@@ -370,6 +389,18 @@ static void register_provisioning_namespaces() {
         []() { return static_cast<fint_t>(rrc_hub_hello_timeout_count()); })
       .metric_int("PONG Timeouts", PROV_RRC_PONG_TIMEOUTS,
         []() { return static_cast<fint_t>(rrc_hub_pong_timeout_count()); })
+#if defined(RRC_LXMF_BRIDGE)
+      // Roster size is the one to watch: a bridged room with no roster
+      // delivers nothing and looks identical to a healthy idle one.
+      .metric_int("Bridge Roster", PROV_RRC_BRIDGE_MEMBERS,
+        []() { return static_cast<fint_t>(rrc_bridge_member_count()); })
+      .metric_int("Bridge Queued", PROV_RRC_BRIDGE_QUEUED,
+        []() { return static_cast<fint_t>(rrc_bridge_queue_depth()); })
+      .metric_int("Bridge Delivered", PROV_RRC_BRIDGE_DELIVERED,
+        []() { return static_cast<fint_t>(rrc_bridge_delivered_count()); })
+      .metric_int("Bridge Dropped", PROV_RRC_BRIDGE_DROPPED,
+        []() { return static_cast<fint_t>(rrc_bridge_dropped_count()); })
+#endif
       .end();
 #endif
 
