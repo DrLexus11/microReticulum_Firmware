@@ -118,6 +118,7 @@ void BLESerial::disconnect() {
 
 void BLESerial::begin(const char *name) {
   ConnectedDeviceCount = 0;
+  device_name = (name != nullptr) ? name : "";
   BLEDevice::init(name);
 
   esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9); 
@@ -135,7 +136,35 @@ void BLESerial::begin(const char *name) {
 
 void BLESerial::startAdvertising() {
   ble_adv = BLEDevice::getAdvertising();
-  ble_adv->addServiceUUID(BLE_SERIAL_SERVICE_UUID);
+
+  // Put the name in the advertisement and the service UUID in the scan
+  // response, rather than the other way round.
+  //
+  // This is why a phone's own Bluetooth settings could not see the node while
+  // nRF Connect could. The library's default path sets
+  // `include_name = !m_scanResp`, so asking for a scan response moves the name
+  // *out* of the advertisement entirely -- and the 31-byte advertisement was
+  // then filled by flags, TX power, the connection interval hint and a 128-bit
+  // service UUID, which alone costs 18 bytes. What went out was an unnamed
+  // advertisement. A scanner that shows everything it hears, like nRF Connect,
+  // displays such a device happily; a phone's pairing screen, which lists
+  // devices by name, has nothing to list.
+  //
+  // The service UUID is not needed to be discovered -- it is what a client
+  // matches on *after* connecting -- so it moves to the scan response, where
+  // there is room for it and where an interested client will still ask for it.
+  BLEAdvertisementData advertisement;
+  advertisement.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+  advertisement.setName(device_name);
+  // Generic "Computer" appearance. Costs 4 bytes and gives a phone something
+  // to render besides a bare name.
+  advertisement.setAppearance(0x0080);
+
+  BLEAdvertisementData scan_response;
+  scan_response.setCompleteServices(BLEUUID(BLE_SERIAL_SERVICE_UUID));
+
+  ble_adv->setAdvertisementData(advertisement);
+  ble_adv->setScanResponseData(scan_response);
   ble_adv->setMinPreferred(0x20);
   ble_adv->setMaxPreferred(0x40);
   ble_adv->setScanResponse(true);

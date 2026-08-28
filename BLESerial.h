@@ -77,6 +77,9 @@ public:
   BLESerial();
 
   void begin(const char *name);
+  // Kept so startAdvertising() can put the name in the advertisement itself.
+  // The library offers no getter for the name passed to BLEDevice::init().
+  std::string device_name;
   void end();
   void disconnect();
   void startAdvertising();
