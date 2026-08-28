@@ -183,43 +183,6 @@ Do not make a production storage design depend on repurposing JTAG or display
 signals without an explicit mux, boot-state analysis and test procedure. Keep
 JTAG available on test pads if connector pin pressure requires it.
 
-### P1 — carry node identity in an I2C EEPROM
-
-**Decided.** The part is being added; this section records the role it plays so
-it is not later mistaken for a capacity upgrade (see §4).
-
-**Why.** Both identities are files on LittleFS -- `transport_identity`
-(`Transport.cpp`) and `local_identity` (`RNode_Firmware.ino`) -- and what the
-firmware currently calls EEPROM is Arduino's flash-emulated NVS
-(`EEPROM_SIZE 1024`, `HAS_EEPROM true` in `Boards.h`). Neither survives a
-full-chip erase. [`docs/FlashHeadroom.md`](FlashHeadroom.md) §"The trap" records
-how close the Rev2 repartition came to destroying a node's identity for exactly
-this reason. A separate I2C part is a different durability class: it survives
-erase, reflash and repartition because it is not the flash being erased.
-
-**Durable set.** Only what must outlive a full erase: the two identities, the
-RNode config block and its signature byte, the firmware hash, WiFi/SoftAP
-credentials, and the RRC hub identity. Nothing message-sized.
-
-**Implementation.**
-
-- An `EepromStore` with a versioned header (magic, version, length, CRC) so the
-  layout can change without bricking provisioned units. Back it with the I2C
-  part when present and fall back to the emulated EEPROM when absent, so Rev1
-  and Rev2 keep building from the same source.
-- Route identity loading through the store. `RNode_Firmware.ino` currently calls
-  `Identity::from_file` on a LittleFS path directly.
-- Migrate on boot: if the part carries no valid magic, read the existing
-  LittleFS/emulated copy, write through, and keep the old path as a read
-  fallback for one release. Never auto-erase the old copy.
-- Provisioning gets a read-only status op -- identity hash, store version, CRC
-  state, never the private key -- and an explicit factory-clear.
-- Page-aligned writes, bounded retries on NAK, and CRC verification after write.
-  Identity is written once, so endurance is a config-churn question, not an
-  identity one. If churn turns out to matter, that is the FRAM case below.
-- Address allocation shares the bus with the display ID EEPROM and the future
-  RTC, so strap A0-A2 clear of both.
-
 ### P2 — reserve a small FRAM footprint
 
 An I2C FRAM in the 32 KiB class is useful for high-write-rate, small records:
@@ -252,8 +215,6 @@ far lower write endurance than FRAM. A representative 24CM02 holds only
 - [Microchip AT24CM02 datasheet](https://ww1.microchip.com/downloads/en/DeviceDoc/AT24CM02-Data-Sheet-20006197A.pdf)
 
 Do not describe an EEPROM addition as a store-and-forward capacity upgrade.
-The part scheduled in §3 is for identity and configuration durability; this
-exclusion is about message blobs and still holds.
 
 ### No microSD socket on every baseboard
 
@@ -297,6 +258,3 @@ should cover these failure cases:
    and resource-transfer stress before locking N16R2 into production.
 7. Verify native USB, UART recovery, factory boot, OTA rollback and the Rev2
    `fixhash`-equivalent manufacturing flow from a blank unit.
-8. Erase the entire flash, reflash from blank, and confirm the node comes back
-   with the same Reticulum identity. This is the whole reason the EEPROM is
-   fitted; a revision that fails it has not gained anything from the part.

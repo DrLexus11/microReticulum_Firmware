@@ -1,7 +1,6 @@
 #if defined(RRC_HUB)
 
 #include "RRCHub.h"
-#include "RRCBridge.h"
 
 #include "RRCProtocol.h"
 #include "RRCState.h"
@@ -240,16 +239,6 @@ void handle_join(Slot& slot, const RRC::Envelope& envelope) {
     if (identity) notification.body = RRC::Body::member_list({*identity});
     notification.nickname = hub_state.nickname(slot.key);
     fanout(members, notification, slot.key);
-
-#if defined(RRC_LXMF_BRIDGE)
-    // Take the public key while the Link is up. Membership dies with the Link,
-    // so this is the only moment the hub can learn how to reach this member
-    // once they are gone -- and it means a member the hub has met can be
-    // addressed without their announce ever having been heard.
-    if (slot.link && rrc_bridge_bridged(room)) {
-        rrc_bridge_remember(room, slot.link.get_remote_identity());
-    }
-#endif
 }
 
 void handle_part(Slot& slot, const RRC::Envelope& envelope) {
@@ -425,20 +414,7 @@ void handle_room_traffic(Slot& slot, RRC::Envelope envelope, uint64_t now_ms) {
         return;
     }
     ++accepted_count;
-    const RRC::MemberKeys members = hub_state.members(room);
-    forwarded_count += fanout(members, envelope);
-
-#if defined(RRC_LXMF_BRIDGE)
-    // Live members just received it. Anyone on the roster who is not among
-    // them was out of range, and gets it through the propagation store on
-    // their next sync. Only enqueues here: the cryptography happens on the
-    // main loop, not in this callback.
-    if (envelope.body.kind == RRC::BodyKind::Text && rrc_bridge_bridged(room)) {
-        rrc_bridge_publish(room, hub_state.nickname(slot.key).value_or(""),
-                           *identity, envelope.message_id, envelope.timestamp_ms,
-                           envelope.body.text, member_hashes(members));
-    }
-#endif
+    forwarded_count += fanout(hub_state.members(room), envelope);
 }
 
 void handle_packet(const RNS::Bytes& plaintext, const RNS::Packet& packet) {
@@ -641,9 +617,6 @@ void rrc_hub_begin(const RNS::Identity& identity) {
                                    RNS::Type::Destination::SINGLE,
                                    "rrc", "hub");
     destination.set_link_established_callback(handle_established);
-#if defined(RRC_LXMF_BRIDGE)
-    rrc_bridge_begin(identity);
-#endif
     announce();
     printf("[rrc] hub destination <%s>\n", destination.hash().toHex().c_str());
 }
@@ -651,10 +624,6 @@ void rrc_hub_begin(const RNS::Identity& identity) {
 void rrc_hub_loop() {
     if (!destination) return;
     const uint64_t now_ms = monotonic_ms();
-
-#if defined(RRC_LXMF_BRIDGE)
-    rrc_bridge_loop();
-#endif
 
     RRC::ExpireCounts expired;
     hub_state.expire(now_ms, &expired);

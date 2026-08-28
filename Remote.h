@@ -33,29 +33,7 @@
 
 #define WIFI_UPDATE_INTERVAL_MS 500
 #define WR_SOCKET_TIMEOUT 6
-// How long a *connected* client may go without sending readable bytes before
-// the listener reclaims its slot.
-//
-// This was 6500 ms, which is incompatible with how Reticulum keeps a TCP
-// interface alive. RNS sets SO_KEEPALIVE with TCP_KEEPIDLE=5s and lets the
-// kernel prove liveness (TCPInterface.py, set_timeouts_linux); an idle
-// Reticulum link deliberately sends no application data at all, sometimes for
-// minutes. At 6.5 seconds this server therefore closed healthy links on a
-// schedule, and the client reconnected immediately: Rev 1 was observed
-// accepting 17 connections in 200 seconds from one Columba instance -- one
-// every 11.8 seconds, indefinitely.
-//
-// Each of those cycles allocates and frees lwIP socket state, which is
-// DMA-capable internal RAM and so never spills to PSRAM whatever
-// PSRAM_MALLOC_THRESHOLD is set to. That is the shape of the internal-heap
-// slide that takes this board off the air, and it is why the timeout matters
-// far beyond a slot being held.
-//
-// Five minutes still reclaims a genuinely wedged client -- the case the
-// original short timeout was reaching for -- while leaving normal quiet
-// traffic alone. Peer death is detected long before that by TCP keepalive,
-// which is what connected() reports on.
-#define WR_READ_TIMEOUT_MS 300000
+#define WR_READ_TIMEOUT_MS 6500
 #define WR_RECONNECT_INTERVAL_MS 10000
 
 uint32_t wifi_update_interval_ms = WIFI_UPDATE_INTERVAL_MS;
@@ -411,30 +389,14 @@ void wifi_remote_close_all() {
 }
 
 void wifi_remote_check_active() {
-  // Quiet is not the same as dead, and this used to treat them as the same
-  // thing. A Reticulum TCP interface carries no application bytes while it has
-  // nothing to say -- RNS proves liveness with kernel keepalives instead -- so
-  // any timeout measured in "time since readable data" closes healthy links on
-  // a schedule. At 6.5 seconds Rev 1 dropped its client every 11.8 seconds; at
-  // five minutes it dropped it every 305 seconds. The value was never the
-  // problem.
-  //
-  // What the timeout was really reaching for is a client that is wedged rather
-  // than idle, holding the single connection slot so nobody else can have it.
-  // That only matters when somebody else actually wants the slot, so ask that
-  // question instead: evict a long-idle client when another is waiting, and
-  // otherwise leave a quiet one alone indefinitely. A peer that has genuinely
-  // gone away is reported by connected(), which reflects TCP state, and is
-  // handled in wifi_remote_available() without any timer at all.
-  if (!connection || !connection.connected()) return;
-  if (millis()-wr_last_read < WR_READ_TIMEOUT_MS) return;
-  if (!remote_listener.hasClient()) return;
-
-  printf("[kiss-tcp] evicting a client idle for %lus; another is waiting\n",
-         (unsigned long)((millis()-wr_last_read) / 1000));
-  connection.stop();
-  wifi_remote_close_all();
-  host_disconnected();
+  if (millis()-wr_last_read >= WR_READ_TIMEOUT_MS) {
+    // wifi_dbg("Connection activity timed out"); // TODO: Remove debug
+    if (connection && connection.connected()) {
+      connection.stop();
+      wifi_remote_close_all();
+      host_disconnected();
+    }
+  }
 }
 
 bool wifi_remote_available() {
