@@ -571,7 +571,16 @@
       #define HAS_EEPROM true
       #define HAS_WIFI true
       #define HAS_BLUETOOTH false
-      #define HAS_BLE true
+      // Same switch as Rev 1. Rev 2 is the fixed infrastructure node: it runs
+      // the propagation store and the bridge, it is the board with the least
+      // free internal RAM, and it has no phone attached to it. Bluetooth costs
+      // it 580 KB of flash and 27 KB of internal RAM (measured, see
+      // docs/FlashHeadroom.md 3.2) for a radio nothing uses.
+      #ifdef RAD01_NO_BLE
+        #define HAS_BLE false
+      #else
+        #define HAS_BLE true
+      #endif
       #define HAS_BUSY true
       // No TCXO: the Ra-01SH runs from a plain crystal, so DIO3 must NOT be used
       // as a TCXO reference. Confirmed against the known-good Meshtastic variant
