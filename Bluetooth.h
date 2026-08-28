@@ -45,12 +45,10 @@
 #define BLE_FLUSH_TIMEOUT 20
 uint32_t bt_pairing_started = 0;
 
-#define BT_DEV_ADDR_LEN 6
-#define BT_DEV_HASH_LEN 16
-uint8_t dev_bt_mac[BT_DEV_ADDR_LEN];
-char bt_da[BT_DEV_ADDR_LEN];
-char bt_dh[BT_DEV_HASH_LEN];
-char bt_devname[11];
+// BT_DEV_* and the device-identity globals used to live here. They are declared
+// in Utilities.h now, because a device name is not a Bluetooth concern: the
+// SoftAP SSID and the DHCP hostname both use it, and both must work in an image
+// built without a Bluetooth stack.
 
 #if MCU_VARIANT == MCU_ESP32
   #if HAS_BLUETOOTH == true

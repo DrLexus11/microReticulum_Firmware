@@ -66,23 +66,46 @@ link map by a wide margin, and Bluedroid is compiled into both boards today.
 See [`docs/BluetoothOverhaul.md`](BluetoothOverhaul.md): the port is expected to
 *return* headroom rather than consume it.
 
-**The exact figure is not yet measured, and should not be quoted.** Map-file
-attribution was attempted twice and produced obvious nonsense -- 44 MB
-attributed to a 1.8 MB image -- because the map includes discarded and non-flash
-sections. The reliable measurement is a build without Bluetooth, which is
-blocked by 3.3.
+**Measured, on `impr-rad01-rev1`, by building with and without the stack:**
 
-### 3.3 `RAD01_NO_BLE` does not compile
+| | Flash | RAM |
+| --- | --- | --- |
+| With Bluedroid | 1,851,873 (44.2%) | 114,636 (35.0%) |
+| No Bluetooth stack | 1,257,857 (30.0%) | 86,928 (26.5%) |
+| **Difference** | **594,016 (580 KB)** | **27,708 (27 KB)** |
 
-`Boards.h` documents a WiFi/USB-only image via `RAD01_NO_BLE`, and it does not
-build: `Remote.h` uses `bt_devname` for the SoftAP SSID and the DHCP hostname,
-but that symbol is only declared inside the `HAS_BLUETOOTH || HAS_BLE` guard in
-`Utilities.h`. The device name is not a Bluetooth concern and should not live
-behind that guard.
+Map-file attribution had been attempted twice and produced obvious nonsense --
+44 MB attributed to a 1.8 MB image -- because the map includes discarded and
+non-flash sections. Building both images is the measurement that actually works,
+and it needed 3.3 fixed first.
 
-Fixing it repairs a documented target, gives deployments that do not need
-Bluetooth an immediately smaller image, and is the prerequisite for measuring
-3.2 honestly.
+What this does and does not say: 580 KB of flash and 27 KB of RAM is the cost of
+*all* Bluetooth, so it is the **ceiling** on what a Bluedroid-to-NimBLE port can
+return, not the expected saving. NimBLE has to fit somewhere inside that
+figure. Quote it as a bound.
+
+### 3.3 `RAD01_NO_BLE` -- fixed
+
+It did not build: `Remote.h` used `bt_devname` for the SoftAP SSID and the DHCP
+hostname while that symbol lived inside the `HAS_BLUETOOTH || HAS_BLE` guard,
+and `RNode_Firmware.ino` referenced `SerialBT` from a branch that a Wi-Fi-only
+image still compiles. The device-identity globals now sit outside the guard,
+where they belong, and the Bluetooth arm of the read loop is compiled only when
+a stack exists.
+
+**One thing that fix uncovered, worth reading before trusting the target.**
+`Device.h` compiled `dev_bt_mac` out of the device hash when no Bluetooth stack
+was present, so a Wi-Fi-only image computed a *different* `dev_hash` than a
+Bluetooth image on the same board. The Ed25519 device signature would then fail
+to verify and the unit would come up unvalidated -- presenting exactly like the
+firmware-hash failure that has already cost this project days: healthy over
+Wi-Fi, deaf on RF. It is now hashed unconditionally, so both images agree.
+
+Related, and separate: `dev_bt_mac` is never assigned on any build. It is six
+zero bytes, so the device identity is not bound to the Bluetooth MAC despite
+what the name and `docs/BluetoothOverhaul.md` imply. That must not be "fixed" --
+every provisioned board's signature was computed over a hash containing those
+zeros.
 
 ### 3.4 RNS log level -- 38,892 bytes, measured
 

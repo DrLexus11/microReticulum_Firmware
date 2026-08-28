@@ -244,12 +244,23 @@ bool device_init() {
     mbedtls_md_init(&ctx);
     mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 0);
     mbedtls_md_starts(&ctx);
-    #if HAS_BLUETOOTH == true || HAS_BLE == true
-      mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);
-    #else
-      // TODO: Get from BLE stack instead
-      // mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);
-    #endif
+    // Unconditional, and it must stay that way.
+    //
+    // This used to be compiled out when no Bluetooth stack was present, which
+    // meant a Wi-Fi-only image hashed a *different* input than a Bluetooth one
+    // on the same board -- so dev_hash changed, the Ed25519 device signature no
+    // longer verified, and the board came up unvalidated. Switching a
+    // provisioned unit between the two images would have looked exactly like
+    // the firmware-hash failure that already cost this project days: healthy on
+    // Wi-Fi, deaf on RF.
+    //
+    // The name misleads. dev_bt_mac is never assigned on any build (see
+    // Utilities.h), so these are six zero bytes and the device identity is not
+    // bound to the Bluetooth MAC at all. That is a real weakness, and it must
+    // not be fixed here: every provisioned board's signature was computed over
+    // a hash containing these zeros, and filling them in would invalidate all
+    // of them at once.
+    mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);
     mbedtls_md_update(&ctx, dev_eeprom_signature, EEPROM_SIG_LEN);
     mbedtls_md_finish(&ctx, dev_hash);
     mbedtls_md_free(&ctx);
@@ -261,12 +272,9 @@ bool device_init() {
 
     hash.begin(CRYS_HASH_SHA256_mode);
 
-    #if HAS_BLUETOOTH == true || HAS_BLE == true
-      hash.update(dev_bt_mac, BT_DEV_ADDR_LEN);
-    #else
-      // TODO: Get from BLE stack instead
-      // hash.update(dev_bt_mac, BT_DEV_ADDR_LEN);
-    #endif
+    // Unconditional, for the reason given in the ESP32 branch above: the hash
+    // must not depend on whether a Bluetooth stack was compiled in.
+    hash.update(dev_bt_mac, BT_DEV_ADDR_LEN);
     hash.update(dev_eeprom_signature, EEPROM_SIG_LEN);
 
     hash.end(dev_hash);

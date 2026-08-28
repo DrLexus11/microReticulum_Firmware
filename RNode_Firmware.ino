@@ -3660,7 +3660,14 @@ void buffer_serial() {
       #if MCU_VARIANT != MCU_ESP32 && MCU_VARIANT != MCU_NRF52
         if (!fifo_isfull_locked(&serialFIFO)) { fifo_push_locked(&serialFIFO, Serial.read()); }
       #elif HAS_BLUETOOTH || HAS_BLE == true || HAS_WIFI
+        // The Bluetooth arm is compiled only when a stack exists. The condition
+        // above admits a Wi-Fi-only image, where bt_state can never leave
+        // BT_STATE_NA and SerialBT is not declared at all.
+        #if HAS_BLUETOOTH == true || HAS_BLE == true
         if      (bt_state == BT_STATE_CONNECTED) { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, SerialBT.read()); } }
+        #else
+        if      (false)                          { }
+        #endif
         #if HAS_WIFI
         else if (wifi_host_is_connected())       { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, wifi_remote_read()); } }
         #endif
