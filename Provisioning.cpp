@@ -23,7 +23,11 @@
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #include "RRCBridge.h"
+#endif
 
+// Not nested inside the RRC_HUB guard above, where these used to sit. Bluetooth
+// provisioning has nothing to do with whether the RRC hub is compiled in, and
+// the nesting meant a build without the hub silently lost the declarations.
 #if (HAS_BLUETOOTH == true || HAS_BLE == true) && MCU_VARIANT == MCU_ESP32
 // Declared rather than included. Config.h cannot be included here -- it collides
 // on macro names -- and Bluetooth.h is a definitions header pulled into the
@@ -40,19 +44,6 @@ void bt_conf_save(bool);
 void bt_enable_pairing();
 void bt_disable_pairing();
 int bt_bonded_peer_count();
-#endif
-
-#if MCU_VARIANT == MCU_ESP32
-// Why a board restarted, readable without attaching to it.
-//
-// Rev 1 restarts roughly every two hours for reasons still unknown, and the
-// reason has stayed unknown because reading the boot banner requires opening
-// the USB console -- which resets the board and destroys the evidence. Exposing
-// it as a metric breaks that circle, the same way heap and bond count did.
-extern const char* boot_reset_reason;
-extern bool boot_rail_lost;
-extern uint32_t boot_prev_uptime;
-extern uint32_t boot_count;
 
 // Mirrors Config.h, which is the source of truth. These are reported to hosts
 // over KISS, so they are effectively protocol constants and do not drift.
@@ -61,6 +52,22 @@ extern uint32_t boot_count;
 #define PROV_BT_STATE_PAIRING   0x02
 #define PROV_BT_STATE_CONNECTED 0x03
 #endif
+
+#if MCU_VARIANT == MCU_ESP32
+// Why a board restarted, readable without attaching to it.
+//
+// The reason a restart went unexplained for two days is circular: reading the
+// boot banner requires opening the USB console, and opening it resets the
+// board. Exposing it as a metric breaks that circle, the same way heap and bond
+// count did.
+//
+// Declared outside the Bluetooth guard above, because these have nothing to do
+// with Bluetooth -- nesting them there compiled on the RAD boards and broke
+// every board without a Bluetooth stack.
+extern const char* boot_reset_reason;
+extern bool boot_rail_lost;
+extern uint32_t boot_prev_uptime;
+extern uint32_t boot_count;
 #endif
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
