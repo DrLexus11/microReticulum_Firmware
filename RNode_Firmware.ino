@@ -1464,6 +1464,27 @@ static bool host_may_set_radio() {
   return false;
 }
 
+// A host setting a parameter to the value it already has is not a change, and
+// refusing it breaks every well-behaved RNode client.
+//
+// Those clients configure the radio and then read it back to validate. With a
+// flat refusal the readback reports the node's own value, the comparison fails,
+// and the client aborts with "Radio configuration validation failed" -- which
+// is what happened to a correctly-configured phone whose only discrepancy was
+// 171 Hz of SX1276 PLL granularity between 867,200,000 as requested and
+// 867,199,829 as held.
+//
+// So an idempotent set is allowed through: it changes nothing, it lets a client
+// that already agrees with the node complete its handshake, and a client that
+// disagrees is still refused. The frequency tolerance covers synthesiser
+// rounding only, not a genuinely different channel.
+static bool radio_set_is_noop(uint32_t requested, uint32_t current,
+                              uint32_t tolerance) {
+  const uint32_t difference = (requested > current) ? (requested - current)
+                                                    : (current - requested);
+  return difference <= tolerance;
+}
+
 static void radio_config_refused(const char* what) {
   static uint32_t last_refusal = 0;
   // Rate-limited: an RNode client re-sends its whole configuration on every
@@ -2096,7 +2117,9 @@ void serial_callback(uint8_t sbyte) {
             kiss_indicate_frequency();
           } else {
             if (host_may_set_radio()) { lora_freq = freq; setFrequency(); }
-            else { radio_config_refused("frequency"); }
+            // 1 kHz covers PLL rounding on both SX127x and SX126x; a real
+            // channel change is orders of magnitude larger.
+            else if (!radio_set_is_noop(freq, lora_freq, 1000)) { radio_config_refused("frequency"); }
             kiss_indicate_frequency();
           }
         }
@@ -2119,7 +2142,7 @@ void serial_callback(uint8_t sbyte) {
             kiss_indicate_bandwidth();
           } else {
             if (host_may_set_radio()) { lora_bw = bw; setBandwidth(); }
-            else { radio_config_refused("bandwidth"); }
+            else if (!radio_set_is_noop(bw, lora_bw, 0)) { radio_config_refused("bandwidth"); }
             kiss_indicate_bandwidth();
           }
         }
@@ -2153,7 +2176,7 @@ void serial_callback(uint8_t sbyte) {
         #endif
 
         if (host_may_set_radio()) { lora_txp = txp; setTXPower(); }
-        else { radio_config_refused("tx power"); }
+        else if (!radio_set_is_noop(txp, lora_txp, 0)) { radio_config_refused("tx power"); }
         kiss_indicate_txpower();
       }
     } else if (command == CMD_SF) {
@@ -2165,7 +2188,7 @@ void serial_callback(uint8_t sbyte) {
         if (sf > 12) sf = 12;
 
         if (host_may_set_radio()) { lora_sf = sf; setSpreadingFactor(); }
-        else { radio_config_refused("spreading factor"); }
+        else if (!radio_set_is_noop(sf, lora_sf, 0)) { radio_config_refused("spreading factor"); }
         kiss_indicate_spreadingfactor();
       }
     } else if (command == CMD_CR) {
@@ -2177,7 +2200,7 @@ void serial_callback(uint8_t sbyte) {
         if (cr > 8) cr = 8;
 
         if (host_may_set_radio()) { lora_cr = cr; setCodingRate(); }
-        else { radio_config_refused("coding rate"); }
+        else if (!radio_set_is_noop(cr, lora_cr, 0)) { radio_config_refused("coding rate"); }
         kiss_indicate_codingrate();
       }
     } else if (command == CMD_IMPLICIT) {
