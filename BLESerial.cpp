@@ -139,12 +139,12 @@ void BLESerial::flush() {
   // *after* the GATT connect callback fires, so asking there always returned
   // nothing and left the size at the truncating default. By the time anything
   // is actually being sent it has settled.
-  if (peerMTU == 0) {
-    if (checkMTU()) {
-      printf("[bt] mtu negotiated: %u (payload %u)\n",
-             (unsigned)peerMTU, (unsigned)maxTransferSize);
-    }
-  }
+  // Deliberately no logging here. checkMTU() publishes the value via
+  // mtu_log_pending and update_bt() prints it from the main loop. Printing from
+  // inside flush() puts unframed bytes into the middle of a KISS frame -- the
+  // host's first read came back as the log line itself -- which is the exact
+  // failure the note above checkMTU() describes.
+  if (peerMTU == 0) { checkMTU(); }
   if (this->transmitBufferLength > 0 && TxCharacteristic != nullptr) {
     TxCharacteristic->setValue(this->transmitBuffer, this->transmitBufferLength);
     this->transmitBufferLength = 0;

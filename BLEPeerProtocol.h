@@ -43,21 +43,23 @@
 // uint8 type then two uint16s. Five bytes, on every fragment.
 #define BLE_PEER_HEADER_SIZE 5
 
-// A packet that fits in one fragment is TYPE_LONE, not a START that happens to
-// have total==1. Columba's BleConstants.kt declares all four types and its
-// reassembler completes a packet on LONE, so a lone packet sent as START stalls
-// there and a LONE received here was previously dropped at the header check --
-// which is exactly what "in=0, dropped climbing" looked like on hardware.
+// TYPE_LONE is declared by the client and never sent by it. Measured on the
+// wire, every single-fragment packet from Columba arrives as 01 0000 0001 --
+// START with total==1 -- and FRAGMENT_TYPE_LONE is unused anywhere in its
+// Kotlin. Its reassembler drops types it does not recognise, so emitting LONE
+// makes the whole outbound direction disappear while inbound keeps working:
+// announces reach the mesh and nothing ever comes back.
+//
+// We accept it defensively on receive. We never send it. See send_outgoing()
+// and tests/test_ble_peer_protocol.py.
 #define BLE_PEER_TYPE_LONE     0x00
 #define BLE_PEER_TYPE_START    0x01
 #define BLE_PEER_TYPE_CONTINUE 0x02
 #define BLE_PEER_TYPE_END      0x03
 
-// A single-fragment packet is TYPE_LONE. Multi-fragment packets run
-// START, CONTINUE..., END.
-// The reference tests `if i == 0` before the last-fragment case, so the first
-// fragment always wins -- and a one-fragment packet is the first fragment.
-// Reassembly must therefore treat START-with-total-1 as complete on its own.
+// A single-fragment packet is START with total==1. Multi-fragment packets run
+// START, CONTINUE..., END. Fragment zero is START even when it is also the
+// last one, so reassembly must treat START-with-total-1 as complete on its own.
 // This is exactly the kind of detail that costs a day when inferred from
 // behaviour instead of read from the source.
 

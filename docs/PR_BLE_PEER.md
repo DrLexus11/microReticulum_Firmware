@@ -95,8 +95,43 @@ comments: START-not-LONE, and the state-gated identity handshake.
 
 ## Builds
 
-`impr-rad01-rev1-portable`, `impr-rad01-rev2` and `heltec32_v3` all build clean.
-The peer interface is only compiled where `-DBLE_PEER_TRANSPORT` is set.
+Verified: `impr-rad01-rev1-portable`, `impr-rad01-rev2`, `lilygo-t3-s3` (BLE, no
+`RRC_HUB`) and `rnode-ng-20` (classic Bluetooth). The peer interface is only
+compiled where `-DBLE_PEER_TRANSPORT` is set.
+
+An earlier revision of this text claimed `heltec32_v3` built clean. That
+environment does not exist in `platformio.ini` -- PlatformIO was rejecting an
+unknown environment and the check silently passed. The review caught real
+breakage behind that gap; see below.
+
+## Review fixes
+
+Three notes, all accepted, and chasing the third uncovered a regression the
+vacuous build check had hidden.
+
+1. **MTU logging in the write path.** `flush()` still printed the negotiated
+   MTU directly, which is the unframed-bytes-into-a-KISS-frame failure that
+   `checkMTU()`'s own comment warns about. Removed; `update_bt()` logs it.
+
+2. **Header comments contradicted the wire format.** `BLEPeerProtocol.h` still
+   asserted the LONE story, including the claim that a lone packet sent as
+   START "stalls there" -- the exact inverse of what was measured. Rewritten.
+
+3. **Bluetooth provisioning was gated on `RRC_HUB`.** An earlier commit moved
+   the declarations out of that guard but left the registration inside it, so
+   any board without the hub silently lost the whole namespace.
+
+   Fixing it surfaced a live regression: the MTU logging had been added to the
+   *classic-Bluetooth* `update_bt()`, where `SerialBT` is a `BluetoothSerial`
+   with no such members. Every classic-Bluetooth ESP32 board failed to compile,
+   and on BLE boards `mtu_log_pending` was set but never consumed, so the line
+   never printed either. Moved to the BLE `update_bt()`.
+
+   The namespace is now conditioned on `HAS_BLE` rather than "Bluetooth or
+   BLE": every field in it is a BLE concept and a classic board defines none of
+   the accessors. Registering it there would mean inventing zero-valued stubs
+   for a surface that means nothing on that hardware. Classic-Bluetooth
+   provisioning is deliberately left as separate work.
 
 ## Known limitations
 

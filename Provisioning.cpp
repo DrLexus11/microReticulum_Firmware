@@ -343,9 +343,20 @@ static void register_provisioning_namespaces() {
         []() { return nomadnet_name; });
 #endif
 
-#if defined(RRC_HUB)
-#if (HAS_BLUETOOTH == true || HAS_BLE == true) && MCU_VARIANT == MCU_ESP32
+#if HAS_BLE == true && MCU_VARIANT == MCU_ESP32
   // ----- Bluetooth -----
+  //
+  // Deliberately outside the RRC_HUB guard below. Bluetooth provisioning has
+  // nothing to do with the group-chat hub, and nesting it there silently
+  // removed the entire namespace -- pairing controls, state, and the BLE peer
+  // diagnostics -- from every build that does not define RRC_HUB.
+  //
+  // Conditioned on HAS_BLE rather than "BLUETOOTH or BLE": every field here is
+  // a BLE concept (pairing passkey, bonded peers, the peer interface), and a
+  // classic BluetoothSerial board defines none of the accessors behind them.
+  // Registering it there would mean inventing zero-valued stubs for a surface
+  // that means nothing on that hardware. Classic-Bluetooth provisioning is a
+  // separate piece of work, not a side effect of this one.
   //
   // There was no provisioning surface for Bluetooth at all, and that is most of
   // why pairing "did not work". The stack is configured correctly --
@@ -433,6 +444,7 @@ static void register_provisioning_namespaces() {
       .end();
 #endif
 
+#if defined(RRC_HUB)
   // ----- Ephemeral RRC group-chat hub -----
   // Configuration is persisted and applied on reboot because the Destination,
   // bounded state engine and timers are constructed during RNS startup.
