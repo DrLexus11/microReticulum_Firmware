@@ -1433,6 +1433,37 @@ void lora_receive() {
   }
 }
 
+
+// Does a host get to reconfigure this node's radio?
+//
+// MODE_HOST means the host owns the modem -- classic RNode, the board is a
+// dumb radio. MODE_TNC means the node owns it: it runs its own Reticulum
+// stack, its parameters come from provisioning, and a client attached to it is
+// a client of the *node*, not the owner of its radio.
+//
+// That distinction was only half honoured. The setter was skipped in TNC mode,
+// but the shadow variable was written anyway, so a host's value sat there and
+// was applied at the next startRadio() -- silently retuning a node minutes or
+// hours later. It is how a phone running an ordinary RNode client took Rev 1
+// off the mesh: nothing failed, nothing logged, the node was simply gone.
+//
+// Refusing the write and answering with the value actually in force is both
+// safer and more honest: a well-behaved host sees it did not take.
+static bool host_may_set_radio() {
+  if (op_mode == MODE_HOST) return true;
+  return false;
+}
+
+static void radio_config_refused(const char* what) {
+  static uint32_t last_refusal = 0;
+  // Rate-limited: an RNode client re-sends its whole configuration on every
+  // connect, and a reconnect loop would otherwise fill the log.
+  if (millis() - last_refusal < 2000) return;
+  last_refusal = millis();
+  printf("[radio] refused host %s: this node is in TNC mode and owns its "
+         "radio config\n", what);
+}
+
 inline void kiss_write_packet() {
 
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
@@ -2054,8 +2085,8 @@ void serial_callback(uint8_t sbyte) {
           if (freq == 0) {
             kiss_indicate_frequency();
           } else {
-            lora_freq = freq;
-            if (op_mode == MODE_HOST) setFrequency();
+            if (host_may_set_radio()) { lora_freq = freq; setFrequency(); }
+            else { radio_config_refused("frequency"); }
             kiss_indicate_frequency();
           }
         }
@@ -2077,8 +2108,8 @@ void serial_callback(uint8_t sbyte) {
           if (bw == 0) {
             kiss_indicate_bandwidth();
           } else {
-            lora_bw = bw;
-            if (op_mode == MODE_HOST) setBandwidth();
+            if (host_may_set_radio()) { lora_bw = bw; setBandwidth(); }
+            else { radio_config_refused("bandwidth"); }
             kiss_indicate_bandwidth();
           }
         }
@@ -2111,8 +2142,8 @@ void serial_callback(uint8_t sbyte) {
           if (txp > 17) txp = 17;
         #endif
 
-        lora_txp = txp;
-        if (op_mode == MODE_HOST) setTXPower();
+        if (host_may_set_radio()) { lora_txp = txp; setTXPower(); }
+        else { radio_config_refused("tx power"); }
         kiss_indicate_txpower();
       }
     } else if (command == CMD_SF) {
@@ -2123,8 +2154,8 @@ void serial_callback(uint8_t sbyte) {
         if (sf < 5) sf = 5;
         if (sf > 12) sf = 12;
 
-        lora_sf = sf;
-        if (op_mode == MODE_HOST) setSpreadingFactor();
+        if (host_may_set_radio()) { lora_sf = sf; setSpreadingFactor(); }
+        else { radio_config_refused("spreading factor"); }
         kiss_indicate_spreadingfactor();
       }
     } else if (command == CMD_CR) {
@@ -2135,8 +2166,8 @@ void serial_callback(uint8_t sbyte) {
         if (cr < 5) cr = 5;
         if (cr > 8) cr = 8;
 
-        lora_cr = cr;
-        if (op_mode == MODE_HOST) setCodingRate();
+        if (host_may_set_radio()) { lora_cr = cr; setCodingRate(); }
+        else { radio_config_refused("coding rate"); }
         kiss_indicate_codingrate();
       }
     } else if (command == CMD_IMPLICIT) {
