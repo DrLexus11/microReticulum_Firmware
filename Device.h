@@ -236,7 +236,26 @@ bool device_init() {
 
 #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52
 bool device_init() {
-  if (bt_ready) {
+  // Bluetooth readiness gates this only where Bluetooth exists.
+  //
+  // This used to be a plain `if (bt_ready)`, which meant a build without a
+  // Bluetooth stack could never initialise the device at all: bt_ready stays
+  // false for ever, device_init() returns false, hw_ready is 0, and the radio
+  // never starts. The board comes up, joins Wi-Fi, serves pages and answers
+  // provisioning while being completely deaf on RF -- the same silent failure
+  // signature as an unwritten firmware hash, and indistinguishable from it
+  // without reading [init] closely.
+  //
+  // It is the other half of the RAD01_NO_BLE problem. The dev_hash side was
+  // fixed by hashing dev_bt_mac unconditionally; this gate was missed, so the
+  // no-Bluetooth image compiled, produced a correct hash, and still refused to
+  // bring up the radio.
+#if HAS_BLUETOOTH == true || HAS_BLE == true
+  const bool bt_gate_ok = bt_ready;
+#else
+  const bool bt_gate_ok = true;
+#endif
+  if (bt_gate_ok) {
     #if MCU_VARIANT == MCU_ESP32
     for (uint8_t i=0; i<EEPROM_SIG_LEN; i++){dev_eeprom_signature[i]=EEPROM.read(eeprom_addr(ADDR_SIGNATURE+i));}
     mbedtls_md_context_t ctx;
