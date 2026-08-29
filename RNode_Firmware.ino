@@ -30,6 +30,12 @@
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
 #endif
+// Not nested in the UDP guard: the BLE peer interface has nothing to do with
+// UDP, and the portable build has no UDP at all -- so nesting it there silently
+// dropped the include and the class with it.
+#if defined(BLE_PEER_TRANSPORT)
+#include "BLEPeerInterface.h"
+#endif
 #if defined(TCP_SERVER_TRANSPORT)
 #include "TCPServerInterface.h"
 #endif
@@ -253,6 +259,41 @@ RNS::Reticulum reticulum(RNS::Type::NONE);
 RNS::Interface lora_interface(RNS::Type::NONE);
 #if defined(UDP_TRANSPORT)
 RNS::Interface udp_interface(RNS::Type::NONE);
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+// Accessors for Provisioning.cpp, which cannot see this translation unit's
+// types. Null-safe so they are readable before the interface has started.
+uint32_t ble_peer_packets_in();
+uint32_t ble_peer_packets_out();
+uint32_t ble_peer_dropped();
+bool     ble_peer_started();
+uint32_t ble_peer_last_in();
+const char* ble_peer_last_in_hex();
+uint32_t ble_peer_last_out();
+uint32_t ble_peer_mtu();
+uint32_t ble_peer_keepalives();
+uint32_t ble_peer_identity_writes();
+const char* ble_peer_last_frag_hdr();
+uint32_t ble_peer_frag_lone();
+uint32_t ble_peer_frag_start();
+// The node as a BLE peer. Distinct from BLESerial, which is the RNode/KISS
+// modem role: this one joins a phone to the mesh through this node instead of
+// handing it the radio. See BLEPeerInterface.h.
+RNS::Interface ble_peer_interface(RNS::Type::NONE);
+BLEPeerInterface* ble_peer_impl = nullptr;
+uint32_t ble_peer_packets_in()  { return ble_peer_impl ? ble_peer_impl->packets_in()  : 0; }
+uint32_t ble_peer_packets_out() { return ble_peer_impl ? ble_peer_impl->packets_out() : 0; }
+uint32_t ble_peer_dropped()     { return ble_peer_impl ? ble_peer_impl->fragments_dropped() : 0; }
+bool     ble_peer_started()     { return ble_peer_impl ? ble_peer_impl->started() : false; }
+uint32_t ble_peer_last_in()     { return ble_peer_impl ? ble_peer_impl->last_in_size() : 0; }
+const char* ble_peer_last_in_hex() { return ble_peer_impl ? ble_peer_impl->last_in_hex() : ""; }
+uint32_t ble_peer_last_out()    { return ble_peer_impl ? ble_peer_impl->last_out_size() : 0; }
+uint32_t ble_peer_mtu()         { return ble_peer_impl ? ble_peer_impl->last_mtu() : 0; }
+uint32_t ble_peer_keepalives()  { return ble_peer_impl ? ble_peer_impl->keepalives_in() : 0; }
+uint32_t ble_peer_identity_writes() { return ble_peer_impl ? ble_peer_impl->identity_writes() : 0; }
+const char* ble_peer_last_frag_hdr() { return ble_peer_impl ? ble_peer_impl->last_frag_hdr() : ""; }
+uint32_t ble_peer_frag_lone()   { return ble_peer_impl ? ble_peer_impl->frag_lone() : 0; }
+uint32_t ble_peer_frag_start()  { return ble_peer_impl ? ble_peer_impl->frag_start() : 0; }
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
@@ -1226,6 +1267,20 @@ void setup() {
         udp_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
       }
 #endif
+#if defined(BLE_PEER_TRANSPORT)
+      ble_peer_impl = new BLEPeerInterface();
+      ble_peer_interface = ble_peer_impl;
+      // A peer over BLE joins the mesh as a peer, exactly as one over TCP or
+      // LoRa does -- the BLE link is a transport, not a client port.
+      //
+      // This was MODE_ACCESS_POINT, which looks reasonable and is fatal:
+      // Transport::outbound blocks every announce broadcast on an AP-mode
+      // interface ("Blocking announce broadcast ... due to AP mode"). The
+      // phone therefore learned no paths, so it saw no announces, could reach
+      // no pages, and could deliver no messages, while the link itself looked
+      // perfectly healthy.
+      ble_peer_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+#endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       // Serves attached clients (residents' phones on the SoftAP, or hosts on
       // the LAN). Created whenever WiFi is on in either mode -- SoftAP is the
@@ -1282,6 +1337,11 @@ void setup() {
         RNS::Transport::register_interface(udp_interface);
         TRACEF("UDPInterface hash: %s", udp_interface.get_hash().toHex().c_str());
       }
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+      HEAD("Registering BLE Peer Interface...", RNS::LOG_TRACE);
+      RNS::Transport::register_interface(ble_peer_interface);
+      TRACEF("BLEPeerInterface hash: %s", ble_peer_interface.get_hash().toHex().c_str());
 #endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       if (wifi_mode != WR_WIFI_OFF && tcp_server_interface) {
@@ -3419,6 +3479,18 @@ void loop() {
 #endif
 #if defined(HAS_RNS) && defined(RRC_HUB)
   rrc_hub_loop();
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+  // Started lazily rather than at init: the GATT server does not exist until
+  // Bluetooth has come up, and the transport identity is not loaded until
+  // Reticulum has. Waiting for both here avoids ordering assumptions that
+  // would fail silently.
+  if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
+      bt_state != BT_STATE_OFF && bt_state != BT_STATE_NA &&
+      SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
+    ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
+  }
+  if (ble_peer_impl != nullptr) ble_peer_impl->loop();
 #endif
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
   radio_rx_watchdog();
