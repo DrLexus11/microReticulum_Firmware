@@ -122,8 +122,16 @@ const char* boot_reset_reason = "UNKNOWN";
   #define RTC_BOOT_MAGIC 0x52414431UL   // 'RAD1'
   RTC_NOINIT_ATTR uint32_t rtc_boot_magic;
   RTC_NOINIT_ATTR uint32_t rtc_last_uptime_s;
-  static bool     boot_rail_lost   = true;
-  static uint32_t boot_prev_uptime = 0;
+  // Boots since the rail was last lost. Survives a software reset and not a
+  // power cycle, which is exactly the distinction wanted: a board that restarts
+  // itself climbs this while a board that was unplugged starts over.
+  RTC_NOINIT_ATTR uint32_t rtc_boot_count;
+  // Not static: Provisioning.cpp reads these to expose them as metrics, and
+  // internal linkage would leave the one question they answer unanswerable
+  // without attaching a console -- which resets the board and destroys it.
+  bool     boot_rail_lost   = true;
+  uint32_t boot_prev_uptime = 0;
+  uint32_t boot_count       = 0;
 #endif
 
 #if HAS_CONSOLE
@@ -584,6 +592,8 @@ void setup() {
     }
     boot_rail_lost   = (rtc_boot_magic != RTC_BOOT_MAGIC);
     boot_prev_uptime = boot_rail_lost ? 0 : rtc_last_uptime_s;
+    rtc_boot_count   = boot_rail_lost ? 1 : (rtc_boot_count + 1);
+    boot_count       = rtc_boot_count;
     rtc_boot_magic    = RTC_BOOT_MAGIC;
     rtc_last_uptime_s = 0;
     if (boot_rail_lost) {

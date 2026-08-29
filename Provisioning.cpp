@@ -40,6 +40,19 @@ void bt_conf_save(bool);
 void bt_enable_pairing();
 void bt_disable_pairing();
 int bt_bonded_peer_count();
+#endif
+
+#if MCU_VARIANT == MCU_ESP32
+// Why a board restarted, readable without attaching to it.
+//
+// Rev 1 restarts roughly every two hours for reasons still unknown, and the
+// reason has stayed unknown because reading the boot banner requires opening
+// the USB console -- which resets the board and destroys the evidence. Exposing
+// it as a metric breaks that circle, the same way heap and bond count did.
+extern const char* boot_reset_reason;
+extern bool boot_rail_lost;
+extern uint32_t boot_prev_uptime;
+extern uint32_t boot_count;
 
 // Mirrors Config.h, which is the source of truth. These are reported to hosts
 // over KISS, so they are effectively protocol constants and do not drift.
@@ -737,6 +750,22 @@ static void register_provisioning_namespaces() {
     // stayed up, which is how Rev 1's restarts went unnoticed for so long.
     .metric_int("Uptime Seconds", PROV_METRICS_DEV_UPTIME,
       []() { return (fint_t)(millis() / 1000); })
+    // esp_reset_reason()'s numeric code, and the firmware's own reading of it.
+    .metric_int("Reset Reason Code", PROV_METRICS_DEV_RESETRC,
+      []() { return (fint_t)esp_reset_reason(); })
+    .metric_string("Reset Reason", PROV_METRICS_DEV_RESETNM,
+      []() { return boot_reset_reason; })
+    // How long the run before this one lasted. Zero means the RTC domain was
+    // lost, so it was a power cycle or an EN-pin reset rather than a software
+    // restart -- the board cannot tell those apart, and says so rather than
+    // guessing.
+    .metric_int("Previous Uptime", PROV_METRICS_DEV_PREVUP,
+      []() { return (fint_t)boot_prev_uptime; })
+    // Boots since the rail was last lost. A board restarting itself climbs
+    // this; a board that was unplugged starts over. Polling it is how a
+    // restart between two samples becomes visible at all.
+    .metric_int("Boot Count", PROV_METRICS_DEV_BOOTS,
+      []() { return (fint_t)boot_count; })
 #endif
     .metric_float("Battery Voltage", PROV_METRICS_DEV_BATV, []() { return battery_voltage; })
     .metric_float("Battery Percent", PROV_METRICS_DEV_BATP, []() { return battery_percent; })
