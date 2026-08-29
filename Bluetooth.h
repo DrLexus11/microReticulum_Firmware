@@ -45,12 +45,10 @@
 #define BLE_FLUSH_TIMEOUT 20
 uint32_t bt_pairing_started = 0;
 
-#define BT_DEV_ADDR_LEN 6
-#define BT_DEV_HASH_LEN 16
-uint8_t dev_bt_mac[BT_DEV_ADDR_LEN];
-char bt_da[BT_DEV_ADDR_LEN];
-char bt_dh[BT_DEV_HASH_LEN];
-char bt_devname[11];
+// BT_DEV_* and the device-identity globals used to live here. They are declared
+// in Utilities.h now, because a device name is not a Bluetooth concern: the
+// SoftAP SSID and the DHCP hostname both use it, and both must work in an image
+// built without a Bluetooth stack.
 
 #if MCU_VARIANT == MCU_ESP32
   #if HAS_BLUETOOTH == true
@@ -172,6 +170,12 @@ char bt_devname[11];
       }
     }
 
+
+    // Classic Bluetooth has no equivalent half-open case to guard against here;
+    // this exists so callers can use one predicate on every build. See the BLE
+    // definition for why the distinction matters there.
+    bool bt_host_is_connected() { return bt_state == BT_STATE_CONNECTED; }
+
   #elif HAS_BLE == true
     bool bt_setup_hw(); void bt_security_setup();
     // CBA Why this unused leaked pointer?
@@ -213,6 +217,10 @@ char bt_devname[11];
       }
     }
 
+    int bt_bonded_peer_count() { return esp_ble_get_bond_device_num(); }
+
+    unsigned long bt_host_rx_bytes() { return SerialBT.rx_bytes_total; }
+
     void bt_debond_all() {
       // Serial.println("Debonding all");
       int dev_num = esp_ble_get_bond_device_num();
@@ -244,7 +252,13 @@ char bt_devname[11];
       bt_state = BT_STATE_ON;
     }
 
+    // Pairing telemetry. These print rather than stay commented out because
+    // the pairing path has now failed three times in a row for reasons that
+    // were invisible from outside: a phone reporting "not ready to pair" looks
+    // the same whether the request was refused, the passkey was never entered,
+    // or authentication failed afterwards. bt_state ends up ON in every case.
     void bt_passkey_notify_callback(uint32_t passkey) {
+      printf("[bt] passkey notify: %lu\n", (unsigned long)passkey);
       // Serial.printf("Got passkey notification: %d\n", passkey);
       if (bt_allow_pairing) {
         bt_ssp_pin = passkey;
@@ -285,16 +299,45 @@ char bt_devname[11];
     }
 
     bool bt_security_request_callback() {
-      if (bt_allow_pairing) {
-          // Serial.println("Accepting security request");
-          return true;
-        } else {
-          // Serial.println("Rejecting security request");
-          return false;
-        }
+      printf("[bt] security request (window=%d bonds=%d)\n",
+             (int)bt_allow_pairing, esp_ble_get_bond_device_num());
+      if (bt_allow_pairing) return true;
+
+      // A bonded peer coming back is not a new pairing attempt, and refusing it
+      // makes bonding pointless.
+      //
+      // This rejected every security request outside the 35-second pairing
+      // window, including one from a phone that had already bonded. The phone
+      // reports "device is not ready to pair", so reconnecting meant opening
+      // the window again by hand -- on a node that may be on a rooftop. A bond
+      // that must be re-authorised on every connect is not a bond.
+      //
+      // Accepting when a bond exists does widen the door: a stranger in range
+      // can still attempt a pairing while one is stored. They gain nothing
+      // without the passkey, which is the same protection that guards the
+      // pairing window itself -- and on a display-less board that passkey is
+      // BLE_FIXED_PASSKEY, which is the weakness worth fixing, rather than
+      // this. Clearing bonds (CMD_BT_UNPAIR) closes the door again.
+      if (esp_ble_get_bond_device_num() > 0) return true;
+
+      return false;
     }
 
     void bt_authentication_complete_callback(esp_ble_auth_cmpl_t auth_result) {
+      // auth_mode is the field that matters, not success. Both GATT
+      // characteristics are declared ESP_GATT_PERM_*_ENC_MITM, so a bond formed
+      // without MITM authentication -- Just Works, auth_mode without the 0x04
+      // bit -- leaves every read, write and subscribe refused for insufficient
+      // authentication. The client then connects, finds it cannot do anything,
+      // and retries: exactly the loop observed, with no bytes ever written.
+      printf("[bt] auth complete: success=%d reason=0x%02x auth_mode=0x%02x "
+             "(mitm=%d bond=%d sc=%d) bonds_now=%d\n",
+             (int)auth_result.success, (unsigned)auth_result.fail_reason,
+             (unsigned)auth_result.auth_mode,
+             (int)((auth_result.auth_mode & 0x04) != 0),
+             (int)((auth_result.auth_mode & 0x01) != 0),
+             (int)((auth_result.auth_mode & 0x08) != 0),
+             esp_ble_get_bond_device_num());
       if (auth_result.success == true) {
         // Serial.println("Authentication success");
         ble_authenticated = true;
@@ -315,6 +358,13 @@ char bt_devname[11];
 
     void bt_connect_callback(BLEServer *server) {
       uint16_t conn_id = server->getConnId();
+      printf("[bt] connected (conn=%u state=%d)\n", (unsigned)conn_id, (int)bt_state);
+      // The MTU is not known yet -- the peer negotiates it after this callback
+      // -- so it is resolved lazily on the first write. Reset it here so each
+      // new peer is measured rather than inheriting the last one's value.
+      SerialBT.peerMTU = 0;
+      SerialBT.mtu_probe_logged = false;
+      SerialBT.rx_writes_logged = 0;
       // Serial.printf("Connected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;
@@ -322,8 +372,47 @@ char bt_devname[11];
       cable_state = CABLE_STATE_DISCONNECTED;
     }
 
+    // Is a BLE host *actually* attached, as opposed to bt_state saying so?
+    //
+    // bt_state is a cached flag updated by callbacks, and a missed disconnect
+    // callback strands it at BT_STATE_CONNECTED for ever. That is not cosmetic:
+    // the main loop reads the UART only while bt_state != BT_STATE_CONNECTED,
+    // so a phantom BLE client silently captures the console *and* the
+    // provisioning link, and the node cannot be managed or even told to reboot
+    // until someone power-cycles it. Reproduced on Rev 2: the peer's host
+    // dropped the link, the board kept serving Reticulum over the mesh
+    // perfectly, and serial stayed dead.
+    //
+    // Ask the stack instead of trusting the flag. getConnectedCount() is the
+    // server's own view, so if the callback was missed but the stack knows the
+    // client is gone, control returns to the wired console.
+    bool bt_host_is_connected() {
+#if defined(BLE_PEER_TRANSPORT)
+      // A peer build serves no KISS-over-BLE service at all, so no BLE client
+      // is ever a KISS host. This must not be inferred from the GATT server:
+      // the Reticulum peer service shares that server, so a peer connecting
+      // made the firmware believe a host had attached. It then wrote KISS
+      // frames into a TxCharacteristic that this build never creates, and
+      // panicked -- the node rebooted about ten seconds after every peer
+      // connection, in a loop.
+      return false;
+#else
+      if (bt_state != BT_STATE_CONNECTED) return false;
+      if (!SerialBT.connected()) {
+        // The flag outlived the connection. Correct it, so the rest of the
+        // firmware -- and the state metric -- stop reporting a client that is
+        // not there.
+        bt_state = (wireless_kiss_policy_ready && wireless_kiss_allowed)
+                   ? BT_STATE_ON : BT_STATE_OFF;
+        return false;
+      }
+      return true;
+#endif
+    }
+
     void bt_disconnect_callback(BLEServer *server) {
       uint16_t conn_id = server->getConnId();
+      printf("[bt] disconnected (bonds=%d)\n", esp_ble_get_bond_device_num());
       // Serial.printf("Disconnected: %d\n", conn_id);
       display_unblank();
       ble_authenticated = false;
@@ -391,6 +480,19 @@ char bt_devname[11];
     }
 
     void update_bt() {
+      // Log the negotiated MTU from the main loop, never from inside the write
+      // path where it would land unframed in the middle of a KISS frame.
+      //
+      // This belongs here and only here. It was added to the classic-Bluetooth
+      // update_bt() by mistake, where SerialBT is a BluetoothSerial with no
+      // such members -- every classic-Bluetooth ESP32 board stopped compiling,
+      // and on BLE boards mtu_log_pending was set but never consumed, so the
+      // line never printed either.
+      if (SerialBT.mtu_log_pending) {
+        SerialBT.mtu_log_pending = false;
+        printf("[bt] mtu negotiated: %u (payload %u)\n",
+               (unsigned)SerialBT.peerMTU, (unsigned)SerialBT.maxTransferSize);
+      }
       if (bt_allow_pairing && millis()-bt_pairing_started >= BT_PAIRING_TIMEOUT) {
         bt_disable_pairing();
       }
@@ -403,6 +505,12 @@ char bt_devname[11];
   #endif
 
 #elif MCU_VARIANT == MCU_NRF52
+
+  // Classic Bluetooth has no equivalent half-open case to guard against here;
+  // this exists so callers can use one predicate on every build. See the BLE
+  // definition for why the distinction matters there.
+  bool bt_host_is_connected() { return bt_state == BT_STATE_CONNECTED; }
+
     uint32_t pairing_pin = 0;
 
   uint8_t eeprom_read(uint32_t mapped_addr);
@@ -644,6 +752,8 @@ char bt_devname[11];
   }
 
   void bt_debond_all() { }
+  int bt_bonded_peer_count() { return 0; }
+  unsigned long bt_host_rx_bytes() { return 0; }
 
   void update_bt() {
     if (bt_allow_pairing && millis()-bt_pairing_started >= BT_PAIRING_TIMEOUT) {

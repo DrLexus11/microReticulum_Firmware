@@ -139,6 +139,17 @@ starts**. That is the identical failure signature that cost most of a day on
 Rev 2: `startRadio BLOCKED locked=0 hwr=0`, a node healthy on WiFi and deaf on
 RF. Any change that affects `bt_ready` can produce it.
 
+**CORRECTION (measured on the branch): the Bluetooth MAC is *not* actually
+hashed into the device identity.** `dev_bt_mac` is declared and never assigned,
+on any build, so what reaches the hash is six zero bytes. The concern below is
+therefore moot as a blocker for a stack swap -- NimBLE cannot change a value
+that is never written -- and the "verify it is byte-identical first" step is
+unnecessary. It must still not be populated: every provisioned board's Ed25519
+signature was computed over a hash containing those zeros.
+
+The original note follows, kept because the reasoning is right for the case it
+assumed.
+
 **The Bluetooth MAC is hashed into the device identity.** `dev_bt_mac` is input
 to `dev_hash`, which is signature-checked against the EEPROM-stored signature.
 If a stack change alters what `dev_bt_mac` contains, `dev_hash` changes,

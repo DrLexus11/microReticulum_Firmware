@@ -77,6 +77,9 @@ public:
   BLESerial();
 
   void begin(const char *name);
+  // Kept so startAdvertising() can put the name in the advertisement itself.
+  // The library offers no getter for the name passed to BLEDevice::init().
+  std::string device_name;
   void end();
   void disconnect();
   void startAdvertising();
@@ -101,11 +104,14 @@ public:
 
   bool connected();
 
-  BLEServer *ble_server;
-  BLEAdvertising *ble_adv;
-  BLEService *SerialService;
-  BLECharacteristic *TxCharacteristic;
-  BLECharacteristic *RxCharacteristic;
+  // Initialised here, not merely assigned in SetupSerialService(): a peer
+  // build never calls that, so without these the pointers hold garbage and a
+  // null check reads as valid.
+  BLEServer *ble_server = nullptr;
+  BLEAdvertising *ble_adv = nullptr;
+  BLEService *SerialService = nullptr;
+  BLECharacteristic *TxCharacteristic = nullptr;
+  BLECharacteristic *RxCharacteristic = nullptr;
   size_t transmitBufferLength;
   unsigned long long lastFlushTime;
 
@@ -118,12 +124,24 @@ private:
   uint8_t transmitBuffer[BLE_BUFFER_SIZE];
 
   int ConnectedDeviceCount;
+#if !defined(BLE_PEER_TRANSPORT)
+  // Not built for a peer node: the RNode/KISS service is the modem role, which
+  // a peer build does not offer. See the note in BLESerial::begin().
   void SetupSerialService();
+#endif
 
-  uint16_t peerMTU;
+public:
+  // Public so the connect callback can log what was negotiated. A silently
+  // wrong MTU is what made this class drop most of every frame.
+  uint16_t peerMTU = 0;
+  bool mtu_probe_logged = false;
+  bool mtu_log_pending = false;
+  unsigned long rx_bytes_total = 0;
+  uint8_t rx_writes_logged = 0;
   uint16_t maxTransferSize = BLE_BUFFER_SIZE;
-
   bool checkMTU();
+
+private:
 
   const char *BLE_SERIAL_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
   const char *BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";

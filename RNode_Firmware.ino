@@ -30,6 +30,12 @@
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
 #endif
+// Not nested in the UDP guard: the BLE peer interface has nothing to do with
+// UDP, and the portable build has no UDP at all -- so nesting it there silently
+// dropped the include and the class with it.
+#if defined(BLE_PEER_TRANSPORT)
+#include "BLEPeerInterface.h"
+#endif
 #if defined(TCP_SERVER_TRANSPORT)
 #include "TCPServerInterface.h"
 #endif
@@ -122,8 +128,16 @@ const char* boot_reset_reason = "UNKNOWN";
   #define RTC_BOOT_MAGIC 0x52414431UL   // 'RAD1'
   RTC_NOINIT_ATTR uint32_t rtc_boot_magic;
   RTC_NOINIT_ATTR uint32_t rtc_last_uptime_s;
-  static bool     boot_rail_lost   = true;
-  static uint32_t boot_prev_uptime = 0;
+  // Boots since the rail was last lost. Survives a software reset and not a
+  // power cycle, which is exactly the distinction wanted: a board that restarts
+  // itself climbs this while a board that was unplugged starts over.
+  RTC_NOINIT_ATTR uint32_t rtc_boot_count;
+  // Not static: Provisioning.cpp reads these to expose them as metrics, and
+  // internal linkage would leave the one question they answer unanswerable
+  // without attaching a console -- which resets the board and destroys it.
+  bool     boot_rail_lost   = true;
+  uint32_t boot_prev_uptime = 0;
+  uint32_t boot_count       = 0;
 #endif
 
 #if HAS_CONSOLE
@@ -245,6 +259,41 @@ RNS::Reticulum reticulum(RNS::Type::NONE);
 RNS::Interface lora_interface(RNS::Type::NONE);
 #if defined(UDP_TRANSPORT)
 RNS::Interface udp_interface(RNS::Type::NONE);
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+// Accessors for Provisioning.cpp, which cannot see this translation unit's
+// types. Null-safe so they are readable before the interface has started.
+uint32_t ble_peer_packets_in();
+uint32_t ble_peer_packets_out();
+uint32_t ble_peer_dropped();
+bool     ble_peer_started();
+uint32_t ble_peer_last_in();
+const char* ble_peer_last_in_hex();
+uint32_t ble_peer_last_out();
+uint32_t ble_peer_mtu();
+uint32_t ble_peer_keepalives();
+uint32_t ble_peer_identity_writes();
+const char* ble_peer_last_frag_hdr();
+uint32_t ble_peer_frag_lone();
+uint32_t ble_peer_frag_start();
+// The node as a BLE peer. Distinct from BLESerial, which is the RNode/KISS
+// modem role: this one joins a phone to the mesh through this node instead of
+// handing it the radio. See BLEPeerInterface.h.
+RNS::Interface ble_peer_interface(RNS::Type::NONE);
+BLEPeerInterface* ble_peer_impl = nullptr;
+uint32_t ble_peer_packets_in()  { return ble_peer_impl ? ble_peer_impl->packets_in()  : 0; }
+uint32_t ble_peer_packets_out() { return ble_peer_impl ? ble_peer_impl->packets_out() : 0; }
+uint32_t ble_peer_dropped()     { return ble_peer_impl ? ble_peer_impl->fragments_dropped() : 0; }
+bool     ble_peer_started()     { return ble_peer_impl ? ble_peer_impl->started() : false; }
+uint32_t ble_peer_last_in()     { return ble_peer_impl ? ble_peer_impl->last_in_size() : 0; }
+const char* ble_peer_last_in_hex() { return ble_peer_impl ? ble_peer_impl->last_in_hex() : ""; }
+uint32_t ble_peer_last_out()    { return ble_peer_impl ? ble_peer_impl->last_out_size() : 0; }
+uint32_t ble_peer_mtu()         { return ble_peer_impl ? ble_peer_impl->last_mtu() : 0; }
+uint32_t ble_peer_keepalives()  { return ble_peer_impl ? ble_peer_impl->keepalives_in() : 0; }
+uint32_t ble_peer_identity_writes() { return ble_peer_impl ? ble_peer_impl->identity_writes() : 0; }
+const char* ble_peer_last_frag_hdr() { return ble_peer_impl ? ble_peer_impl->last_frag_hdr() : ""; }
+uint32_t ble_peer_frag_lone()   { return ble_peer_impl ? ble_peer_impl->frag_lone() : 0; }
+uint32_t ble_peer_frag_start()  { return ble_peer_impl ? ble_peer_impl->frag_start() : 0; }
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
@@ -584,6 +633,8 @@ void setup() {
     }
     boot_rail_lost   = (rtc_boot_magic != RTC_BOOT_MAGIC);
     boot_prev_uptime = boot_rail_lost ? 0 : rtc_last_uptime_s;
+    rtc_boot_count   = boot_rail_lost ? 1 : (rtc_boot_count + 1);
+    boot_count       = rtc_boot_count;
     rtc_boot_magic    = RTC_BOOT_MAGIC;
     rtc_last_uptime_s = 0;
     if (boot_rail_lost) {
@@ -1216,6 +1267,20 @@ void setup() {
         udp_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
       }
 #endif
+#if defined(BLE_PEER_TRANSPORT)
+      ble_peer_impl = new BLEPeerInterface();
+      ble_peer_interface = ble_peer_impl;
+      // A peer over BLE joins the mesh as a peer, exactly as one over TCP or
+      // LoRa does -- the BLE link is a transport, not a client port.
+      //
+      // This was MODE_ACCESS_POINT, which looks reasonable and is fatal:
+      // Transport::outbound blocks every announce broadcast on an AP-mode
+      // interface ("Blocking announce broadcast ... due to AP mode"). The
+      // phone therefore learned no paths, so it saw no announces, could reach
+      // no pages, and could deliver no messages, while the link itself looked
+      // perfectly healthy.
+      ble_peer_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+#endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       // Serves attached clients (residents' phones on the SoftAP, or hosts on
       // the LAN). Created whenever WiFi is on in either mode -- SoftAP is the
@@ -1272,6 +1337,11 @@ void setup() {
         RNS::Transport::register_interface(udp_interface);
         TRACEF("UDPInterface hash: %s", udp_interface.get_hash().toHex().c_str());
       }
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+      HEAD("Registering BLE Peer Interface...", RNS::LOG_TRACE);
+      RNS::Transport::register_interface(ble_peer_interface);
+      TRACEF("BLEPeerInterface hash: %s", ble_peer_interface.get_hash().toHex().c_str());
 #endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       if (wifi_mode != WR_WIFI_OFF && tcp_server_interface) {
@@ -1431,6 +1501,58 @@ void lora_receive() {
   } else {
     LoRa->receive(implicit_l);
   }
+}
+
+
+// Does a host get to reconfigure this node's radio?
+//
+// MODE_HOST means the host owns the modem -- classic RNode, the board is a
+// dumb radio. MODE_TNC means the node owns it: it runs its own Reticulum
+// stack, its parameters come from provisioning, and a client attached to it is
+// a client of the *node*, not the owner of its radio.
+//
+// That distinction was only half honoured. The setter was skipped in TNC mode,
+// but the shadow variable was written anyway, so a host's value sat there and
+// was applied at the next startRadio() -- silently retuning a node minutes or
+// hours later. It is how a phone running an ordinary RNode client took Rev 1
+// off the mesh: nothing failed, nothing logged, the node was simply gone.
+//
+// Refusing the write and answering with the value actually in force is both
+// safer and more honest: a well-behaved host sees it did not take.
+static bool host_may_set_radio() {
+  if (op_mode == MODE_HOST) return true;
+  return false;
+}
+
+// A host setting a parameter to the value it already has is not a change, and
+// refusing it breaks every well-behaved RNode client.
+//
+// Those clients configure the radio and then read it back to validate. With a
+// flat refusal the readback reports the node's own value, the comparison fails,
+// and the client aborts with "Radio configuration validation failed" -- which
+// is what happened to a correctly-configured phone whose only discrepancy was
+// 171 Hz of SX1276 PLL granularity between 867,200,000 as requested and
+// 867,199,829 as held.
+//
+// So an idempotent set is allowed through: it changes nothing, it lets a client
+// that already agrees with the node complete its handshake, and a client that
+// disagrees is still refused. The frequency tolerance covers synthesiser
+// rounding only, not a genuinely different channel.
+static bool radio_set_is_noop(uint32_t requested, uint32_t current,
+                              uint32_t tolerance) {
+  const uint32_t difference = (requested > current) ? (requested - current)
+                                                    : (current - requested);
+  return difference <= tolerance;
+}
+
+static void radio_config_refused(const char* what) {
+  static uint32_t last_refusal = 0;
+  // Rate-limited: an RNode client re-sends its whole configuration on every
+  // connect, and a reconnect loop would otherwise fill the log.
+  if (millis() - last_refusal < 2000) return;
+  last_refusal = millis();
+  printf("[radio] refused host %s: this node is in TNC mode and owns its "
+         "radio config\n", what);
 }
 
 inline void kiss_write_packet() {
@@ -2054,8 +2176,10 @@ void serial_callback(uint8_t sbyte) {
           if (freq == 0) {
             kiss_indicate_frequency();
           } else {
-            lora_freq = freq;
-            if (op_mode == MODE_HOST) setFrequency();
+            if (host_may_set_radio()) { lora_freq = freq; setFrequency(); }
+            // 1 kHz covers PLL rounding on both SX127x and SX126x; a real
+            // channel change is orders of magnitude larger.
+            else if (!radio_set_is_noop(freq, lora_freq, 1000)) { radio_config_refused("frequency"); }
             kiss_indicate_frequency();
           }
         }
@@ -2077,8 +2201,8 @@ void serial_callback(uint8_t sbyte) {
           if (bw == 0) {
             kiss_indicate_bandwidth();
           } else {
-            lora_bw = bw;
-            if (op_mode == MODE_HOST) setBandwidth();
+            if (host_may_set_radio()) { lora_bw = bw; setBandwidth(); }
+            else if (!radio_set_is_noop(bw, lora_bw, 0)) { radio_config_refused("bandwidth"); }
             kiss_indicate_bandwidth();
           }
         }
@@ -2111,8 +2235,8 @@ void serial_callback(uint8_t sbyte) {
           if (txp > 17) txp = 17;
         #endif
 
-        lora_txp = txp;
-        if (op_mode == MODE_HOST) setTXPower();
+        if (host_may_set_radio()) { lora_txp = txp; setTXPower(); }
+        else if (!radio_set_is_noop(txp, lora_txp, 0)) { radio_config_refused("tx power"); }
         kiss_indicate_txpower();
       }
     } else if (command == CMD_SF) {
@@ -2123,8 +2247,8 @@ void serial_callback(uint8_t sbyte) {
         if (sf < 5) sf = 5;
         if (sf > 12) sf = 12;
 
-        lora_sf = sf;
-        if (op_mode == MODE_HOST) setSpreadingFactor();
+        if (host_may_set_radio()) { lora_sf = sf; setSpreadingFactor(); }
+        else if (!radio_set_is_noop(sf, lora_sf, 0)) { radio_config_refused("spreading factor"); }
         kiss_indicate_spreadingfactor();
       }
     } else if (command == CMD_CR) {
@@ -2135,8 +2259,8 @@ void serial_callback(uint8_t sbyte) {
         if (cr < 5) cr = 5;
         if (cr > 8) cr = 8;
 
-        lora_cr = cr;
-        if (op_mode == MODE_HOST) setCodingRate();
+        if (host_may_set_radio()) { lora_cr = cr; setCodingRate(); }
+        else if (!radio_set_is_noop(cr, lora_cr, 0)) { radio_config_refused("coding rate"); }
         kiss_indicate_codingrate();
       }
     } else if (command == CMD_IMPLICIT) {
@@ -3356,6 +3480,18 @@ void loop() {
 #if defined(HAS_RNS) && defined(RRC_HUB)
   rrc_hub_loop();
 #endif
+#if defined(BLE_PEER_TRANSPORT)
+  // Started lazily rather than at init: the GATT server does not exist until
+  // Bluetooth has come up, and the transport identity is not loaded until
+  // Reticulum has. Waiting for both here avoids ordering assumptions that
+  // would fail silently.
+  if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
+      bt_state != BT_STATE_OFF && bt_state != BT_STATE_NA &&
+      SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
+    ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
+  }
+  if (ble_peer_impl != nullptr) ble_peer_impl->loop();
+#endif
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
   radio_rx_watchdog();
   lora_config_consistency_watch();
@@ -3646,7 +3782,7 @@ void buffer_serial() {
     while (
       c < MAX_CYCLES &&
       #if HAS_WIFI
-      ( (bt_state != BT_STATE_CONNECTED && Serial.available()) || (bt_state == BT_STATE_CONNECTED && SerialBT.available()) || (wr_state >= WR_STATE_ON && wifi_remote_available()) )
+      ( (!bt_host_is_connected() && Serial.available()) || (bt_host_is_connected() && SerialBT.available()) || (wr_state >= WR_STATE_ON && wifi_remote_available()) )
       #else
       ( (bt_state != BT_STATE_CONNECTED && Serial.available()) || (bt_state == BT_STATE_CONNECTED && SerialBT.available()) )
       #endif
@@ -3660,7 +3796,14 @@ void buffer_serial() {
       #if MCU_VARIANT != MCU_ESP32 && MCU_VARIANT != MCU_NRF52
         if (!fifo_isfull_locked(&serialFIFO)) { fifo_push_locked(&serialFIFO, Serial.read()); }
       #elif HAS_BLUETOOTH || HAS_BLE == true || HAS_WIFI
-        if      (bt_state == BT_STATE_CONNECTED) { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, SerialBT.read()); } }
+        // The Bluetooth arm is compiled only when a stack exists. The condition
+        // above admits a Wi-Fi-only image, where bt_state can never leave
+        // BT_STATE_NA and SerialBT is not declared at all.
+        #if HAS_BLUETOOTH == true || HAS_BLE == true
+        if      (bt_host_is_connected())         { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, SerialBT.read()); } }
+        #else
+        if      (false)                          { }
+        #endif
         #if HAS_WIFI
         else if (wifi_host_is_connected())       { if (!fifo_isfull(&serialFIFO)) { fifo_push(&serialFIFO, wifi_remote_read()); } }
         #endif

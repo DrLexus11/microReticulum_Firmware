@@ -54,6 +54,38 @@
 #define PROV_NS_IFAC_UDP        111
 #define PROV_NS_SECURE_NODE     112
 #define PROV_NS_RRC             113
+#define PROV_NS_BLUETOOTH       114
+
+#define PROV_BT_ENABLED            1
+#define PROV_BT_PAIR               2
+
+#define PROV_BT_STATE             32
+#define PROV_BT_PASSKEY           33
+#define PROV_BT_DEVNAME           34
+#define PROV_BT_BONDS             35
+// Bytes the attached BLE host has written to us. Distinguishes "the phone sent
+// nothing" from "the phone sent it and we lost it downstream".
+#define PROV_BT_RXBYTES           36
+// BLE peer interface (the node-as-peer path, not the RNode/KISS one). Says
+// whether a single fragment has ever crossed the peer link, which no console
+// line can answer without resetting the board and destroying the evidence.
+#define PROV_BT_PEER_IN           37
+#define PROV_BT_PEER_OUT          38
+#define PROV_BT_PEER_DROPPED      39
+#define PROV_BT_PEER_UP           40
+// Packet-level diagnostics. Rev1's USB CDC resets the board when a console is
+// attached, so the console cannot be read without destroying the very session
+// being diagnosed. These carry the same information over provisioning, which
+// reads without resetting.
+#define PROV_BT_PEER_LASTIN       41
+#define PROV_BT_PEER_LASTIN_HEX   42
+#define PROV_BT_PEER_LASTOUT      43
+#define PROV_BT_PEER_MTU          44
+#define PROV_BT_PEER_KEEPALIVES   45
+#define PROV_BT_PEER_IDENTITY_RX  46
+#define PROV_BT_PEER_FRAGHDR      47
+#define PROV_BT_PEER_FRAG_LONE    49
+#define PROV_BT_PEER_FRAG_START   50
 
 #define PROV_GENERAL_KISS_LOG        1
 #define PROV_GENERAL_LORA_MODE       2
@@ -80,6 +112,10 @@
 #define PROV_METRICS_DEV_HEAPBLK  7
 #define PROV_METRICS_DEV_PSRAM    8
 #define PROV_METRICS_DEV_UPTIME   9
+#define PROV_METRICS_DEV_RESETRC 10
+#define PROV_METRICS_DEV_RESETNM 11
+#define PROV_METRICS_DEV_PREVUP  12
+#define PROV_METRICS_DEV_BOOTS   13
 
 #define PROV_METRICS_LORA_FREQ  1
 #define PROV_METRICS_LORA_BW    2
@@ -92,6 +128,12 @@
 #define PROV_METRICS_LORA_LSNR  9
 #define PROV_METRICS_LORA_STAL  10
 #define PROV_METRICS_LORA_LTAL  11
+// Where a host's packets actually get to. tx_calls counts modem keyings and
+// queue_height counts frames waiting; together they say whether traffic from an
+// attached KISS host reaches the radio queue, reaches the modem, or never
+// arrives. Only readable as metrics -- the console equivalent resets the board.
+#define PROV_METRICS_LORA_TXCALLS 12
+#define PROV_METRICS_LORA_QUEUE   13
 
 #define PROV_METRICS_UDP_ADDR   1
 #define PROV_METRICS_UDP_PORT   2

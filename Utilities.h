@@ -76,6 +76,24 @@ uint8_t eeprom_read(uint32_t mapped_addr);
 	bool display_blanked = false;
 #endif
 
+// Device identity and naming. Declared before the Bluetooth guard below and
+// outside it, because they are not Bluetooth concerns: dev_bt_mac feeds the
+// signed device hash, and bt_devname is the SoftAP SSID and the DHCP hostname.
+// An image built with RAD01_NO_BLE still needs all of that.
+#define BT_DEV_ADDR_LEN 6
+#define BT_DEV_HASH_LEN 16
+
+// Never assigned, anywhere, on any build. It is six zero bytes that get hashed
+// into dev_hash, which means the device identity is *not* bound to the
+// Bluetooth MAC despite appearances. Left exactly as it is on purpose: every
+// provisioned board's Ed25519 device signature was computed over a hash that
+// includes these six zeros, and populating them now would invalidate all of
+// them. See docs/BluetoothOverhaul.md.
+uint8_t dev_bt_mac[BT_DEV_ADDR_LEN];
+char bt_da[BT_DEV_ADDR_LEN];
+char bt_dh[BT_DEV_HASH_LEN];
+char bt_devname[11];
+
 #if HAS_BLUETOOTH == true || HAS_BLE == true
 	void kiss_indicate_btpin();
   #include "Bluetooth.h"
@@ -869,7 +887,10 @@ void serial_write(uint8_t byte) {
 		// Logs (on_log, _write printf) keep going to Serial.
 		native_kiss_tcp::write(byte);
 	#elif HAS_BLUETOOTH || HAS_BLE == true
-		if (bt_state != BT_STATE_CONNECTED) {
+		// Not bt_state directly: a missed disconnect callback strands that flag
+		// at CONNECTED and every byte of console and provisioning output then
+		// goes to a client that is not there. See bt_host_is_connected().
+		if (!bt_host_is_connected()) {
 			#if HAS_WIFI
 				if (wifi_host_is_connected()) { wifi_remote_write(byte); }
 				else                          { Serial.write(byte); }

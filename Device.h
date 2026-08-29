@@ -236,7 +236,26 @@ bool device_init() {
 
 #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52
 bool device_init() {
-  if (bt_ready) {
+  // Bluetooth readiness gates this only where Bluetooth exists.
+  //
+  // This used to be a plain `if (bt_ready)`, which meant a build without a
+  // Bluetooth stack could never initialise the device at all: bt_ready stays
+  // false for ever, device_init() returns false, hw_ready is 0, and the radio
+  // never starts. The board comes up, joins Wi-Fi, serves pages and answers
+  // provisioning while being completely deaf on RF -- the same silent failure
+  // signature as an unwritten firmware hash, and indistinguishable from it
+  // without reading [init] closely.
+  //
+  // It is the other half of the RAD01_NO_BLE problem. The dev_hash side was
+  // fixed by hashing dev_bt_mac unconditionally; this gate was missed, so the
+  // no-Bluetooth image compiled, produced a correct hash, and still refused to
+  // bring up the radio.
+#if HAS_BLUETOOTH == true || HAS_BLE == true
+  const bool bt_gate_ok = bt_ready;
+#else
+  const bool bt_gate_ok = true;
+#endif
+  if (bt_gate_ok) {
     #if MCU_VARIANT == MCU_ESP32
     for (uint8_t i=0; i<EEPROM_SIG_LEN; i++){dev_eeprom_signature[i]=EEPROM.read(eeprom_addr(ADDR_SIGNATURE+i));}
     mbedtls_md_context_t ctx;
@@ -244,12 +263,23 @@ bool device_init() {
     mbedtls_md_init(&ctx);
     mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 0);
     mbedtls_md_starts(&ctx);
-    #if HAS_BLUETOOTH == true || HAS_BLE == true
-      mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);
-    #else
-      // TODO: Get from BLE stack instead
-      // mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);
-    #endif
+    // Unconditional, and it must stay that way.
+    //
+    // This used to be compiled out when no Bluetooth stack was present, which
+    // meant a Wi-Fi-only image hashed a *different* input than a Bluetooth one
+    // on the same board -- so dev_hash changed, the Ed25519 device signature no
+    // longer verified, and the board came up unvalidated. Switching a
+    // provisioned unit between the two images would have looked exactly like
+    // the firmware-hash failure that already cost this project days: healthy on
+    // Wi-Fi, deaf on RF.
+    //
+    // The name misleads. dev_bt_mac is never assigned on any build (see
+    // Utilities.h), so these are six zero bytes and the device identity is not
+    // bound to the Bluetooth MAC at all. That is a real weakness, and it must
+    // not be fixed here: every provisioned board's signature was computed over
+    // a hash containing these zeros, and filling them in would invalidate all
+    // of them at once.
+    mbedtls_md_update(&ctx, dev_bt_mac, BT_DEV_ADDR_LEN);
     mbedtls_md_update(&ctx, dev_eeprom_signature, EEPROM_SIG_LEN);
     mbedtls_md_finish(&ctx, dev_hash);
     mbedtls_md_free(&ctx);
@@ -261,12 +291,9 @@ bool device_init() {
 
     hash.begin(CRYS_HASH_SHA256_mode);
 
-    #if HAS_BLUETOOTH == true || HAS_BLE == true
-      hash.update(dev_bt_mac, BT_DEV_ADDR_LEN);
-    #else
-      // TODO: Get from BLE stack instead
-      // hash.update(dev_bt_mac, BT_DEV_ADDR_LEN);
-    #endif
+    // Unconditional, for the reason given in the ESP32 branch above: the hash
+    // must not depend on whether a Bluetooth stack was compiled in.
+    hash.update(dev_bt_mac, BT_DEV_ADDR_LEN);
     hash.update(dev_eeprom_signature, EEPROM_SIG_LEN);
 
     hash.end(dev_hash);

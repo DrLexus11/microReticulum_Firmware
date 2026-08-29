@@ -24,6 +24,67 @@
 #include "RRCHub.h"
 #include "RRCBridge.h"
 #endif
+
+// Not nested inside the RRC_HUB guard above, where these used to sit. Bluetooth
+// provisioning has nothing to do with whether the RRC hub is compiled in, and
+// the nesting meant a build without the hub silently lost the declarations.
+#if (HAS_BLUETOOTH == true || HAS_BLE == true) && MCU_VARIANT == MCU_ESP32
+// Declared rather than included. Config.h cannot be included here -- it collides
+// on macro names -- and Bluetooth.h is a definitions header pulled into the
+// sketch translation unit. These all have external linkage, so declaring them
+// links correctly, and doing it explicitly keeps the guard above resting only on
+// macros Boards.h actually provides. Guarding on a macro this file cannot see
+// has silently dropped provisioning fields twice in this project.
+extern uint8_t bt_state;
+extern uint32_t pairing_pin;
+extern char bt_devname[11];
+void bt_start();
+void bt_stop();
+void bt_conf_save(bool);
+void bt_enable_pairing();
+void bt_disable_pairing();
+int bt_bonded_peer_count();
+unsigned long bt_host_rx_bytes();
+#if defined(BLE_PEER_TRANSPORT)
+uint32_t ble_peer_packets_in();
+uint32_t ble_peer_packets_out();
+uint32_t ble_peer_dropped();
+bool     ble_peer_started();
+uint32_t ble_peer_last_in();
+const char* ble_peer_last_in_hex();
+uint32_t ble_peer_last_out();
+uint32_t ble_peer_mtu();
+uint32_t ble_peer_keepalives();
+uint32_t ble_peer_identity_writes();
+const char* ble_peer_last_frag_hdr();
+uint32_t ble_peer_frag_lone();
+uint32_t ble_peer_frag_start();
+#endif
+
+// Mirrors Config.h, which is the source of truth. These are reported to hosts
+// over KISS, so they are effectively protocol constants and do not drift.
+#define PROV_BT_STATE_NA        0xff
+#define PROV_BT_STATE_OFF       0x00
+#define PROV_BT_STATE_PAIRING   0x02
+#define PROV_BT_STATE_CONNECTED 0x03
+#endif
+
+#if MCU_VARIANT == MCU_ESP32
+// Why a board restarted, readable without attaching to it.
+//
+// The reason a restart went unexplained for two days is circular: reading the
+// boot banner requires opening the USB console, and opening it resets the
+// board. Exposing it as a metric breaks that circle, the same way heap and bond
+// count did.
+//
+// Declared outside the Bluetooth guard above, because these have nothing to do
+// with Bluetooth -- nesting them there compiled on the RAD boards and broke
+// every board without a Bluetooth stack.
+extern const char* boot_reset_reason;
+extern bool boot_rail_lost;
+extern uint32_t boot_prev_uptime;
+extern uint32_t boot_count;
+#endif
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
 
@@ -280,6 +341,107 @@ static void register_provisioning_namespaces() {
       .field_string("NomadNet Name", PROV_GENERAL_NOMADNET_NAME, FF_REBOOT_REQUIRED, nomadnet_name, sizeof(nomadnet_name)-1,
         [](const Value& v) { strncpy(nomadnet_name, v.as_string().c_str(), sizeof(nomadnet_name)); return true; },
         []() { return nomadnet_name; });
+#endif
+
+#if HAS_BLE == true && MCU_VARIANT == MCU_ESP32
+  // ----- Bluetooth -----
+  //
+  // Deliberately outside the RRC_HUB guard below. Bluetooth provisioning has
+  // nothing to do with the group-chat hub, and nesting it there silently
+  // removed the entire namespace -- pairing controls, state, and the BLE peer
+  // diagnostics -- from every build that does not define RRC_HUB.
+  //
+  // Conditioned on HAS_BLE rather than "BLUETOOTH or BLE": every field here is
+  // a BLE concept (pairing passkey, bonded peers, the peer interface), and a
+  // classic BluetoothSerial board defines none of the accessors behind them.
+  // Registering it there would mean inventing zero-valued stubs for a surface
+  // that means nothing on that hardware. Classic-Bluetooth provisioning is a
+  // separate piece of work, not a side effect of this one.
+  //
+  // There was no provisioning surface for Bluetooth at all, and that is most of
+  // why pairing "did not work". The stack is configured correctly --
+  // ESP_LE_AUTH_REQ_SC_MITM_BOND and ESP_IO_CAP_OUT are already set, which is
+  // bonding, MITM and Secure Connections with a display-only IO capability --
+  // but bt_security_request_callback() rejects every pairing attempt unless
+  // bt_allow_pairing is true, and that is only true for 35 seconds after an
+  // explicit trigger. Until now the only triggers were a KISS frame nothing
+  // sends by hand and a five-second button hold.
+  //
+  // So a phone tapping the device in its Bluetooth settings was refused, while
+  // a GATT explorer that never requests pairing appeared to work. That is the
+  // reported symptom exactly, and it is not a stack defect.
+  //
+  // The passkey is exposed because on a board with no display there is
+  // otherwise no way to learn it. It is BLE_FIXED_PASSKEY on such boards, a
+  // compile-time constant, so this reveals nothing the firmware image does not
+  // already contain -- and it is read over the same link that can already
+  // reflash and reconfigure the node.
+  Provisioner::instance()
+    .register_namespace("Bluetooth", PROV_NS_BLUETOOTH)
+      .field_bool("Enabled", PROV_BT_ENABLED, FF_LIVE_APPLY,
+        bt_state != PROV_BT_STATE_OFF && bt_state != PROV_BT_STATE_NA,
+        [](const Value& v) {
+          if (v.as_bool()) { bt_start(); bt_conf_save(true); }
+          else             { bt_stop();  bt_conf_save(false); }
+          return true;
+        },
+        []() { return bt_state != PROV_BT_STATE_OFF && bt_state != PROV_BT_STATE_NA; })
+      // Write true to open the pairing window. Not a stored setting: it is a
+      // momentary action, and it reads back false because the window closes
+      // itself after BT_PAIRING_TIMEOUT.
+      .field_bool("Pair Now", PROV_BT_PAIR, FF_LIVE_APPLY, false,
+        [](const Value& v) {
+          if (!v.as_bool()) { bt_disable_pairing(); return true; }
+          if (bt_state == PROV_BT_STATE_OFF) { bt_start(); bt_conf_save(true); }
+          if (bt_state != PROV_BT_STATE_CONNECTED) { bt_enable_pairing(); }
+          return true;
+        },
+        []() { return bt_state == PROV_BT_STATE_PAIRING; })
+      .metric_int("State", PROV_BT_STATE,
+        []() { return static_cast<fint_t>(bt_state); })
+      .metric_int("Pairing Passkey", PROV_BT_PASSKEY,
+        []() { return static_cast<fint_t>(pairing_pin); })
+      .metric_string("Device Name", PROV_BT_DEVNAME,
+        []() { return bt_devname; })
+      // Whether a bond is actually stored. A phone reporting "not ready to
+      // pair" on reconnect looks identical whether the node has forgotten the
+      // bond or is refusing a peer it remembers, and those have opposite
+      // fixes. This is the number that tells them apart.
+      .metric_int("Bonded Peers", PROV_BT_BONDS,
+        []() { return static_cast<fint_t>(bt_bonded_peer_count()); })
+      .metric_int("Host RX Bytes", PROV_BT_RXBYTES,
+        []() { return static_cast<fint_t>(bt_host_rx_bytes()); })
+#if defined(BLE_PEER_TRANSPORT)
+      .metric_int("Peer Service Up", PROV_BT_PEER_UP,
+        []() { return static_cast<fint_t>(ble_peer_started() ? 1 : 0); })
+      .metric_int("Peer Packets In", PROV_BT_PEER_IN,
+        []() { return static_cast<fint_t>(ble_peer_packets_in()); })
+      .metric_int("Peer Last In Bytes", PROV_BT_PEER_LASTIN,
+        []() { return static_cast<fint_t>(ble_peer_last_in()); })
+      .metric_string("Peer Last In Head", PROV_BT_PEER_LASTIN_HEX,
+        []() { return std::string(ble_peer_last_in_hex()); })
+      .metric_int("Peer Last Out Bytes", PROV_BT_PEER_LASTOUT,
+        []() { return static_cast<fint_t>(ble_peer_last_out()); })
+      .metric_int("Peer Negotiated MTU", PROV_BT_PEER_MTU,
+        []() { return static_cast<fint_t>(ble_peer_mtu()); })
+      .metric_int("Peer Keepalives In", PROV_BT_PEER_KEEPALIVES,
+        []() { return static_cast<fint_t>(ble_peer_keepalives()); })
+      .metric_int("Peer Identity Writes", PROV_BT_PEER_IDENTITY_RX,
+        []() { return static_cast<fint_t>(ble_peer_identity_writes()); })
+      .metric_string("Peer Last Frag Hdr", PROV_BT_PEER_FRAGHDR,
+        []() { return std::string(ble_peer_last_frag_hdr()); })
+      .metric_int("Peer Frags LONE", PROV_BT_PEER_FRAG_LONE,
+        []() { return static_cast<fint_t>(ble_peer_frag_lone()); })
+      .metric_int("Peer Frags START", PROV_BT_PEER_FRAG_START,
+        []() { return static_cast<fint_t>(ble_peer_frag_start()); })
+      .metric_int("Peer Packets Out", PROV_BT_PEER_OUT,
+        []() { return static_cast<fint_t>(ble_peer_packets_out()); })
+      // Fragments discarded for arriving out of order or with no START. A
+      // climbing count with zero packets in means the framing disagrees.
+      .metric_int("Peer Fragments Dropped", PROV_BT_PEER_DROPPED,
+        []() { return static_cast<fint_t>(ble_peer_dropped()); })
+#endif
+      .end();
 #endif
 
 #if defined(RRC_HUB)
@@ -655,6 +817,22 @@ static void register_provisioning_namespaces() {
     // stayed up, which is how Rev 1's restarts went unnoticed for so long.
     .metric_int("Uptime Seconds", PROV_METRICS_DEV_UPTIME,
       []() { return (fint_t)(millis() / 1000); })
+    // esp_reset_reason()'s numeric code, and the firmware's own reading of it.
+    .metric_int("Reset Reason Code", PROV_METRICS_DEV_RESETRC,
+      []() { return (fint_t)esp_reset_reason(); })
+    .metric_string("Reset Reason", PROV_METRICS_DEV_RESETNM,
+      []() { return boot_reset_reason; })
+    // How long the run before this one lasted. Zero means the RTC domain was
+    // lost, so it was a power cycle or an EN-pin reset rather than a software
+    // restart -- the board cannot tell those apart, and says so rather than
+    // guessing.
+    .metric_int("Previous Uptime", PROV_METRICS_DEV_PREVUP,
+      []() { return (fint_t)boot_prev_uptime; })
+    // Boots since the rail was last lost. A board restarting itself climbs
+    // this; a board that was unplugged starts over. Polling it is how a
+    // restart between two samples becomes visible at all.
+    .metric_int("Boot Count", PROV_METRICS_DEV_BOOTS,
+      []() { return (fint_t)boot_count; })
 #endif
     .metric_float("Battery Voltage", PROV_METRICS_DEV_BATV, []() { return battery_voltage; })
     .metric_float("Battery Percent", PROV_METRICS_DEV_BATP, []() { return battery_percent; })
@@ -697,6 +875,13 @@ static void register_provisioning_namespaces() {
         .metric_int("Current RSSI", PROV_METRICS_LORA_CRSSI, []() { return current_rssi; })
         .metric_int("Noise Floor", PROV_METRICS_LORA_NF, []() { return (uint16_t)noise_floor; })
         .metric_int("Last RSSI", PROV_METRICS_LORA_LRSSI, []() { return (uint16_t)last_rssi; })
+        .metric_int("TX Calls", PROV_METRICS_LORA_TXCALLS,
+          []() { extern volatile uint32_t tx_calls; return (fint_t)tx_calls; })
+        .metric_int("TX Queue", PROV_METRICS_LORA_QUEUE,
+          // uint8_t, not uint16_t. Declaring the wrong width read adjacent
+          // memory and reported 61955 for a queue that holds at most a handful
+          // of frames -- a metric that lies is worse than one that is absent.
+          []() { extern volatile uint8_t queue_height; return (fint_t)queue_height; })
         .metric_int("Last SNR", PROV_METRICS_LORA_LSNR, []() { return (uint16_t)((int8_t)last_snr_raw) / 4.0f; })
         .metric_float("ST Airtime Limit", PROV_METRICS_LORA_STAL, []() { return st_airtime_limit; })
         .metric_float("LT Airtime Limit", PROV_METRICS_LORA_LTAL, []() { return lt_airtime_limit; })
