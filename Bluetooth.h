@@ -165,6 +165,13 @@ uint32_t bt_pairing_started = 0;
     }
 
     void update_bt() {
+      // Log the negotiated MTU from the main loop, never from inside the write
+      // path where it would land unframed in the middle of a KISS frame.
+      if (SerialBT.mtu_log_pending) {
+        SerialBT.mtu_log_pending = false;
+        printf("[bt] mtu negotiated: %u (payload %u)\n",
+               (unsigned)SerialBT.peerMTU, (unsigned)SerialBT.maxTransferSize);
+      }
       if (bt_allow_pairing && millis()-bt_pairing_started >= BT_PAIRING_TIMEOUT) {
         bt_disable_pairing();
       }

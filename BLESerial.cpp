@@ -106,23 +106,24 @@ size_t BLESerial::write(uint8_t byte) {
 bool BLESerial::checkMTU() {
   if (ble_server == nullptr || ble_server->getConnectedCount() <= 0) return false;
   const uint16_t negotiated = ble_server->getPeerMTU(ble_server->getConnId());
-  if (negotiated < MIN_MTU) {
-    if (!mtu_probe_logged) {
-      mtu_probe_logged = true;
-      printf("[bt] mtu probe: peer reports %u, below MIN_MTU %u; still %u\n",
-             (unsigned)negotiated, (unsigned)MIN_MTU, (unsigned)maxTransferSize);
-    }
-    return false;
-  }
+  if (negotiated < MIN_MTU) return false;
   peerMTU = negotiated;
   // Three bytes of ATT notification header come off the usable payload.
   const uint16_t usable = (uint16_t)(negotiated - 3);
   maxTransferSize = (usable < BLE_BUFFER_SIZE) ? usable : (uint16_t)BLE_BUFFER_SIZE;
-  // Logged here rather than at the call sites: write() resolves this silently
-  // on the first byte, so a log in flush() never fired and the absence of a
-  // line looked like a failure when it was not.
-  printf("[bt] mtu negotiated: %u (payload %u)\n",
-         (unsigned)peerMTU, (unsigned)maxTransferSize);
+  // Deliberately does NOT log here.
+  //
+  // checkMTU() is reached from write() and flush(), i.e. from inside
+  // serial_write() while a KISS frame is being emitted. A printf at this point
+  // injects *unframed* text into the middle of that frame: the host's RNode
+  // parser desynchronises, never completes its handshake, and RNS leaves the
+  // interface offline with "Cannot send - interface is offline". Observed
+  // exactly that on a phone -- the first thing it read off the link was
+  // "[bt] mtu negotiated: 512 (payload 509)" as raw bytes, where a KISS frame
+  // should have been.
+  //
+  // The value is published for the main loop to log instead; see update_bt().
+  mtu_log_pending = true;
   return true;
 }
 
@@ -232,13 +233,10 @@ void BLESerial::onWrite(BLECharacteristic *characteristic) {
     // phone, which means it never has anything to answer -- and that is either
     // because the commands never arrive or because they arrive and are not
     // consumed. This separates the two, and it is the only place that can.
+    // Counted, not printed. Anything written to the console while a host is
+    // attached goes to that host, and unframed bytes in a KISS stream are what
+    // broke the RNode handshake.
     rx_bytes_total += value.length();
-    if (rx_writes_logged < 6) {
-      rx_writes_logged++;
-      printf("[bt] rx write: %u bytes (total %lu) first=0x%02x\n",
-             (unsigned)value.length(), (unsigned long)rx_bytes_total,
-             value.length() ? (unsigned)(uint8_t)value[0] : 0);
-    }
     for (int i = 0; i < value.length(); i++) { rx_buffer.push(value[i]); }
   }
 }
