@@ -1782,10 +1782,29 @@ bool startRadio() {
         #endif
         radio_error = true;
         kiss_indicate_error(ERROR_INITRADIO);
-        led_indicate_error(0);
+        // Bounded, not forever. led_indicate_error(0) never returns, so this
+        // function could not report failure to its caller and the node simply
+        // stopped -- main loop, BLE, watchdog and all -- displaying one LED
+        // pattern until it was power-cycled.
+        //
+        // That defeats the recovery radio_rx_watchdog() was written for: it
+        // reinitialises the modem when nothing demodulates and is explicitly
+        // built to tolerate a start that keeps failing ("a permanently
+        // unstartable radio retries on the normal interval"). It never got the
+        // chance, because startRadio() hung before returning.
+        //
+        // A host-tethered modem can defensibly stop and wait to be noticed. A
+        // standalone node on a battery cannot: observed in the field as a node
+        // that meshed briefly, went quiet, and then wedged with a repeating LED
+        // pattern and no BLE, needing a power cycle to recover.
+        led_indicate_error(5);
         return false;
       } else {
         radio_online = true;
+        // Clear the sticky failure flag. It gated the display's error state and
+        // nothing ever reset it, so a node that recovered on a watchdog retry
+        // kept reporting a radio fault it no longer had.
+        radio_error = false;
         printf("[radio] startRadio OK at %lums\n", (unsigned long)millis());
 
         init_channel_stats();
