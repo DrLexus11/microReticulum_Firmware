@@ -44,6 +44,22 @@ void bt_conf_save(bool);
 void bt_enable_pairing();
 void bt_disable_pairing();
 int bt_bonded_peer_count();
+unsigned long bt_host_rx_bytes();
+#if defined(BLE_PEER_TRANSPORT)
+uint32_t ble_peer_packets_in();
+uint32_t ble_peer_packets_out();
+uint32_t ble_peer_dropped();
+bool     ble_peer_started();
+uint32_t ble_peer_last_in();
+const char* ble_peer_last_in_hex();
+uint32_t ble_peer_last_out();
+uint32_t ble_peer_mtu();
+uint32_t ble_peer_keepalives();
+uint32_t ble_peer_identity_writes();
+const char* ble_peer_last_frag_hdr();
+uint32_t ble_peer_frag_lone();
+uint32_t ble_peer_frag_start();
+#endif
 
 // Mirrors Config.h, which is the source of truth. These are reported to hosts
 // over KISS, so they are effectively protocol constants and do not drift.
@@ -382,6 +398,38 @@ static void register_provisioning_namespaces() {
       // fixes. This is the number that tells them apart.
       .metric_int("Bonded Peers", PROV_BT_BONDS,
         []() { return static_cast<fint_t>(bt_bonded_peer_count()); })
+      .metric_int("Host RX Bytes", PROV_BT_RXBYTES,
+        []() { return static_cast<fint_t>(bt_host_rx_bytes()); })
+#if defined(BLE_PEER_TRANSPORT)
+      .metric_int("Peer Service Up", PROV_BT_PEER_UP,
+        []() { return static_cast<fint_t>(ble_peer_started() ? 1 : 0); })
+      .metric_int("Peer Packets In", PROV_BT_PEER_IN,
+        []() { return static_cast<fint_t>(ble_peer_packets_in()); })
+      .metric_int("Peer Last In Bytes", PROV_BT_PEER_LASTIN,
+        []() { return static_cast<fint_t>(ble_peer_last_in()); })
+      .metric_string("Peer Last In Head", PROV_BT_PEER_LASTIN_HEX,
+        []() { return std::string(ble_peer_last_in_hex()); })
+      .metric_int("Peer Last Out Bytes", PROV_BT_PEER_LASTOUT,
+        []() { return static_cast<fint_t>(ble_peer_last_out()); })
+      .metric_int("Peer Negotiated MTU", PROV_BT_PEER_MTU,
+        []() { return static_cast<fint_t>(ble_peer_mtu()); })
+      .metric_int("Peer Keepalives In", PROV_BT_PEER_KEEPALIVES,
+        []() { return static_cast<fint_t>(ble_peer_keepalives()); })
+      .metric_int("Peer Identity Writes", PROV_BT_PEER_IDENTITY_RX,
+        []() { return static_cast<fint_t>(ble_peer_identity_writes()); })
+      .metric_string("Peer Last Frag Hdr", PROV_BT_PEER_FRAGHDR,
+        []() { return std::string(ble_peer_last_frag_hdr()); })
+      .metric_int("Peer Frags LONE", PROV_BT_PEER_FRAG_LONE,
+        []() { return static_cast<fint_t>(ble_peer_frag_lone()); })
+      .metric_int("Peer Frags START", PROV_BT_PEER_FRAG_START,
+        []() { return static_cast<fint_t>(ble_peer_frag_start()); })
+      .metric_int("Peer Packets Out", PROV_BT_PEER_OUT,
+        []() { return static_cast<fint_t>(ble_peer_packets_out()); })
+      // Fragments discarded for arriving out of order or with no START. A
+      // climbing count with zero packets in means the framing disagrees.
+      .metric_int("Peer Fragments Dropped", PROV_BT_PEER_DROPPED,
+        []() { return static_cast<fint_t>(ble_peer_dropped()); })
+#endif
       .end();
 #endif
 
@@ -815,6 +863,13 @@ static void register_provisioning_namespaces() {
         .metric_int("Current RSSI", PROV_METRICS_LORA_CRSSI, []() { return current_rssi; })
         .metric_int("Noise Floor", PROV_METRICS_LORA_NF, []() { return (uint16_t)noise_floor; })
         .metric_int("Last RSSI", PROV_METRICS_LORA_LRSSI, []() { return (uint16_t)last_rssi; })
+        .metric_int("TX Calls", PROV_METRICS_LORA_TXCALLS,
+          []() { extern volatile uint32_t tx_calls; return (fint_t)tx_calls; })
+        .metric_int("TX Queue", PROV_METRICS_LORA_QUEUE,
+          // uint8_t, not uint16_t. Declaring the wrong width read adjacent
+          // memory and reported 61955 for a queue that holds at most a handful
+          // of frames -- a metric that lies is worse than one that is absent.
+          []() { extern volatile uint8_t queue_height; return (fint_t)queue_height; })
         .metric_int("Last SNR", PROV_METRICS_LORA_LSNR, []() { return (uint16_t)((int8_t)last_snr_raw) / 4.0f; })
         .metric_float("ST Airtime Limit", PROV_METRICS_LORA_STAL, []() { return st_airtime_limit; })
         .metric_float("LT Airtime Limit", PROV_METRICS_LORA_LTAL, []() { return lt_airtime_limit; })
