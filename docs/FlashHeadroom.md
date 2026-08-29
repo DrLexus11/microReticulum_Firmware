@@ -84,6 +84,22 @@ What this does and does not say: 580 KB of flash and 27 KB of RAM is the cost of
 return, not the expected saving. NimBLE has to fit somewhere inside that
 figure. Quote it as a bound.
 
+**The runtime saving is far larger than the image saving.** Measured on Rev 2
+with the bridge, hub and propagation store all running:
+
+| | With Bluedroid | Without |
+| --- | --- | --- |
+| Internal heap free | 41,956 | 159,704 |
+| Largest free block | 24,564 | 139,252 |
+| Heap total | ~250,000 | 293,156 |
+
+That is roughly 118 KB of internal RAM returned, against 27 KB in the linked
+image, because the stack also reserves controller and working buffers that never
+appear in the build output. The largest free block matters as much as the total:
+24 KB was tight enough that fragmentation was a live concern for the bridge, and
+139 KB is not. Anyone weighing the NimBLE port on size should use the runtime
+figures, not the image ones.
+
 ### 3.3 `RAD01_NO_BLE` -- fixed
 
 It did not build: `Remote.h` used `bt_devname` for the SoftAP SSID and the DHCP
