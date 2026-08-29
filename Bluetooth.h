@@ -226,6 +226,8 @@ uint32_t bt_pairing_started = 0;
 
     int bt_bonded_peer_count() { return esp_ble_get_bond_device_num(); }
 
+    unsigned long bt_host_rx_bytes() { return SerialBT.rx_bytes_total; }
+
     void bt_debond_all() {
       // Serial.println("Debonding all");
       int dev_num = esp_ble_get_bond_device_num();
@@ -392,6 +394,16 @@ uint32_t bt_pairing_started = 0;
     // server's own view, so if the callback was missed but the stack knows the
     // client is gone, control returns to the wired console.
     bool bt_host_is_connected() {
+#if defined(BLE_PEER_TRANSPORT)
+      // A peer build serves no KISS-over-BLE service at all, so no BLE client
+      // is ever a KISS host. This must not be inferred from the GATT server:
+      // the Reticulum peer service shares that server, so a peer connecting
+      // made the firmware believe a host had attached. It then wrote KISS
+      // frames into a TxCharacteristic that this build never creates, and
+      // panicked -- the node rebooted about ten seconds after every peer
+      // connection, in a loop.
+      return false;
+#else
       if (bt_state != BT_STATE_CONNECTED) return false;
       if (!SerialBT.connected()) {
         // The flag outlived the connection. Correct it, so the rest of the
@@ -402,6 +414,7 @@ uint32_t bt_pairing_started = 0;
         return false;
       }
       return true;
+#endif
     }
 
     void bt_disconnect_callback(BLEServer *server) {
@@ -734,6 +747,7 @@ uint32_t bt_pairing_started = 0;
 
   void bt_debond_all() { }
   int bt_bonded_peer_count() { return 0; }
+  unsigned long bt_host_rx_bytes() { return 0; }
 
   void update_bt() {
     if (bt_allow_pairing && millis()-bt_pairing_started >= BT_PAIRING_TIMEOUT) {

@@ -38,6 +38,11 @@ void BLESerial::onAuthenticationComplete(esp_ble_auth_cmpl_t auth_result) { bt_a
 void BLESerial::onConnect(BLEServer *server) { bt_connect_callback(server); }
 void BLESerial::onDisconnect(BLEServer *server) {
   bt_disconnect_callback(server);
+#if defined(BLE_PEER_TRANSPORT)
+  // The peer interface owns the advertiser in this build; restarting it here
+  // would fight it after every peer disconnect.
+  return;
+#endif
   // SerialBT.end() can trigger this callback while secure-node policy is
   // closing BLE. Never let the library's disconnect path reopen advertising.
   if (wireless_kiss_policy_ready && wireless_kiss_allowed) {
@@ -84,6 +89,8 @@ size_t BLESerial::write(const uint8_t *buffer, size_t bufferSize) {
 }
 
 size_t BLESerial::write(uint8_t byte) {
+  // No serial service, nowhere to write. True for every peer build.
+  if (TxCharacteristic == nullptr) { return 0; }
   if (peerMTU == 0) { checkMTU(); }
   if (bt_client_authenticated()) {
     if (ble_server->getConnectedCount() <= 0) { return 0; } else {
@@ -138,7 +145,7 @@ void BLESerial::flush() {
              (unsigned)peerMTU, (unsigned)maxTransferSize);
     }
   }
-  if (this->transmitBufferLength > 0) {
+  if (this->transmitBufferLength > 0 && TxCharacteristic != nullptr) {
     TxCharacteristic->setValue(this->transmitBuffer, this->transmitBufferLength);
     this->transmitBufferLength = 0;
     this->lastFlushTime = millis();
@@ -175,11 +182,30 @@ void BLESerial::begin(const char *name) {
 
   ble_server = BLEDevice::createServer();
   ble_server->setCallbacks(this);
+
+#if defined(BLE_PEER_TRANSPORT)
+  // Peer build: the RNode/KISS service is not served at all.
+  //
+  // It is not merely unused here -- it is actively harmful. Its
+  // characteristics demand ESP_GATT_PERM_*_ENC_MITM and it sets an encrypted
+  // link requirement, so the moment a Reticulum peer connects and enumerates
+  // services, Android tries to pair. bt_security_request_callback() then
+  // refuses unless a pairing window happens to be open, and the peer sees
+  // "device is not ready to pair" on a loop. Observed exactly that: the node
+  // finally appeared as a peer, and then did nothing but emit pair requests.
+  //
+  // The Reticulum BLE peer protocol expects an unencrypted link and carries no
+  // pairing step, so leaving the server free of MITM requirements is both the
+  // fix and the correct behaviour. BLEDevice::init() and the server itself stay
+  // -- BLEPeerInterface attaches its service to them.
+  printf("[ble] peer mode: RNode/KISS service not served\n");
+#else
   BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
   BLEDevice::setSecurityCallbacks(this);
 
   SetupSerialService();
   this->startAdvertising();
+#endif
 }
 
 void BLESerial::startAdvertising() {
@@ -241,6 +267,7 @@ void BLESerial::onWrite(BLECharacteristic *characteristic) {
   }
 }
 
+#if !defined(BLE_PEER_TRANSPORT)
 void BLESerial::SetupSerialService() {
   SerialService = ble_server->createService(BLE_SERIAL_SERVICE_UUID);
 
@@ -272,6 +299,7 @@ void BLESerial::SetupSerialService() {
 
   SerialService->start();
 }
+#endif // !BLE_PEER_TRANSPORT
 
 BLESerial::BLESerial() { }
 

@@ -104,11 +104,14 @@ public:
 
   bool connected();
 
-  BLEServer *ble_server;
-  BLEAdvertising *ble_adv;
-  BLEService *SerialService;
-  BLECharacteristic *TxCharacteristic;
-  BLECharacteristic *RxCharacteristic;
+  // Initialised here, not merely assigned in SetupSerialService(): a peer
+  // build never calls that, so without these the pointers hold garbage and a
+  // null check reads as valid.
+  BLEServer *ble_server = nullptr;
+  BLEAdvertising *ble_adv = nullptr;
+  BLEService *SerialService = nullptr;
+  BLECharacteristic *TxCharacteristic = nullptr;
+  BLECharacteristic *RxCharacteristic = nullptr;
   size_t transmitBufferLength;
   unsigned long long lastFlushTime;
 
@@ -121,7 +124,11 @@ private:
   uint8_t transmitBuffer[BLE_BUFFER_SIZE];
 
   int ConnectedDeviceCount;
+#if !defined(BLE_PEER_TRANSPORT)
+  // Not built for a peer node: the RNode/KISS service is the modem role, which
+  // a peer build does not offer. See the note in BLESerial::begin().
   void SetupSerialService();
+#endif
 
 public:
   // Public so the connect callback can log what was negotiated. A silently
