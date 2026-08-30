@@ -80,6 +80,14 @@ uint32_t lxmf_peer_count();
 uint32_t lxmf_pn_store_count();
 uint32_t lxmf_announces_propagation();
 uint32_t lxmf_announces_any();
+uint32_t lxmf_sync_attempt_count();
+uint32_t lxmf_sync_link_count();
+uint32_t lxmf_sync_offer_count();
+uint32_t lxmf_sync_response_count();
+uint32_t lxmf_sync_sent_count();
+uint32_t lxmf_sync_last_error();
+uint32_t lxmf_sync_last_resp_size();
+uint32_t lxmf_sync_last_outcome();
 #endif // LXMF_PROPAGATION_NODE
 
 #if MCU_VARIANT == MCU_ESP32
@@ -892,6 +900,22 @@ static void register_provisioning_namespaces() {
         []() { return static_cast<fint_t>(lxmf_announces_propagation()); })
       .metric_int("Announces Seen", PROV_METRICS_DEV_ANNANY,
         []() { return static_cast<fint_t>(lxmf_announces_any()); })
+      .metric_int("Sync Attempts", PROV_METRICS_DEV_SYNCATT,
+        []() { return static_cast<fint_t>(lxmf_sync_attempt_count()); })
+      .metric_int("Sync Links Up", PROV_METRICS_DEV_SYNCLINK,
+        []() { return static_cast<fint_t>(lxmf_sync_link_count()); })
+      .metric_int("Sync Offers Sent", PROV_METRICS_DEV_SYNCOFFER,
+        []() { return static_cast<fint_t>(lxmf_sync_offer_count()); })
+      .metric_int("Sync Responses", PROV_METRICS_DEV_SYNCRESP,
+        []() { return static_cast<fint_t>(lxmf_sync_response_count()); })
+      .metric_int("Sync Messages Sent", PROV_METRICS_DEV_SYNCSENT,
+        []() { return static_cast<fint_t>(lxmf_sync_sent_count()); })
+      .metric_int("Sync Last Error Byte", PROV_METRICS_DEV_SYNCERR,
+        []() { return static_cast<fint_t>(lxmf_sync_last_error()); })
+      .metric_int("Sync Response Size", PROV_METRICS_DEV_SYNCRSZ,
+        []() { return static_cast<fint_t>(lxmf_sync_last_resp_size()); })
+      .metric_int("Sync Outcome", PROV_METRICS_DEV_SYNCOUT,
+        []() { return static_cast<fint_t>(lxmf_sync_last_outcome()); })
 #endif // LXMF_PROPAGATION_NODE
       .end();
 

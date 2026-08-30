@@ -228,6 +228,40 @@ arrive at the handler as a msgpack *bin* rather than an array, and every handler
 in this file answers `0xf4 INVALID_DATA`. That looks exactly like a firmware
 parsing bug and is not one.
 
+### Outbound sync is blocked upstream, not in this firmware
+
+**Measured 2026-08-30.** The outbound half is implemented and demonstrably
+correct up to the point of reading the reply:
+
+- Rev 1 links to a peer's propagation destination over LoRa and issues `/offer`.
+- A Python responder logged the request as `[b'', [<32-byte transient id>]]` --
+  an empty peering key and the ids we hold, which is the right shape.
+- The peer handles it and answers.
+- **The answer arrives empty.**
+
+The cause is in microReticulum's `Link::receive`, in the `RESPONSE` branch:
+
+    MsgPack::bin_t<uint8_t> request_id;
+    MsgPack::bin_t<uint8_t> response_data;
+    unpacker.from_array(request_id, response_data);
+
+The response payload is decoded **only as a msgpack `bin`**. LXMF's `/offer`
+reply is `True`, `False`, or an array of transient ids -- never a bin -- so it
+decodes to nothing and `get_response()` yields an empty `Bytes`.
+
+Confirmed by experiment rather than by reading the code: a test responder that
+replies with a `bin` produced `respsize=13` on the node, while lxmd's real
+replies produced `respsize=0`, alternating within the same run as the node
+cycled between peers.
+
+Note the asymmetry, which is why this went unnoticed: this node *serving* a
+response to a Python client works fine -- Python decodes any msgpack type. It is
+only the C++ side *receiving* a response that is constrained.
+
+Until that is addressed upstream or by a local patch, an embedded node can offer
+its store to a peer but cannot act on the reply. Inbound peering -- accepting
+another node's offer -- is unaffected and works.
+
 **Still outstanding: the outbound half.** This node accepts offers but never
 makes them -- it has no peer discovery and never calls `/offer` on anyone. A
 Linux `lxmd` that offers to us will now sync into us, but two RADs will not

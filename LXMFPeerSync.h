@@ -79,6 +79,29 @@ struct LXMFPeerRecord {
 inline uint32_t& lxmf_peer_announces_filtered() { static uint32_t n = 0; return n; }
 inline uint32_t& lxmf_peer_announces_any()      { static uint32_t n = 0; return n; }
 
+// Stage counters for one sync. A sync that never completes looks identical from
+// the outside whether the link never came up, the request was never answered,
+// or the response was answered with "nothing wanted" -- these separate them.
+inline uint32_t& lxmf_sync_attempts()  { static uint32_t n = 0; return n; }
+inline uint32_t& lxmf_sync_links_up()  { static uint32_t n = 0; return n; }
+inline uint32_t& lxmf_sync_offers()    { static uint32_t n = 0; return n; }
+inline uint32_t& lxmf_sync_responses() { static uint32_t n = 0; return n; }
+inline uint32_t& lxmf_sync_sent()      { static uint32_t n = 0; return n; }
+// Last single-byte response from a peer, which in LXMF is an error code.
+inline uint32_t& lxmf_sync_error_byte() { static uint32_t n = 0; return n; }
+// Size of the last /offer response, and a code for how the last sync ended.
+// "Responded but sent nothing" has several possible causes that look identical
+// from outside; these separate them without needing a console.
+inline uint32_t& lxmf_sync_resp_size() { static uint32_t n = 0; return n; }
+inline uint32_t& lxmf_sync_outcome()   { static uint32_t n = 0; return n; }
+#define LXMF_SYNC_OUT_EMPTY      1
+#define LXMF_SYNC_OUT_WANTNONE   2
+#define LXMF_SYNC_OUT_UNPARSED   3
+#define LXMF_SYNC_OUT_NOTHINGSND 4
+#define LXMF_SYNC_OUT_SENT       5
+#define LXMF_SYNC_OUT_TIMEOUT    6
+#define LXMF_SYNC_OUT_CLOSED     7
+
 inline std::vector<LXMFPeerRecord>& lxmf_peers() {
 	static std::vector<LXMFPeerRecord> peers;
 	return peers;
@@ -243,15 +266,37 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 	LXMFPeerSyncState& st = lxmf_sync_state();
 	if (!st.active) return;
 
+	// Guard before feeding. RNS::Bytes::data() on an empty or NONE Bytes is not
+	// a valid pointer, and Unpacker::feed() dereferences it immediately -- which
+	// is a LoadProhibited panic in the response callback, on the happy path
+	// where the peer actually answered.
+	lxmf_sync_resp_size() = (uint32_t)response.size();
+	if (!response || response.size() == 0) {
+		lxmf_sync_outcome() = LXMF_SYNC_OUT_EMPTY;
+		lxmf_peer_sync_finish("peer returned an empty response");
+		return;
+	}
+
 	MsgPack::Unpacker unpacker;
 	unpacker.feed(response.data(), response.size());
+
+	// Record what came back, so an unexpected shape is diagnosable without a
+	// console. One byte is an LXMF error code; the codes are in LXMFPropagation.h.
+	if (response.size() == 1) {
+		lxmf_sync_error_byte() = response.data()[0];
+	}
 
 	if (unpacker.isBool()) {
 		// false is "none of these"; true is "all of them".
 		const bool all = unpacker.unpackBool();
-		if (!all) { lxmf_peer_sync_finish("peer wanted nothing"); return; }
+		if (!all) {
+			lxmf_sync_outcome() = LXMF_SYNC_OUT_WANTNONE;
+			lxmf_peer_sync_finish("peer wanted nothing");
+			return;
+		}
 	}
 	else if (!unpacker.isArray()) {
+		lxmf_sync_outcome() = LXMF_SYNC_OUT_UNPARSED;
 		lxmf_peer_sync_finish("unparseable /offer response");
 		return;
 	}
@@ -278,7 +323,11 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 		}
 	}
 
-	if (send.empty()) { lxmf_peer_sync_finish("nothing left to send"); return; }
+	if (send.empty()) {
+		lxmf_sync_outcome() = LXMF_SYNC_OUT_NOTHINGSND;
+		lxmf_peer_sync_finish("nothing left to send");
+		return;
+	}
 
 	// Same container shape a client pushes to us: [timebase, [messages]].
 	MsgPack::Packer packer;
@@ -290,6 +339,8 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 	}
 	RNS::Bytes container(packer.data(), packer.size());
 
+	lxmf_sync_sent()++;
+	lxmf_sync_outcome() = LXMF_SYNC_OUT_SENT;
 	printf("[lxmf-peer] sending %u message(s), %u bytes to <%s>\n",
 	       (unsigned)send.size(), (unsigned)container.size(),
 	       st.peer.toHex().substr(0, 16).c_str());
@@ -304,6 +355,7 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 }
 
 inline void lxmf_peer_request_response(const RNS::RequestReceipt& receipt) {
+	lxmf_sync_responses()++;
 	lxmf_peer_offer_response(receipt.get_response());
 }
 
@@ -314,6 +366,7 @@ inline void lxmf_peer_request_failed(const RNS::RequestReceipt& receipt) {
 inline void lxmf_peer_link_established(RNS::Link& link) {
 	LXMFPeerSyncState& st = lxmf_sync_state();
 	if (!st.active || st.offered) return;
+	lxmf_sync_links_up()++;
 
 	// Identify: the peer's handler refuses an unidentified link, exactly as
 	// ours does. Peering is between nodes, and a node that will not say who it
@@ -342,12 +395,14 @@ inline void lxmf_peer_link_established(RNS::Link& link) {
 	printf("[lxmf-peer] offering %u id(s) to <%s>\n",
 	       (unsigned)ids.size(), st.peer.toHex().substr(0, 16).c_str());
 	st.offered = true;
+	lxmf_sync_offers()++;
 	link.request(RNS::Bytes(LXMF_OFFER_PATH),
 	             RNS::Bytes(packer.data(), packer.size()),
 	             lxmf_peer_request_response, lxmf_peer_request_failed);
 }
 
 inline void lxmf_peer_link_closed(RNS::Link& link) {
+	if (lxmf_sync_outcome() == 0) lxmf_sync_outcome() = LXMF_SYNC_OUT_CLOSED;
 	lxmf_peer_sync_finish("link closed");
 }
 
@@ -359,7 +414,8 @@ inline void lxmf_peer_sync_watch() {
 	LXMFPeerSyncState& st = lxmf_sync_state();
 	if (st.active) {
 		if (now - st.started > LXMF_PEER_SYNC_TIMEOUT_MS)
-			lxmf_peer_sync_finish("timed out");
+		{	lxmf_sync_outcome() = LXMF_SYNC_OUT_TIMEOUT;
+			lxmf_peer_sync_finish("timed out"); }
 		return;
 	}
 
@@ -402,6 +458,7 @@ inline void lxmf_peer_sync_watch() {
 			peer_identity, RNS::Type::Destination::OUT,
 			RNS::Type::Destination::SINGLE, LXMF_APP_NAME, LXMF_PN_ASPECT);
 
+		lxmf_sync_attempts()++;
 		st.active  = true;
 		st.offered = false;
 		st.started = now;

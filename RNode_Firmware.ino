@@ -313,6 +313,14 @@ uint32_t lxmf_peer_count()            { return (uint32_t)lxmf_peers().size(); }
 uint32_t lxmf_pn_store_count()        { return (uint32_t)lxmf_store_index.size(); }
 uint32_t lxmf_announces_propagation() { return lxmf_peer_announces_filtered(); }
 uint32_t lxmf_announces_any()         { return lxmf_peer_announces_any(); }
+uint32_t lxmf_sync_attempt_count()    { return lxmf_sync_attempts(); }
+uint32_t lxmf_sync_link_count()       { return lxmf_sync_links_up(); }
+uint32_t lxmf_sync_offer_count()      { return lxmf_sync_offers(); }
+uint32_t lxmf_sync_response_count()   { return lxmf_sync_responses(); }
+uint32_t lxmf_sync_sent_count()       { return lxmf_sync_sent(); }
+uint32_t lxmf_sync_last_error()       { return lxmf_sync_error_byte(); }
+uint32_t lxmf_sync_last_resp_size()   { return lxmf_sync_resp_size(); }
+uint32_t lxmf_sync_last_outcome()     { return lxmf_sync_outcome(); }
 #endif // LXMF_PROPAGATION_NODE
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
