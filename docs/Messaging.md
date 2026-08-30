@@ -207,6 +207,27 @@ The node asks only for ids it does not already hold, and only as many as its
 share has room for. Asking for fewer than were offered is normal in LXMF; the
 peer keeps the rest.
 
+**Verified on hardware, 2026-08-30.** A peer simulator on the deck established a
+Link to Rev 1's propagation destination over LoRa and called `/offer` with four
+transient ids the node could not hold. It replied with a list of **two** -- the
+correct bound -- for all three peering-key encodings (bin, nil and string), and
+`/get` with `[nil, nil]` still returned an empty list, so the client path is
+unregressed.
+
+Two is `LXMF_PN_SYNC_LIMIT_BYTES / LXMF_PN_TRANSFER_LIMIT_BYTES` (8000/4000): the
+node asks for no more than it could receive in one sync if every message were
+maximum size. That is safe but pessimistic, since real messages are far smaller
+and their sizes are not knowable from transient ids alone. Moving a 128-message
+backlog would take 64 rounds. Raising `LXMF_PN_SYNC_LIMIT_KB` is the lever if
+that proves too slow; asking for more than the sync limit is not, because
+`lxmf_resource_started()` would then refuse the transfer it invited.
+
+Note for anyone writing a test client: `Link.request(path, data=...)` takes a
+**native** object. RNS msgpacks the request envelope itself, so pre-packed bytes
+arrive at the handler as a msgpack *bin* rather than an array, and every handler
+in this file answers `0xf4 INVALID_DATA`. That looks exactly like a firmware
+parsing bug and is not one.
+
 **Still outstanding: the outbound half.** This node accepts offers but never
 makes them -- it has no peer discovery and never calls `/offer` on anyone. A
 Linux `lxmd` that offers to us will now sync into us, but two RADs will not
