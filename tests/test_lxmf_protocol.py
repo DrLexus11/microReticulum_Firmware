@@ -480,6 +480,67 @@ class PeerOfferAcceptanceTests(unittest.TestCase):
                          len(hashlib.sha256(b"x").digest()))
 
 
+class PeerSyncAirtimeTests(unittest.TestCase):
+    """The outbound half's bounds. These are airtime limits, not style.
+
+    Every step of a sync crosses LoRa on a shared, duty-cycled channel that also
+    carries the traffic this node exists to move. A sync that is too eager
+    degrades the mesh for everyone on it, which is worse than the problem being
+    solved.
+    """
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(HEADER), "LXMFPeerSync.h")
+        with open(path, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+        out = {}
+        for name, value in re.findall(r'^#define\s+(\w+)\s+(.+?)\s*$',
+                                      self.source, re.M):
+            value = value.split("//")[0].strip()
+            try:
+                out[name] = int(value, 0)
+            except ValueError:
+                pass
+        self.d = out
+
+    def test_sync_interval_is_measured_in_tens_of_minutes(self):
+        """A propagation store is a backstop, not a live feed."""
+        self.assertGreaterEqual(self.d["LXMF_PEER_SYNC_INTERVAL_MS"], 600000)
+
+    def test_first_sync_waits_for_the_node_to_settle(self):
+        self.assertGreaterEqual(self.d["LXMF_PEER_SYNC_FIRST_MS"], 60000)
+        self.assertLess(self.d["LXMF_PEER_SYNC_FIRST_MS"],
+                        self.d["LXMF_PEER_SYNC_INTERVAL_MS"])
+
+    def test_offer_batch_is_small_enough_for_one_lora_transfer(self):
+        """32 bytes per id, so the batch size is the request's size on air."""
+        request_bytes = self.d["LXMF_PEER_OFFER_BATCH"] * 32
+        self.assertLessEqual(request_bytes, 1024,
+                             "offering the whole store is kilobytes before a "
+                             "single message moves")
+
+    def test_peer_table_and_depth_are_bounded(self):
+        self.assertLessEqual(self.d["LXMF_PEER_MAX_PEERS"], 8)
+        self.assertLessEqual(self.d["LXMF_PEER_MAX_DEPTH"], 6)
+
+    def test_sync_does_nothing_when_there_is_nothing_to_offer(self):
+        """The common case must cost no airtime whatsoever."""
+        watch = self.source[self.source.index("inline void lxmf_peer_sync_watch"):]
+        self.assertIn("lxmf_store_index.empty()", watch)
+
+    def test_only_one_sync_runs_at_a_time(self):
+        self.assertIn("if (st.active)", self.source)
+        self.assertIn("LXMF_PEER_SYNC_TIMEOUT_MS", self.source)
+
+    def test_node_never_peers_with_itself(self):
+        """Our own announce returning over a looping interface would otherwise
+        make the node offer its whole store to itself, forever."""
+        self.assertIn("lxmf_propagation_destination.hash()", self.source)
+
+    def test_outbound_send_respects_the_sync_limit(self):
+        self.assertIn("LXMF_PN_SYNC_LIMIT_BYTES", self.source)
+
+
 
 if __name__ == "__main__":
     unittest.main()

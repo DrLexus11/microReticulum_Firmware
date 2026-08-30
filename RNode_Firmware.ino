@@ -23,6 +23,7 @@
 #endif
 #if defined(LXMF_PROPAGATION_NODE)
 #include "LXMFPropagation.h"
+#include "LXMFPeerSync.h"
 #endif
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
@@ -1422,6 +1423,10 @@ printf("[init] op_mode: %U\n", op_mode);
           LXMF_OFFER_PATH, lxmf_offer_request, RNS::Type::Destination::ALLOW_ALL);
         lxmf_propagation_destination.register_request_handler(
           LXMF_GET_PATH, lxmf_message_get_request, RNS::Type::Destination::ALLOW_ALL);
+        // Outbound half: listen for other propagation nodes so we can offer
+        // them what we hold. Serving /offer alone never makes two nodes
+        // converge, because neither ever initiates.
+        lxmf_peer_sync_begin();
         printf("[lxmf] propagation node destination <%s>\n",
                lxmf_propagation_destination.hash().toHex().c_str());
         lxmf_propagation_destination.set_link_established_callback(lxmf_link_established);
@@ -3517,6 +3522,7 @@ void loop() {
   radio_commit_confirm_watch();
 #if defined(LXMF_PROPAGATION_NODE)
   lxmf_propagation_announce_watch();
+  lxmf_peer_sync_watch();
 #endif
 #endif
 
