@@ -286,11 +286,6 @@ uint32_t ble_peer_frag_start();
 // The node as a BLE peer. Distinct from BLESerial, which is the RNode/KISS
 // modem role: this one joins a phone to the mesh through this node instead of
 // handing it the radio. See BLEPeerInterface.h.
-char lxmf_static_peer[33] = {0};
-uint32_t lxmf_peer_count()            { return (uint32_t)lxmf_peers().size(); }
-uint32_t lxmf_pn_store_count()        { return (uint32_t)lxmf_store_index.size(); }
-uint32_t lxmf_announces_propagation() { return lxmf_peer_announces_filtered(); }
-uint32_t lxmf_announces_any()         { return lxmf_peer_announces_any(); }
 RNS::Interface ble_peer_interface(RNS::Type::NONE);
 BLEPeerInterface* ble_peer_impl = nullptr;
 uint32_t ble_peer_packets_in()  { return ble_peer_impl ? ble_peer_impl->packets_in()  : 0; }
@@ -307,6 +302,18 @@ const char* ble_peer_last_frag_hdr() { return ble_peer_impl ? ble_peer_impl->las
 uint32_t ble_peer_frag_lone()   { return ble_peer_impl ? ble_peer_impl->frag_lone() : 0; }
 uint32_t ble_peer_frag_start()  { return ble_peer_impl ? ble_peer_impl->frag_start() : 0; }
 #endif
+
+// Accessors for Provisioning.cpp, which cannot see the LXMF headers' types.
+// Guarded on the propagation node, NOT on BLE_PEER_TRANSPORT: under the BLE
+// guard these vanished from Rev 2 and every board without BLE, which still run
+// a propagation node and still register these provisioning fields.
+#if defined(LXMF_PROPAGATION_NODE)
+char lxmf_static_peer[33] = {0};
+uint32_t lxmf_peer_count()            { return (uint32_t)lxmf_peers().size(); }
+uint32_t lxmf_pn_store_count()        { return (uint32_t)lxmf_store_index.size(); }
+uint32_t lxmf_announces_propagation() { return lxmf_peer_announces_filtered(); }
+uint32_t lxmf_announces_any()         { return lxmf_peer_announces_any(); }
+#endif // LXMF_PROPAGATION_NODE
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
 #endif

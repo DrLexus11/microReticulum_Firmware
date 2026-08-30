@@ -45,11 +45,6 @@ void bt_enable_pairing();
 void bt_disable_pairing();
 int bt_bonded_peer_count();
 unsigned long bt_host_rx_bytes();
-extern char lxmf_static_peer[33];
-uint32_t lxmf_peer_count();
-uint32_t lxmf_pn_store_count();
-uint32_t lxmf_announces_propagation();
-uint32_t lxmf_announces_any();
 #if defined(BLE_PEER_TRANSPORT)
 uint32_t ble_peer_packets_in();
 uint32_t ble_peer_packets_out();
@@ -73,6 +68,19 @@ uint32_t ble_peer_frag_start();
 #define PROV_BT_STATE_PAIRING   0x02
 #define PROV_BT_STATE_CONNECTED 0x03
 #endif
+
+// LXMF propagation peering. Outside the Bluetooth guard above on purpose:
+// Rev 2 builds with RAD01_NO_BLE and still runs a propagation node, so nesting
+// these there removed them from exactly the board that needs them. Keyed on
+// LXMF_PROPAGATION_NODE, a build flag this file can see -- the note above says
+// plainly that guarding on a macro it cannot see has already lost fields twice.
+#if defined(LXMF_PROPAGATION_NODE)
+extern char lxmf_static_peer[33];
+uint32_t lxmf_peer_count();
+uint32_t lxmf_pn_store_count();
+uint32_t lxmf_announces_propagation();
+uint32_t lxmf_announces_any();
+#endif // LXMF_PROPAGATION_NODE
 
 #if MCU_VARIANT == MCU_ESP32
 // Why a board restarted, readable without attaching to it.
@@ -705,6 +713,7 @@ static void register_provisioning_namespaces() {
   // a live radio path from changing key state midway through a Provisioning
   // exchange and stranding the response.
   Provisioner::instance()
+#if defined(LXMF_PROPAGATION_NODE)
     .register_namespace("LXMF Peering", PROV_NS_LXMF)
       // The peer's propagation destination hash, 32 hex characters, or empty
       // for none. Static rather than discovered because announce-based
@@ -721,6 +730,7 @@ static void register_provisioning_namespaces() {
         },
         []() { return lxmf_static_peer; })
       .end()
+#endif // LXMF_PROPAGATION_NODE
 
     .register_namespace("LoRa Access Control", PROV_NS_IFAC_LORA)
       .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
@@ -873,7 +883,8 @@ static void register_provisioning_namespaces() {
       }
     })
 */
-          .metric_int("LXMF Peers", PROV_METRICS_DEV_PEERS,
+    #if defined(LXMF_PROPAGATION_NODE)
+      .metric_int("LXMF Peers", PROV_METRICS_DEV_PEERS,
         []() { return static_cast<fint_t>(lxmf_peer_count()); })
       .metric_int("LXMF Store", PROV_METRICS_DEV_PNSTORE,
         []() { return static_cast<fint_t>(lxmf_pn_store_count()); })
@@ -881,6 +892,7 @@ static void register_provisioning_namespaces() {
         []() { return static_cast<fint_t>(lxmf_announces_propagation()); })
       .metric_int("Announces Seen", PROV_METRICS_DEV_ANNANY,
         []() { return static_cast<fint_t>(lxmf_announces_any()); })
+#endif // LXMF_PROPAGATION_NODE
       .end();
 
   metrics.register_namespace("Addresses", PROV_NS_METRICS_ADDRS)
