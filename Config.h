@@ -177,7 +177,36 @@
 	// relearns the route is the next announce. At 30 minutes that meant up to half
 	// an hour of unreachability after a single failed link. Announces are cheap on
 	// WiFi/UDP; raise this again if the node is ever LoRa-only, where they are not.
-	#define NOMADNET_ANNOUNCE_INTERVAL_MS 300000   // 5 minutes
+	// Steady-state announce interval, deliberately just over RNS's tolerance.
+	//
+	// RNS blocks *rebroadcast* of a destination that announces faster than
+	// Interface.DEFAULT_AR_TARGET (3600s), once it has accumulated more than
+	// DEFAULT_AR_GRACE (5) violations. At the previous 5 minutes this node
+	// exceeded that twelvefold and was blocked after roughly 25 minutes of
+	// uptime -- after which its announce, and therefore its NAME, stopped
+	// reaching anything more than one hop away. Clients fell back to showing a
+	// hash. Observed on Rev 2, whose client sits behind a relay; Rev 1 looked
+	// fine only because its phone is attached directly over BLE.
+	//
+	// 65 minutes rather than exactly 60: the check is `interval < target`, and
+	// jitter must not be able to push an interval back under the target.
+	#define NOMADNET_ANNOUNCE_INTERVAL_MS 3900000  // 65 minutes
+
+	// Re-mesh burst after boot.
+	//
+	// A node that has just come back up must be findable NOW. This is disaster
+	// coordination, not protocol etiquette: re-meshing someone's node quickly
+	// can matter more than the airtime it costs. So we spend the allowance RNS
+	// already grants instead of ignoring the limit -- a short burst of announces
+	// that stays inside the 5-violation grace, then the polite steady interval,
+	// which lets the violation count decay again.
+	//
+	// Keep BURST_COUNT strictly below DEFAULT_AR_GRACE. At 4 the node announces
+	// five times in its first ten minutes (the first announce plus the burst)
+	// and is still not blocked, leaving headroom for a relay that counted a
+	// stray earlier announce.
+	#define NOMADNET_REMESH_BURST_COUNT 4
+	#define NOMADNET_REMESH_BURST_MS 120000        // 2 minutes
 	// First announce after boot. Must be comfortably later than DHCP + the UDP
 	// socket rebind, or it is emitted before the interface can carry it.
 	#define NOMADNET_FIRST_ANNOUNCE_MS 60000       // 1 minute

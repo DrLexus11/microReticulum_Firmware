@@ -140,7 +140,21 @@
 // shared half-duplex channel that already carries one announce per node per
 // five minutes.
 #ifndef LXMF_PN_ANNOUNCE_INTERVAL_MS
-#define LXMF_PN_ANNOUNCE_INTERVAL_MS 1800000   // 30 minutes
+// Just over RNS's rate-limit target, for the same reason as the NomadNet
+// announce: a relay stops rebroadcasting a destination that announces faster
+// than Interface.DEFAULT_AR_TARGET (3600s) once it exceeds DEFAULT_AR_GRACE (5)
+// violations, and a propagation node nobody can hear about is not one. At the
+// previous 30 minutes this violated on every announce and was blocked after
+// about two and a half hours.
+#define LXMF_PN_ANNOUNCE_INTERVAL_MS 3900000   // 65 minutes
+
+// Re-mesh burst after boot. Until a node announces, clients can neither
+// discover it nor learn the stamp cost they must pay to use it, so a node that
+// has just come back is not a propagation node until it is heard. Spend the
+// grace RNS already allows rather than exceeding it: a few quick announces,
+// then the polite interval, which lets the violation count decay.
+#define LXMF_PN_REMESH_BURST_COUNT 4
+#define LXMF_PN_REMESH_BURST_MS 120000         // 2 minutes
 
 // A propagation node is useless until it has announced, so the first one comes
 // shortly after boot rather than one full interval later. Matches the NomadNet
@@ -930,11 +944,16 @@ inline void lxmf_propagation_announce_watch() {
 	// most: after a power restore, when every node in a building is silent at
 	// once. Announce shortly after boot, once the network is definitely up, then
 	// settle into the normal interval.
-	uint32_t due = first_done ? LXMF_PN_ANNOUNCE_INTERVAL_MS : LXMF_PN_FIRST_ANNOUNCE_MS;
+	static uint8_t burst_sent = 0;
+	uint32_t due;
+	if (!first_done)                                    due = LXMF_PN_FIRST_ANNOUNCE_MS;
+	else if (burst_sent < LXMF_PN_REMESH_BURST_COUNT)   due = LXMF_PN_REMESH_BURST_MS;
+	else                                                due = LXMF_PN_ANNOUNCE_INTERVAL_MS;
 	due += jitter;
 	if (millis() - last < due) return;
 	last = millis();
 	jitter = (uint32_t)random(LXMF_PN_ANNOUNCE_JITTER_MS);
+	if (first_done && burst_sent < LXMF_PN_REMESH_BURST_COUNT) burst_sent++;
 	first_done = true;
 	RNS::Bytes app_data = lxmf_pn_app_data();
 	lxmf_propagation_destination.announce(app_data);

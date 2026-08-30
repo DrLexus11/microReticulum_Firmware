@@ -558,6 +558,61 @@ class PeerSyncAirtimeTests(unittest.TestCase):
         self.assertIn("LXMF_PN_SYNC_LIMIT_BYTES", self.source)
 
 
+class AnnounceRateTests(unittest.TestCase):
+    """Announce cadence against RNS's rate limiter.
+
+    RNS stops rebroadcasting a destination that announces faster than
+    Interface.DEFAULT_AR_TARGET (3600s) once it exceeds DEFAULT_AR_GRACE (5)
+    violations. A blocked announce costs the node its NAME everywhere more than
+    one hop away -- observed on hardware as a peer showing as a hash.
+
+    The balance struck here is deliberate: this is disaster coordination, so a
+    node that just recovered announces in a quick burst sized to stay inside the
+    grace, then settles to a rate relays will keep forwarding.
+    """
+
+    def setUp(self):
+        self.d = firmware_defines()
+        with open(os.path.join(os.path.dirname(HEADER), "Config.h"),
+                  "r", encoding="utf-8") as handle:
+            text = handle.read()
+        for name, value in re.findall(r'^\s*#define\s+(\w+)\s+(\d+)', text, re.M):
+            self.d.setdefault(name, int(value))
+
+    AR_TARGET = 3600
+    AR_GRACE = 5
+
+    def test_steady_intervals_exceed_the_rns_rate_target(self):
+        for name in ("NOMADNET_ANNOUNCE_INTERVAL_MS", "LXMF_PN_ANNOUNCE_INTERVAL_MS"):
+            with self.subTest(interval=name):
+                self.assertGreater(self.d[name] / 1000.0, self.AR_TARGET,
+                                   "%s announces faster than RNS will rebroadcast" % name)
+
+    def test_jitter_cannot_push_an_interval_back_under_the_target(self):
+        for interval, jitter in (("NOMADNET_ANNOUNCE_INTERVAL_MS", "NOMADNET_ANNOUNCE_JITTER_MS"),
+                                 ("LXMF_PN_ANNOUNCE_INTERVAL_MS", "LXMF_PN_ANNOUNCE_JITTER_MS")):
+            with self.subTest(interval=interval):
+                self.assertGreater(self.d[interval] / 1000.0, self.AR_TARGET,
+                                   "jitter only adds, but the floor must still clear the target")
+
+    def test_remesh_burst_stays_inside_the_grace(self):
+        """Spend the allowance, do not exceed it. Exceeding it blocks the
+        announce, which is the opposite of re-meshing quickly."""
+        for name in ("NOMADNET_REMESH_BURST_COUNT", "LXMF_PN_REMESH_BURST_COUNT"):
+            with self.subTest(burst=name):
+                self.assertLess(self.d[name], self.AR_GRACE,
+                                "a burst at or past the grace gets the node blocked")
+
+    def test_a_recovered_node_is_still_announced_within_minutes(self):
+        """The whole point of the burst. A node back from a power cut must not
+        wait an hour to be findable."""
+        for first, burst in (("NOMADNET_FIRST_ANNOUNCE_MS", "NOMADNET_REMESH_BURST_MS"),
+                             ("LXMF_PN_FIRST_ANNOUNCE_MS", "LXMF_PN_REMESH_BURST_MS")):
+            with self.subTest(first=first):
+                self.assertLessEqual(self.d[first] / 1000.0, 300)
+                self.assertLessEqual(self.d[burst] / 1000.0, 300)
+
+
 class PeeringKeyTests(unittest.TestCase):
     """The peering-key proof of work, against LXMF's own LXStamper.
 

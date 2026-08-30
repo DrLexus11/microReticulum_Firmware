@@ -3099,8 +3099,10 @@ void work_while_waiting() { loop(); }
 // repairs it, and the node looks dead until it is power-cycled -- even though it
 // is up and on WiFi. A periodic announce is what heals that.
 //
-// Announces cost airtime on LoRa, so the interval is deliberately generous;
-// tune NOMADNET_ANNOUNCE_INTERVAL_MS in Config.h.
+// Announces cost airtime on LoRa, and RNS relays stop rebroadcasting a
+// destination that announces faster than once an hour. Both matter, and they
+// pull opposite ways: see NOMADNET_ANNOUNCE_INTERVAL_MS and the re-mesh burst
+// beside it in Config.h for how the balance is struck.
 #if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
 static void nomadnet_announce_watch() {
   static uint32_t last_announce = 0;
@@ -3122,13 +3124,24 @@ static void nomadnet_announce_watch() {
   // socket bound to 0.0.0.0 and is simply lost. That race was previously hidden
   // by a slow startup. Send the first real announce shortly after boot, once the
   // network is definitely up, then settle into the normal interval.
-  uint32_t due = first_done ? NOMADNET_ANNOUNCE_INTERVAL_MS : NOMADNET_FIRST_ANNOUNCE_MS;
+  // Three phases: the first announce shortly after boot, then a short burst so
+  // a node that just recovered is findable quickly, then the steady interval.
+  // The burst is sized to stay inside RNS's rate-limit grace -- exceeding it
+  // gets the announce blocked at relays, which costs the node its name
+  // downstream and is the opposite of re-meshing fast.
+  static uint8_t burst_sent = 0;
+  uint32_t due;
+  if (!first_done)                                  due = NOMADNET_FIRST_ANNOUNCE_MS;
+  else if (burst_sent < NOMADNET_REMESH_BURST_COUNT) due = NOMADNET_REMESH_BURST_MS;
+  else                                              due = NOMADNET_ANNOUNCE_INTERVAL_MS;
   due += announce_jitter;
   if (millis() - last_announce < due) return;
   last_announce = millis();
   announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
+  if (first_done && burst_sent < NOMADNET_REMESH_BURST_COUNT) burst_sent++;
   first_done = true;
-  printf("[announce] re-announcing NomadNet site \"%s\"\n", nomadnet_name);
+  printf("[announce] re-announcing NomadNet site \"%s\" (%s)\n", nomadnet_name,
+         (burst_sent < NOMADNET_REMESH_BURST_COUNT) ? "re-mesh burst" : "steady");
   nomadnet_destination.announce(nomadnet_name);
 }
 #endif
