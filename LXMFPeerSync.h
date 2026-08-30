@@ -71,6 +71,14 @@ struct LXMFPeerRecord {
 	bool       ever_synced     = false;
 };
 
+// Diagnostics. Announce-handler dispatch in this port happens only inside the
+// "should_add" branch of Transport::inbound -- a repeat announce from a path we
+// already know never reaches a handler at all, and neither does a PATH_RESPONSE.
+// Counting both filtered and unfiltered arrivals is the only way to tell "no
+// peer announced" from "announces arrive but never reach us".
+inline uint32_t& lxmf_peer_announces_filtered() { static uint32_t n = 0; return n; }
+inline uint32_t& lxmf_peer_announces_any()      { static uint32_t n = 0; return n; }
+
 inline std::vector<LXMFPeerRecord>& lxmf_peers() {
 	static std::vector<LXMFPeerRecord> peers;
 	return peers;
@@ -95,15 +103,32 @@ inline LXMFPeerSyncState& lxmf_sync_state() {
 inline void lxmf_peer_sync_finish(const char* why) {
 	LXMFPeerSyncState& st = lxmf_sync_state();
 	if (!st.active) return;
-	printf("[lxmf-peer] sync with <%s> ended: %s\n",
-	       st.peer.toHex().substr(0, 16).c_str(), why);
-	if (st.link) {
-		try { st.link.teardown(); } catch (...) {}
-	}
-	st.link    = {RNS::Type::NONE};
+
+	// Clear the state BEFORE tearing the link down, and take a local copy of
+	// the link to tear down afterwards.
+	//
+	// Link::teardown() calls link_closed() synchronously, which calls our
+	// closed callback, which calls this function again. Clearing st.active
+	// afterwards left the guard above still true on re-entry, so this recursed
+	// until the loopTask stack canary fired:
+	//
+	//   lxmf_peer_sync_finish -> Link::teardown -> Link::link_closed
+	//     -> lxmf_peer_link_closed -> lxmf_peer_sync_finish -> ...
+	//
+	// Measured on hardware as a PANIC roughly 300s after boot, once a peer
+	// existed for the sync path to run against at all.
 	st.active  = false;
 	st.offered = false;
-	st.peer    = RNS::Bytes();
+	const RNS::Bytes peer = st.peer;
+	RNS::Link link = st.link;
+	st.link = {RNS::Type::NONE};
+	st.peer = RNS::Bytes();
+
+	printf("[lxmf-peer] sync with <%s> ended: %s\n",
+	       peer.toHex().substr(0, 16).c_str(), why);
+	if (link) {
+		try { link.teardown(); } catch (...) {}
+	}
 }
 
 // --- discovery --------------------------------------------------------------
@@ -115,6 +140,7 @@ public:
 	void received_announce(const RNS::Bytes& destination_hash,
 	                       const RNS::Identity& announced_identity,
 	                       const RNS::Bytes& app_data) override {
+		lxmf_peer_announces_filtered()++;
 		// Never peer with ourselves. Our own announce comes back over any
 		// interface that loops, and a node syncing with itself would offer its
 		// whole store to itself once every interval, forever.
@@ -151,9 +177,59 @@ public:
 	}
 };
 
+// Counts every announce that reaches a handler, whatever its aspect. If this
+// stays at zero while peers are demonstrably announcing, the problem is
+// dispatch, not our filter.
+class LXMFAnyAnnounceCounter : public RNS::AnnounceHandler {
+public:
+	LXMFAnyAnnounceCounter() : RNS::AnnounceHandler(nullptr) {}
+	void received_announce(const RNS::Bytes& destination_hash,
+	                       const RNS::Identity& announced_identity,
+	                       const RNS::Bytes& app_data) override {
+		lxmf_peer_announces_any()++;
+	}
+};
+
+// A statically configured peer, as 32 hex characters, or empty.
+//
+// Announce-based discovery is not dependable in this port: Transport dispatches
+// announce handlers only when a path is newly learned, and skips them entirely
+// for PATH_RESPONSE. A node that learns a peer's path by requesting it -- which
+// is exactly what happens when it first delivers a message there -- consumes the
+// only discovery opportunity it will get, silently. Measured on hardware: one
+// announce of any aspect reached a handler in 3.5 minutes and none of them was a
+// propagation announce.
+//
+// For the deployment this feature exists for -- two RADs, one site -- the peer
+// is known in advance. lxmd has static peers for the same reason. Discovery by
+// announce is kept as an opportunistic extra, not the mechanism.
+extern char lxmf_static_peer[33];
+
+inline void lxmf_peer_add_static() {
+	if (lxmf_static_peer[0] == 0) return;
+	RNS::Bytes hash;
+	hash.assignHex(lxmf_static_peer);
+	if (hash.size() != LXMF_DESTINATION_LEN) {
+		printf("[lxmf-peer] static peer \"%s\" is not %d hex bytes, ignoring\n",
+		       lxmf_static_peer, LXMF_DESTINATION_LEN);
+		return;
+	}
+	for (auto& p : lxmf_peers()) if (p.destination_hash == hash) return;
+	LXMFPeerRecord record;
+	record.destination_hash = hash;
+	// Zero, not millis(): a configured peer is synced with at the first
+	// opportunity rather than after a full interval of doing nothing.
+	record.last_attempt_ms = 0;
+	lxmf_peers().push_back(record);
+	printf("[lxmf-peer] static peer <%s>\n", hash.toHex().c_str());
+}
+
 inline void lxmf_peer_sync_begin() {
 	static RNS::HAnnounceHandler handler(new LXMFPeerAnnounceHandler());
 	RNS::Transport::register_announce_handler(handler);
+	static RNS::HAnnounceHandler counter(new LXMFAnyAnnounceCounter());
+	RNS::Transport::register_announce_handler(counter);
+	lxmf_peer_add_static();
 	printf("[lxmf-peer] listening for propagation-node announces\n");
 }
 
@@ -285,6 +361,15 @@ inline void lxmf_peer_sync_watch() {
 		if (now - st.started > LXMF_PEER_SYNC_TIMEOUT_MS)
 			lxmf_peer_sync_finish("timed out");
 		return;
+	}
+
+	static uint32_t last_status = 0;
+	if (now - last_status >= 60000) {
+		last_status = now;
+		printf("[lxmf-peer] status: %u peer(s), %u store, announces %u/%u (prop/any)\n",
+		       (unsigned)lxmf_peers().size(), (unsigned)lxmf_store_index.size(),
+		       (unsigned)lxmf_peer_announces_filtered(),
+		       (unsigned)lxmf_peer_announces_any());
 	}
 
 	if (now < LXMF_PEER_SYNC_FIRST_MS) return;

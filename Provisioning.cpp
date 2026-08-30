@@ -45,6 +45,11 @@ void bt_enable_pairing();
 void bt_disable_pairing();
 int bt_bonded_peer_count();
 unsigned long bt_host_rx_bytes();
+extern char lxmf_static_peer[33];
+uint32_t lxmf_peer_count();
+uint32_t lxmf_pn_store_count();
+uint32_t lxmf_announces_propagation();
+uint32_t lxmf_announces_any();
 #if defined(BLE_PEER_TRANSPORT)
 uint32_t ble_peer_packets_in();
 uint32_t ble_peer_packets_out();
@@ -700,6 +705,23 @@ static void register_provisioning_namespaces() {
   // a live radio path from changing key state midway through a Provisioning
   // exchange and stranding the response.
   Provisioner::instance()
+    .register_namespace("LXMF Peering", PROV_NS_LXMF)
+      // The peer's propagation destination hash, 32 hex characters, or empty
+      // for none. Static rather than discovered because announce-based
+      // discovery is unreliable here -- see the note in LXMFPeerSync.h.
+      .field_string("Static Peer", PROV_LXMF_STATIC_PEER, FF_REBOOT_REQUIRED,
+        lxmf_static_peer, sizeof(lxmf_static_peer)-1,
+        [](const Value& v) {
+          const std::string& hex = v.as_string();
+          if (hex.empty()) { lxmf_static_peer[0] = 0; return true; }
+          if (hex.size() != 32) return false;
+          for (char c : hex) if (!isxdigit((unsigned char)c)) return false;
+          snprintf(lxmf_static_peer, sizeof(lxmf_static_peer), "%s", hex.c_str());
+          return true;
+        },
+        []() { return lxmf_static_peer; })
+      .end()
+
     .register_namespace("LoRa Access Control", PROV_NS_IFAC_LORA)
       .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
         false,
@@ -851,7 +873,15 @@ static void register_provisioning_namespaces() {
       }
     })
 */
-    .end();
+          .metric_int("LXMF Peers", PROV_METRICS_DEV_PEERS,
+        []() { return static_cast<fint_t>(lxmf_peer_count()); })
+      .metric_int("LXMF Store", PROV_METRICS_DEV_PNSTORE,
+        []() { return static_cast<fint_t>(lxmf_pn_store_count()); })
+      .metric_int("Propagation Announces", PROV_METRICS_DEV_ANNPROP,
+        []() { return static_cast<fint_t>(lxmf_announces_propagation()); })
+      .metric_int("Announces Seen", PROV_METRICS_DEV_ANNANY,
+        []() { return static_cast<fint_t>(lxmf_announces_any()); })
+      .end();
 
   metrics.register_namespace("Addresses", PROV_NS_METRICS_ADDRS)
     .metric_bytes("Transport Identity", PROV_METRICS_TRANS_ID, []() { return RNS::Transport::identity() ? RNS::Transport::identity().hash() : RNS::Bytes{}; })

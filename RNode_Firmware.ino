@@ -24,6 +24,12 @@
 #if defined(LXMF_PROPAGATION_NODE)
 #include "LXMFPropagation.h"
 #include "LXMFPeerSync.h"
+// Accessors for Provisioning.cpp. Defined here because that translation unit
+// cannot see the LXMF headers' types.
+uint32_t lxmf_peer_count();
+uint32_t lxmf_pn_store_count();
+uint32_t lxmf_announces_propagation();
+uint32_t lxmf_announces_any();
 #endif
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
@@ -280,6 +286,11 @@ uint32_t ble_peer_frag_start();
 // The node as a BLE peer. Distinct from BLESerial, which is the RNode/KISS
 // modem role: this one joins a phone to the mesh through this node instead of
 // handing it the radio. See BLEPeerInterface.h.
+char lxmf_static_peer[33] = {0};
+uint32_t lxmf_peer_count()            { return (uint32_t)lxmf_peers().size(); }
+uint32_t lxmf_pn_store_count()        { return (uint32_t)lxmf_store_index.size(); }
+uint32_t lxmf_announces_propagation() { return lxmf_peer_announces_filtered(); }
+uint32_t lxmf_announces_any()         { return lxmf_peer_announces_any(); }
 RNS::Interface ble_peer_interface(RNS::Type::NONE);
 BLEPeerInterface* ble_peer_impl = nullptr;
 uint32_t ble_peer_packets_in()  { return ble_peer_impl ? ble_peer_impl->packets_in()  : 0; }

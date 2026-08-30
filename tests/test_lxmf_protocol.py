@@ -537,6 +537,23 @@ class PeerSyncAirtimeTests(unittest.TestCase):
         make the node offer its whole store to itself, forever."""
         self.assertIn("lxmf_propagation_destination.hash()", self.source)
 
+    def test_sync_finish_clears_state_before_tearing_down(self):
+        """Link::teardown() calls the closed callback synchronously.
+
+        Clearing st.active after the teardown left the re-entry guard true, so
+        finish -> teardown -> link_closed -> closed callback -> finish recursed
+        until the loopTask stack canary fired. Measured as a PANIC ~300s after
+        boot, once a peer existed for the sync path to run at all.
+        """
+        fn = self.source[self.source.index("inline void lxmf_peer_sync_finish"):]
+        fn = fn[:fn.index("\n}")]
+        # Match the call, not the word: the comment above it also says
+        # "teardown()", and matching that made this assert against prose.
+        self.assertIn("st.active  = false", fn)
+        self.assertIn("link.teardown()", fn)
+        self.assertLess(fn.index("st.active  = false"), fn.index("link.teardown()"),
+                        "state must be cleared before teardown can re-enter")
+
     def test_outbound_send_respects_the_sync_limit(self):
         self.assertIn("LXMF_PN_SYNC_LIMIT_BYTES", self.source)
 

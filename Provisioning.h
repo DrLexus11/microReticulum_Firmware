@@ -54,6 +54,7 @@
 #define PROV_NS_IFAC_UDP        111
 #define PROV_NS_SECURE_NODE     112
 #define PROV_NS_RRC             113
+#define PROV_NS_LXMF            115
 #define PROV_NS_BLUETOOTH       114
 
 #define PROV_BT_ENABLED            1
@@ -116,6 +117,14 @@
 #define PROV_METRICS_DEV_RESETNM 11
 #define PROV_METRICS_DEV_PREVUP  12
 #define PROV_METRICS_DEV_BOOTS   13
+// LXMF peer sync visibility. On this hardware the console is not a reliable
+// pipe -- printf output is redirected to a KISS TCP host when one is connected
+// (Utilities.h), and attaching USB resets the board -- so peering state is
+// exposed here, where it can be read without disturbing anything.
+#define PROV_METRICS_DEV_PEERS      14
+#define PROV_METRICS_DEV_PNSTORE    15
+#define PROV_METRICS_DEV_ANNPROP    16
+#define PROV_METRICS_DEV_ANNANY     17
 
 #define PROV_METRICS_LORA_FREQ  1
 #define PROV_METRICS_LORA_BW    2
@@ -235,3 +244,6 @@ void on_provision_request(const RNS::Bytes& req);
 void kiss_indicate_provision_response(const RNS::Bytes& payload);
 
 #endif // HAS_PROVISIONING
+
+// --- LXMF propagation peering (ns115) ---------------------------------------
+#define PROV_LXMF_STATIC_PEER   1
