@@ -42,31 +42,34 @@ underneath.
 
 ### What is still unknown: the trigger
 
-A clean 9.47-hour run on 2026-08-30 differed from the failing night in **four
-ways at once**, so none of them is yet implicated:
+**Environment is ruled out.** A `TASK_WDT` was recorded on 2026-08-30 with the
+board on deck USB power, at home in WiFi range, stationary, and with the BLE peer
+continuously connected -- ending a 37208s (10.34 h) run. That eliminates every
+environmental variable that distinguished the failing battery night:
 
-| | Failing night | Clean 9.47 h run |
+| | Failing night | Also fails here |
 | --- | --- | --- |
 | Power | Power bank | Deck USB |
 | WiFi | Away from home AP | In range |
 | BLE peer | Intermittent | Continuously connected |
 | Motion | Moving | Stationary |
 
-Leading hypothesis, untested: the **WiFi** one. A station repeatedly failing to
-reassociate while out of range of its AP is a plausible way to starve the
-watchdog, and it would make this a mobility-specific fault -- which matches the
-deployment case.
+An earlier revision of this entry proposed WiFi reassociation while away from the
+AP as the leading hypothesis, and suggested a power-bank-at-home test to isolate
+it. **That hypothesis is refuted** -- the fault occurs with none of those
+conditions present. It is recorded here so it is not proposed again.
 
-**Discriminating test, single variable:** run it on the power bank *at home,
-stationary, in WiFi range*. Clean means power and battery are not the trigger and
-the away-from-WiFi condition is. A `TASK_WDT` means it is power-related after
-all, despite the absence of brownouts.
+What is left is that the stall is in normal operation, independent of
+environment, with a wildly variable interval: 4 minutes, 9 minutes, 43 minutes,
+3 h 14 min and 10 h 20 min are all observed. That spread argues against a simple
+periodic task and for something load- or state-dependent.
 
-**Next diagnostic after that:** hold a console attached and wait for a reset. The
-task watchdog prints which task failed to check in, with a backtrace, immediately
-before resetting. That names the culprit outright. Attaching a console resets
-Rev 1 -- but that no longer matters when the reset is the event being waited for,
-which is what made this measurable at last.
+**Next diagnostic:** hold a console attached and wait for a reset. The ESP32 task
+watchdog prints which task failed to check in, with a backtrace, immediately
+before it resets. That names the culprit outright, and it is the only remaining
+unknown. Attaching a console resets Rev 1 -- irrelevant here, because the reset
+is the event being waited for. Budget hours, not minutes, given the interval
+spread.
 
 ### Considered and currently disfavoured
 
