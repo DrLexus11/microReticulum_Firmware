@@ -22,6 +22,7 @@
 #pragma once
 
 #include "LXMFPropagation.h"
+#include "LXMFPeeringKey.h"
 
 #if defined(HAS_RNS) && defined(LXMF_PROPAGATION_NODE)
 
@@ -69,6 +70,10 @@ struct LXMFPeerRecord {
 	RNS::Bytes destination_hash;
 	uint32_t   last_attempt_ms = 0;
 	bool       ever_synced     = false;
+	// Proof-of-work key this peer requires on every /offer. It depends only on
+	// the two identities, so it is computed once and kept.
+	RNS::Bytes peering_key;
+	bool       key_unavailable = false;
 };
 
 // Diagnostics. Announce-handler dispatch in this port happens only inside the
@@ -116,6 +121,12 @@ struct LXMFPeerSyncState {
 	RNS::Bytes  peer;
 	RNS::Link   link     = {RNS::Type::NONE};
 	bool        offered  = false;
+	// The ids we put in the offer. A peer may answer `true`, meaning "all of
+	// them", and then this is the only record of what "all" referred to.
+	std::vector<RNS::Bytes> offered_ids;
+	// The outbound transfer. It must outlive the call that created it, and the
+	// link must stay up until it concludes.
+	RNS::Resource outbound = {RNS::Type::NONE};
 };
 
 inline LXMFPeerSyncState& lxmf_sync_state() {
@@ -146,6 +157,8 @@ inline void lxmf_peer_sync_finish(const char* why) {
 	RNS::Link link = st.link;
 	st.link = {RNS::Type::NONE};
 	st.peer = RNS::Bytes();
+	st.offered_ids.clear();
+	st.outbound = {RNS::Type::NONE};
 
 	printf("[lxmf-peer] sync with <%s> ended: %s\n",
 	       peer.toHex().substr(0, 16).c_str(), why);
@@ -258,6 +271,13 @@ inline void lxmf_peer_sync_begin() {
 
 // --- the sync itself --------------------------------------------------------
 
+inline void lxmf_peer_resource_concluded(const RNS::Resource& resource) {
+	const bool ok = (resource.status() == RNS::Type::Resource::COMPLETE);
+	printf("[lxmf-peer] outbound resource %s\n", ok ? "complete" : "failed");
+	lxmf_sync_outcome() = ok ? LXMF_SYNC_OUT_SENT : LXMF_SYNC_OUT_CLOSED;
+	lxmf_peer_sync_finish(ok ? "messages transferred" : "resource failed");
+}
+
 // The peer told us which of our ids it wants. Send exactly those, as a Resource,
 // keeping the total inside the sync limit we advertise -- the peer's own
 // resource guard will refuse anything larger, so exceeding it wastes the
@@ -291,29 +311,39 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 		lxmf_sync_error_byte() = v;
 	}
 
+	// LXMF answers one of three things: false for none, true for ALL of what we
+	// offered, or the subset it wants. The `true` case is not a shortcut we can
+	// skip -- lxmd returns it whenever it wants everything, which is the normal
+	// answer to a first offer, and treating it as "no list, nothing to send"
+	// stalls the sync on precisely the case that should succeed.
+	std::vector<RNS::Bytes> wanted;
 	if (unpacker.isBool()) {
-		// false is "none of these"; true is "all of them".
 		const bool all = unpacker.unpackBool();
 		if (!all) {
 			lxmf_sync_outcome() = LXMF_SYNC_OUT_WANTNONE;
 			lxmf_peer_sync_finish("peer wanted nothing");
 			return;
 		}
+		wanted = st.offered_ids;
 	}
 	else if (!unpacker.isArray()) {
 		lxmf_sync_outcome() = LXMF_SYNC_OUT_UNPARSED;
 		lxmf_peer_sync_finish("unparseable /offer response");
 		return;
 	}
-
-	std::vector<RNS::Bytes> send;
-	size_t total = 0;
-	if (unpacker.isArray()) {
+	else {
 		const size_t count = unpacker.unpackArraySize();
 		for (size_t i = 0; i < count; i++) {
 			if (!unpacker.isBin()) break;
 			MsgPack::bin_t<uint8_t> id_bin = unpacker.unpackBinary<uint8_t>();
-			RNS::Bytes id(id_bin.data(), id_bin.size());
+			wanted.push_back(RNS::Bytes(id_bin.data(), id_bin.size()));
+		}
+	}
+
+	std::vector<RNS::Bytes> send;
+	size_t total = 0;
+	{
+		for (const RNS::Bytes& id : wanted) {
 			for (const auto& e : lxmf_store_index) {
 				if (e.transient_id != id) continue;
 				if (total + e.size > LXMF_PN_SYNC_LIMIT_BYTES) break;
@@ -345,18 +375,27 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 	RNS::Bytes container(packer.data(), packer.size());
 
 	lxmf_sync_sent()++;
-	lxmf_sync_outcome() = LXMF_SYNC_OUT_SENT;
 	printf("[lxmf-peer] sending %u message(s), %u bytes to <%s>\n",
 	       (unsigned)send.size(), (unsigned)container.size(),
 	       st.peer.toHex().substr(0, 16).c_str());
 	try {
-		RNS::Resource resource(container, st.link);
-		(void)resource;
+		// Advertise it, keep it in the sync state, and finish only when it
+		// concludes.
+		//
+		// The first version created the resource as a local and then tore the
+		// link down in the same breath. The object died at the end of the
+		// statement and the link died with it, so the transfer never ran: the
+		// peer accepted the same offer every cycle and never received anything.
+		st.outbound = RNS::Resource(container, st.link, true, true,
+		                            lxmf_peer_resource_concluded);
 	}
 	catch (const std::exception& e) {
 		printf("[lxmf-peer] resource failed: %s\n", e.what());
+		lxmf_sync_outcome() = LXMF_SYNC_OUT_CLOSED;
+		lxmf_peer_sync_finish("resource could not be created");
 	}
-	lxmf_peer_sync_finish("messages handed to the resource layer");
+	// Deliberately no finish() here -- lxmf_peer_resource_concluded() ends the
+	// sync, and the timeout in the watch is the backstop.
 }
 
 inline void lxmf_peer_request_response(const RNS::RequestReceipt& receipt) {
@@ -385,18 +424,23 @@ inline void lxmf_peer_link_established(RNS::Link& link) {
 	}
 	if (ids.empty()) { lxmf_peer_sync_finish("nothing to offer"); return; }
 
+	// The peering key this peer demands. Without it the offer is refused with
+	// ERROR_INVALID_KEY (0xf3) -- measured against lxmd, which is what an empty
+	// key produced on every attempt.
+	RNS::Bytes key;
+	for (const auto& p : lxmf_peers()) {
+		if (p.destination_hash == st.peer) { key = p.peering_key; break; }
+	}
+
 	MsgPack::Packer packer;
 	packer.serialize(MsgPack::arr_size_t(2));
-	// Peering key, sent empty. We do not require one inbound and do not claim
-	// one outbound; admission on both sides is the store share, not a shared
-	// secret. An empty bin rather than nil, because lxmd's default posture is
-	// auth_required = no and a bin is the type its own peers send.
-	packer.serialize(MsgPack::bin_t<uint8_t>{});
+	packer.serialize(MsgPack::bin_t<uint8_t>(key.data(), key.data() + key.size()));
 	packer.serialize(MsgPack::arr_size_t(ids.size()));
 	for (const RNS::Bytes& id : ids) {
 		packer.serialize(MsgPack::bin_t<uint8_t>(id.data(), id.data() + id.size()));
 	}
 
+	st.offered_ids = ids;
 	printf("[lxmf-peer] offering %u id(s) to <%s>\n",
 	       (unsigned)ids.size(), st.peer.toHex().substr(0, 16).c_str());
 	st.offered = true;
@@ -433,6 +477,24 @@ inline void lxmf_peer_sync_watch() {
 		       (unsigned)lxmf_peer_announces_any());
 	}
 
+	// Advance any peering-key search first, and do nothing else while one runs.
+	// The search is chunked so this returns promptly; a peer without a key
+	// cannot be offered to anyway.
+	{
+		LXMFPeeringKeyJob& job = lxmf_peering_job();
+		if (job.active) {
+			if (lxmf_peering_job_step()) {
+				for (auto& p : lxmf_peers()) {
+					if (p.destination_hash != job.peer) continue;
+					if (job.key.size() == LXMF_PEERING_KEY_SIZE) p.peering_key = job.key;
+					else                                         p.key_unavailable = true;
+					break;
+				}
+			}
+			return;
+		}
+	}
+
 	if (now < LXMF_PEER_SYNC_FIRST_MS) return;
 	if (now - last_tick < 10000) return;      // do not scan the table every loop
 	last_tick = now;
@@ -456,6 +518,22 @@ inline void lxmf_peer_sync_watch() {
 		if (!peer_identity) {
 			printf("[lxmf-peer] cannot recall identity for <%s>\n",
 			       p.destination_hash.toHex().substr(0, 16).c_str());
+			return;
+		}
+
+		// A peer will not look at an offer without a valid peering key. Compute
+		// it before linking rather than after: the search takes a few seconds of
+		// chunks, and holding a LoRa link open through that wastes airtime and
+		// risks the link timing out before the offer is even sent.
+		if (p.peering_key.size() != LXMF_PEERING_KEY_SIZE) {
+			if (p.key_unavailable) continue;   // already tried and failed
+			// peering_id is the PEER's identity hash followed by ours, in that
+			// order -- it is built on their side as self.identity.hash +
+			// remote_identity.hash, where self is them.
+			RNS::Bytes peering_id(peer_identity.hash());
+			peering_id.append(RNS::Transport::identity().hash());
+			lxmf_peering_job_begin(p.destination_hash, peering_id,
+			                       LXMF_PN_PEERING_COST);
 			return;
 		}
 

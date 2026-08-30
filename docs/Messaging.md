@@ -303,11 +303,48 @@ on our side is the store share, which is a guarantee about our own storage rathe
 than a claim about the peer. That asymmetry is intentional and costs nothing:
 LXMF peers do not require us to challenge them.
 
-**Still outstanding: the outbound half.** This node accepts offers but never
-makes them -- it has no peer discovery and never calls `/offer` on anyone. A
-Linux `lxmd` that offers to us will now sync into us, but two RADs will not
-converge on their own, because neither initiates. That is the remaining work for
-roadmap item 4a.
+### Outbound sync works, verified against lxmd
+
+**2026-08-30.** An ESP32 propagation node syncing into a real Python LXMF node,
+end to end over LoRa:
+
+    [Debug]   Handling request for: /offer
+    [Debug]   Peering key validated for incoming offer in 0s
+    [Debug]   Accepted all 1 offered message from <ba03aa75...>
+    [Debug]   Accepting resource advertisement. Transfer size is 336 B in 1 parts
+    [Debug]   Began 282 B transfer for LXMF propagation resource
+    [Verbose] Received 1 message from peer <ba03aa75...>, validating stamps...
+    [Verbose] All message stamps validated from peer <ba03aa75...>
+
+lxmd's store went from 2 messages to 3, recorded as "1 messages received from
+peered nodes", and it then offered the message onward to its other peer.
+
+Steady state is correct too: on the next cycle the node offers the same id, lxmd
+answers `false` because it now holds it, and the node reports WANT-NONE and
+sends nothing. Messages are not retransmitted once delivered.
+
+Four things had to be right, and each failed silently on its own:
+
+1. **Response decoding.** microReticulum decoded response payloads only as a
+   msgpack bin, so LXMF's bool and array replies arrived empty. Patched in the
+   fork; a bin is still unwrapped as before.
+2. **The peering key.** A propagation node refuses an offer without a valid
+   proof-of-work key and answers `0xf3 ERROR_INVALID_KEY`. See
+   [`LXMFPeeringKey.h`](../LXMFPeeringKey.h).
+3. **`true` means "all of them".** LXMF answers `true` when it wants everything
+   offered, which is the normal answer to a first offer. Handling only `false`
+   and an explicit id list stalled the sync on exactly the case that should
+   succeed.
+4. **Resource lifetime.** The first version created the outbound Resource as a
+   local and tore the link down in the same breath, so the transfer never ran --
+   the peer accepted the same offer every cycle and received nothing. The
+   resource is now held in the sync state and the sync concludes on its
+   callback.
+
+**Both halves are now implemented.** The node accepts offers and makes them.
+Peers are found by static configuration (ns115 field 1) with announce discovery
+as an opportunistic extra -- see the note in `LXMFPeerSync.h` for why announce
+discovery alone is not dependable in this port.
 
 ### What it does
 

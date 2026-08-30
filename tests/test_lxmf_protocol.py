@@ -558,6 +558,89 @@ class PeerSyncAirtimeTests(unittest.TestCase):
         self.assertIn("LXMF_PN_SYNC_LIMIT_BYTES", self.source)
 
 
+class PeeringKeyTests(unittest.TestCase):
+    """The peering-key proof of work, against LXMF's own LXStamper.
+
+    A propagation node refuses an /offer without a valid key and answers
+    ERROR_INVALID_KEY. Getting the workblock derivation wrong produces a key
+    that is silently rejected -- the failure has no error of its own.
+    """
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(HEADER), "LXMFPeeringKey.h")
+        with open(path, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+        self.d = {}
+        for name, value in re.findall(r'^#define\s+(\w+)\s+(.+?)\s*$', self.source, re.M):
+            value = value.split("//")[0].strip()
+            expr = re.sub(r'\b([A-Za-z_]\w*)\b',
+                          lambda m: str(self.d[m.group(1)])
+                          if isinstance(self.d.get(m.group(1)), int) else m.group(1), value)
+            try:
+                self.d[name] = int(eval(expr, {"__builtins__": {}}, {}))
+            except Exception:
+                pass
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_expand_rounds_match_lxstamper(self):
+        from LXMF import LXStamper
+        self.assertEqual(self.d["LXMF_PEERING_EXPAND_ROUNDS"],
+                         LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_key_size_matches_lxstamper(self):
+        from LXMF import LXStamper
+        self.assertEqual(self.d["LXMF_PEERING_KEY_SIZE"], LXStamper.STAMP_SIZE)
+
+    def test_workblock_is_a_whole_number_of_sha256_blocks(self):
+        """The midstate optimisation depends on it. 6400 = 100 x 64."""
+        self.assertEqual(self.d["LXMF_PEERING_WORKBLOCK_LEN"] % 64, 0)
+        self.assertEqual(self.d["LXMF_PEERING_WORKBLOCK_LEN"], 6400)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_our_workblock_derivation_matches_lxstamper(self):
+        """Byte-identical, or every key we produce is rejected."""
+        import RNS
+        from LXMF import LXStamper
+        peering_id = bytes(range(32))
+        mine = b""
+        for n in range(self.d["LXMF_PEERING_EXPAND_ROUNDS"]):
+            salt = RNS.Identity.full_hash(peering_id + bytes([n]))
+            mine += RNS.Cryptography.hkdf(length=self.d["LXMF_PEERING_HKDF_BYTES"],
+                                          derive_from=peering_id, salt=salt, context=None)
+        theirs = LXStamper.stamp_workblock(
+            peering_id, expand_rounds=LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+        self.assertEqual(mine, theirs)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_a_key_from_our_search_validates(self):
+        """End to end: our stamp layout and validity test, LXMF's validator."""
+        import hashlib, RNS
+        from LXMF import LXStamper
+        peering_id = bytes(range(32))
+        wb = LXStamper.stamp_workblock(
+            peering_id, expand_rounds=LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+        cost = 12   # lower than production, so the test stays fast
+        def ok(dg, c):
+            full, rem = c // 8, c % 8
+            if any(dg[i] for i in range(full)): return False
+            return not (rem and (dg[full] >> (8 - rem)))
+        key = None
+        for r in range(2000000):
+            stamp = r.to_bytes(4, "little") + b"\x00" * 28
+            if ok(hashlib.sha256(wb + stamp).digest(), cost):
+                key = stamp; break
+        self.assertIsNotNone(key, "no key found")
+        self.assertTrue(LXStamper.validate_peering_key(peering_id, key, cost))
+
+    def test_search_is_chunked_so_it_cannot_trip_the_watchdog(self):
+        """Spinning for seconds inside loop() is how this project tripped the
+        loopTask stack canary and the task watchdog."""
+        self.assertIn("LXMF_PEERING_ROUNDS_PER_STEP", self.source)
+        self.assertLessEqual(self.d["LXMF_PEERING_ROUNDS_PER_STEP"], 65536)
+        self.assertIn("lxmf_peering_job_step", self.source)
+
+
 
 if __name__ == "__main__":
     unittest.main()
