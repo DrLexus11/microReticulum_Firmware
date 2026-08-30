@@ -282,8 +282,13 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 
 	// Record what came back, so an unexpected shape is diagnosable without a
 	// console. One byte is an LXMF error code; the codes are in LXMFPropagation.h.
-	if (response.size() == 1) {
-		lxmf_sync_error_byte() = response.data()[0];
+	// First two bytes of the reply, as 0xAABB. One byte in msgpack is enough to
+	// name the type: 0xc2 false, 0xc3 true, 0x9x a short array, 0xc4 a bin, and
+	// 0xf0-0xf6 are LXMF's error codes.
+	if (response.size() >= 1) {
+		uint32_t v = response.data()[0];
+		if (response.size() >= 2) v = (v << 8) | response.data()[1];
+		lxmf_sync_error_byte() = v;
 	}
 
 	if (unpacker.isBool()) {

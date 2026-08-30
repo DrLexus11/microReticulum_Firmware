@@ -262,6 +262,47 @@ Until that is addressed upstream or by a local patch, an embedded node can offer
 its store to a peer but cannot act on the reply. Inbound peering -- accepting
 another node's offer -- is unaffected and works.
 
+### The peering key is a proof-of-work stamp, and we do not compute one
+
+**Measured 2026-08-30.** With the response-decoding fix above in place, lxmd's
+real answer finally arrives: two bytes, `cc f3` -- msgpack `uint8` carrying
+`0xf3`, `ERROR_INVALID_KEY`. It is rejecting our offer, not ignoring it.
+
+From `LXMRouter.offer_request`:
+
+    peering_id        = self.identity.hash + remote_identity.hash
+    peering_key       = data[0]
+    peering_key_valid = LXStamper.validate_peering_key(peering_id, peering_key,
+                                                       self.peering_cost)
+
+and `LXStamper`:
+
+- `peering_id` is the **peer's** identity hash followed by **ours**, 32 bytes.
+- `workblock = concat(HKDF(length=256, derive_from=peering_id,
+  salt=full_hash(peering_id + msgpack(n))) for n in 0..24)` -- 25 rounds of 256
+  bytes, so **6400 bytes**. Note `WORKBLOCK_EXPAND_ROUNDS_PEERING = 25`, far
+  cheaper than the 3000 used for message stamps.
+- The key is valid when `SHA256(workblock || key)` has at least `peering_cost`
+  leading zero bits. lxmd advertises a peering cost of **18**.
+
+We currently send an empty peering key, so every offer is refused.
+
+**Cost, and why it is affordable.** 18 bits is on average 2^18 = 262144 hashes.
+Naively each hash covers 6432 bytes, which would be about 1.7 GB of SHA-256 --
+minutes of solid work on an ESP32. But the workblock is fixed for a given peer
+and is exactly 100 SHA-256 blocks of 64 bytes, so the midstate after it can be
+computed once and cloned per attempt (`mbedtls_sha256_clone`). Each attempt then
+costs a single block instead of a hundred, and the search becomes seconds rather
+than minutes. The workblock itself is ~200 HMAC-SHA256 operations, once per peer.
+
+The key depends only on the two identities, so it can be computed once per peer
+and cached; it does not need recomputing per sync.
+
+**Our inbound handler deliberately does not validate a peering key.** Admission
+on our side is the store share, which is a guarantee about our own storage rather
+than a claim about the peer. That asymmetry is intentional and costs nothing:
+LXMF peers do not require us to challenge them.
+
 **Still outstanding: the outbound half.** This node accepts offers but never
 makes them -- it has no peer discovery and never calls `/offer` on anyone. A
 Linux `lxmd` that offers to us will now sync into us, but two RADs will not
