@@ -189,15 +189,29 @@ again on the way out. Hash the wrong span and every id the node advertises is
 one no client recognises -- messages that sync but never arrive.
 
 **`/offer` is peer-to-peer only.** Clients never call it; they push straight onto
-the link. §5 was right that peering could be dropped from v1, but the reason
-matters more than expected: the node now *declines* offers deliberately rather
-than for lack of implementation, because accepting means taking a Linux node's
-500 MB backlog into a 512 KB flash store, evicting the local residents' messages
-that are the entire point of the node.
+the link.
 
-The deployment consequence is explicit: a RAD keeps its local backlog but
-cannot hand that backlog to a rooftop Linux blackbox. Adding that capability is
-peer sync, not an accidental extension of `/offer`, and remains follow-up work.
+**Updated: `/offer` is now accepted.** It previously declined every offer, and
+deliberately so -- accepting meant taking a Linux node's 500 MB backlog into a
+512 KB flash store and evicting the local residents' messages that are the entire
+point of the node.
+
+What changed is the store, not the risk assessment. Peer-received messages now
+occupy a bounded share of it (`LXMF_PN_PEER_SHARE_PCT`, 50% by default) and are
+evicted before any local message. That is a guarantee about our own store rather
+than a claim about the peer's, so it holds whatever is on the other end -- which
+is what `autopeer_maxdepth` alone cannot do, since a large peer one hop away is
+inside any depth bound.
+
+The node asks only for ids it does not already hold, and only as many as its
+share has room for. Asking for fewer than were offered is normal in LXMF; the
+peer keeps the rest.
+
+**Still outstanding: the outbound half.** This node accepts offers but never
+makes them -- it has no peer discovery and never calls `/offer` on anyone. A
+Linux `lxmd` that offers to us will now sync into us, but two RADs will not
+converge on their own, because neither initiates. That is the remaining work for
+roadmap item 4a.
 
 ### What it does
 
@@ -205,9 +219,9 @@ peer sync, not an accidental extension of `/offer`, and remains follow-up work.
 | --- | --- |
 | Announce | `lxmf.propagation`, advertising 4 KB per transfer, 8 KB per sync, stamp costs 16/3/18 |
 | Receive | link packet **and** Resource, both proving or storing as appropriate |
-| Store | LittleFS, capped at 128 messages / 512 KB, oldest evicted first |
+| Store | LittleFS, capped at 128 messages / 512 KB; peer-received messages capped at half that and evicted before any local message |
 | `/get` | list, download, and purge, all scoped to the requesting identity |
-| `/offer` | declines -- no peer sync in v1 |
+| `/offer` | accepts, bounded by a peer share of the store; outbound offers not yet implemented |
 
 Ownership on `/get` is checked against the delivery destination derived from the
 identity proved on the link, not from anything in the request, so one client

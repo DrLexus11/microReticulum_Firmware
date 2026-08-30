@@ -389,5 +389,97 @@ class ComposedMessageLayoutTests(unittest.TestCase):
         self.assertIn("nil_t", source)
 
 
+class PeerSyncStoreShareTests(unittest.TestCase):
+    """The store guarantee that makes accepting peer sync safe.
+
+    Peer sync was declined outright because a Linux node's 500 MB backlog would
+    evict the residents' messages a 512 KB store exists to hold. The protection
+    is not autopeer_maxdepth -- a large peer one hop away is inside any depth
+    bound -- it is bounding the *share* of our own store a peer may occupy, which
+    holds whatever is on the other end.
+    """
+
+    def setUp(self):
+        self.d = firmware_defines()
+        with open(HEADER, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+
+    def test_peer_share_leaves_room_for_local_messages(self):
+        pct = self.d["LXMF_PN_PEER_SHARE_PCT"]
+        self.assertGreater(pct, 0, "a zero share makes peering impossible")
+        self.assertLess(pct, 100, "a full share lets a peer fill the store")
+
+    def test_peer_caps_are_strictly_below_the_store_caps(self):
+        self.assertLess(self.d["LXMF_PN_PEER_MAX_BYTES"], self.d["LXMF_PN_MAX_BYTES"])
+        self.assertLess(self.d["LXMF_PN_PEER_MAX_MESSAGES"], self.d["LXMF_PN_MAX_MESSAGES"])
+
+    def test_peer_share_cannot_starve_a_single_local_message(self):
+        """Whatever the share, a full-size local message must still fit."""
+        local_bytes = self.d["LXMF_PN_MAX_BYTES"] - self.d["LXMF_PN_PEER_MAX_BYTES"]
+        self.assertGreaterEqual(local_bytes, self.d["LXMF_PN_TRANSFER_LIMIT_BYTES"])
+        local_slots = self.d["LXMF_PN_MAX_MESSAGES"] - self.d["LXMF_PN_PEER_MAX_MESSAGES"]
+        self.assertGreaterEqual(local_slots, 1)
+
+    def test_eviction_takes_peer_messages_before_local_ones(self):
+        """Origin outranks age. Age-only eviction is what let a peer displace
+        the people attached to this node."""
+        evict = self.source[self.source.index("inline bool lxmf_store_evict_oldest"):]
+        evict = evict[:evict.index("\n}")]
+        self.assertIn("oldest_of(true)", evict, "peer-received must be tried first")
+        peer_first = evict.index("oldest_of(true)")
+        local_next = evict.index("oldest_of(false)")
+        self.assertLess(peer_first, local_next)
+
+    def test_a_peer_message_is_refused_rather_than_evicting_to_fit(self):
+        put = self.source[self.source.index("inline bool lxmf_store_put"):]
+        put = put[:put.index("\n}")]
+        self.assertIn("if (from_peer)", put)
+        self.assertIn("return false", put)
+
+
+class PeerOfferAcceptanceTests(unittest.TestCase):
+    """/offer must answer with wanted ids, in the shape LXMPeer expects."""
+
+    def setUp(self):
+        self.d = firmware_defines()
+        with open(HEADER, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+        self.offer = self.source[self.source.index("inline RNS::Bytes lxmf_offer_request"):]
+        self.offer = self.offer[:self.offer.index("\n}")]
+
+    def test_offer_no_longer_declines_unconditionally(self):
+        """The old handler packed `false` and returned, whatever was offered."""
+        self.assertNotIn("does not accept peer sync", self.source)
+        self.assertIn("lxmf_store_has(id)", self.offer,
+                      "must ask only for ids it does not already hold")
+
+    def test_offer_response_uses_the_proven_packing_idiom(self):
+        """Same as the /get response, which stock clients already accept."""
+        self.assertIn("MsgPack::arr_size_t(wanted.size())", self.offer)
+        self.assertIn("MsgPack::bin_t<uint8_t>", self.offer)
+
+    def test_offer_declines_with_false_when_it_wants_nothing(self):
+        """False is the protocol's 'none of these'; the peer keeps them."""
+        self.assertIn("packer.serialize(false)", self.offer)
+
+    def test_wanted_count_is_bounded_by_the_peer_share(self):
+        self.assertIn("LXMF_PN_PEER_MAX_MESSAGES", self.offer)
+        self.assertIn("slots", self.offer)
+
+    def test_requested_ids_are_recorded_so_they_store_as_peer_received(self):
+        """Origin is tracked by what we asked for, not by which link answered:
+        Resource exposes no link in this port, and the request is the honest
+        definition anyway."""
+        self.assertIn("lxmf_expect_from_peer", self.offer)
+        self.assertIn("lxmf_claim_peer_wanted", self.source)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_transient_id_length_matches_lxmf(self):
+        """We filter offered ids by length; it must be LXMF's own."""
+        self.assertEqual(self.d["LXMF_TRANSIENT_ID_LEN"],
+                         len(hashlib.sha256(b"x").digest()))
+
+
+
 if __name__ == "__main__":
     unittest.main()
