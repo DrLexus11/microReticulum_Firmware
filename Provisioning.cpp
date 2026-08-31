@@ -75,10 +75,10 @@ uint32_t ble_peer_frag_start();
 // LXMF_PROPAGATION_NODE, a build flag this file can see -- the note above says
 // plainly that guarding on a macro it cannot see has already lost fields twice.
 
-// Loop-phase diagnostics. No guard: these are platform-generic and every board
-// has a loop() worth measuring. Declaring them inside the Bluetooth guard
-// removed them from Rev 2, which is where an unexplained watchdog would be
-// hardest to chase.
+// ESP32 loop-phase diagnostics. Keep these declarations outside the Bluetooth
+// guard: Rev 2 disables Bluetooth but still needs the watchdog metrics. The
+// metric registrations below are limited to MCU_VARIANT == MCU_ESP32, matching
+// the platform on which LoopPhase.h records phases and RTC breadcrumbs.
 uint32_t prov_loop_phase_last_wdt();
 uint32_t prov_loop_phase_worst_id();
 uint32_t prov_loop_phase_worst_ms();

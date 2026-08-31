@@ -138,8 +138,9 @@
 #define PROV_METRICS_DEV_WDTPHASE   26
 #define PROV_METRICS_DEV_SLOWPHASE  27
 #define PROV_METRICS_DEV_SLOWMS     28
-// Windowed equivalents: reading SLOWMS_RECENT clears the window, so successive
-// polls describe successive intervals rather than all of history.
+// Windowed equivalents. LoopPhase.h rolls the window on a timer; these metrics
+// are pure reads of the last completed window and remain unchanged until the
+// next window completes.
 #define PROV_METRICS_DEV_RECENTPH   29
 #define PROV_METRICS_DEV_RECENTMS   30
 
