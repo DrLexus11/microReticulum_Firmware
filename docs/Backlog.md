@@ -76,23 +76,25 @@ static peer hash is settable.
 **Worth adding when** a deployment needs to turn sync off without reflashing, or
 to widen the interval on a duty-cycle-constrained link.
 
-### 6. The pin follows a fork branch with an open PR — **resolved, with a caveat**
+### 6. Library pin — **resolved**
 
 Outbound sync depends on a fix in `Link::receive` so a response of any msgpack
 type is decoded, not only `bin`. That is `b06ab0b` in the fork
-(`DrLexus11/microReticulum`), on `fix/provisioning-persistence-errors`, and also
-the head of the fork's **PR #2**.
+(`DrLexus11/microReticulum`), merged to `master` via PR #2 as `d22d441`.
 
-`platformio.ini` now pins `b06ab0b` in all 29 places, verified rather than
-assumed: the cached dependency was deleted so PlatformIO refetched from scratch,
-installing `microReticulum@0.5.0+sha.b06ab0b`. The fix is present in the fetched
-source, the bin-only decode is absent, and all three environments build from that
-cold fetch.
+`platformio.ini` pins `d22d441` — the fork's mainline, not a PR branch, so no
+squash or branch deletion can strip it later.
 
-**The caveat:** this pins a commit on a PR branch, not on the fork's mainline. If
-PR #2 is squashed or rebased on merge, `b06ab0b` becomes unreachable and every
-build here fails at dependency resolution — loudly, at least, rather than
-silently. Re-pin to the merged commit at that point.
+Verified rather than assumed: the cached dependency was deleted so PlatformIO
+refetched from scratch, installing `microReticulum@0.5.0+sha.d22d441`. The fix is
+present in the fetched source, the bin-only decode is absent, and all three
+environments build from that cold fetch.
+
+The merge also brought `180c31a`, which touches provisioning persistence and
+reboot handling — the channel this project uses for every hardware measurement.
+Checked on hardware after the pin bump: provisioning answers on ns108 and ns115,
+persisted configuration survived the reflash (the static peer hash was still
+set), and the node ran clean with no resets.
 
 ---
 
