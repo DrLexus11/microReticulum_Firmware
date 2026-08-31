@@ -76,16 +76,23 @@ static peer hash is settable.
 **Worth adding when** a deployment needs to turn sync off without reflashing, or
 to widen the interval on a duty-cycle-constrained link.
 
-### 6. The microReticulum fork patch is not published
+### 6. The pin follows a fork branch with an open PR — **resolved, with a caveat**
 
 Outbound sync depends on a fix in `Link::receive` so a response of any msgpack
-type is decoded, not only `bin`. It is committed in the fork
-(`DrLexus11/microReticulum`, `b06ab0b`) but **not pushed**, and `platformio.ini`
-still pins `a03d9e0`.
+type is decoded, not only `bin`. That is `b06ab0b` in the fork
+(`DrLexus11/microReticulum`), on `fix/provisioning-persistence-errors`, and also
+the head of the fork's **PR #2**.
 
-**This is a release blocker, not a nicety.** A clean checkout builds against the
-old pin and outbound sync silently does nothing — the failure has no error of its
-own. Push the fork and bump the pin together.
+`platformio.ini` now pins `b06ab0b` in all 29 places, verified rather than
+assumed: the cached dependency was deleted so PlatformIO refetched from scratch,
+installing `microReticulum@0.5.0+sha.b06ab0b`. The fix is present in the fetched
+source, the bin-only decode is absent, and all three environments build from that
+cold fetch.
+
+**The caveat:** this pins a commit on a PR branch, not on the fork's mainline. If
+PR #2 is squashed or rebased on merge, `b06ab0b` becomes unreachable and every
+build here fails at dependency resolution — loudly, at least, rather than
+silently. Re-pin to the merged commit at that point.
 
 ---
 
