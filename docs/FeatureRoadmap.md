@@ -23,7 +23,7 @@ items.
 
 ## Recommended implementation order
 
-### 1. Embedded RRC group chat — **active; PR 3 acceptance green**
+### 1. Embedded RRC group chat — **delivered; all three PRs merged**
 
 Implement the scoped live group-chat hub in
 [`docs/RRCRequirements.md`](RRCRequirements.md).
@@ -37,11 +37,10 @@ Why first:
 - it exercises long-lived Links, which are foundational for later interactive
   services.
 
-Deliver it as the three PRs defined in the requirements document. PR 1 and PR 2
-are merged. PR 3 adds the reusable probe, promotes Rev2 to the same hub build,
-and has passed automated and stock NomadNet/Eridanus mixed-board acceptance. Do
-not expand it into history, Resources, moderation or a Columba fork during the
-MVP.
+Delivered as the three PRs defined in the requirements document. PR 3 added the
+reusable probe, promoted Rev2 to the same hub build, and passed automated and
+stock NomadNet/Eridanus mixed-board acceptance. Do not expand it into history,
+Resources, moderation or a Columba fork.
 
 ### 2. Automatic disaster SoftAP — **implemented and accepted; PSK policy outstanding**
 
@@ -204,7 +203,35 @@ An SD card or a larger flash would raise the ceiling much further and is worth
 having on Rev 3 for other reasons, but neither is a prerequisite for peering two
 RADs.
 
-### 5. Bluetooth Low Energy overhaul — **after the flash-headroom work**
+### 5. Bluetooth Low Energy overhaul — **delivered 2026-08-29, but not as planned below**
+
+**What shipped diverges from this plan, and the plan is kept below rather than
+rewritten so the divergence is visible.** Delivered in PR #14 and #15 as a
+Reticulum **BLE peer interface** -- see
+[`docs/BLEPeerProtocol.md`](BLEPeerProtocol.md).
+
+Three things changed during the work:
+
+- **Still Bluedroid.** No NimBLE port happened. It was not needed: the flash and
+  RAM problems this item was going to solve that way were solved by the
+  repartition in item 3 and by removing BLE from Rev2.
+- **Pairing was dropped, deliberately.** This entry's goal was a phone pairing
+  from its own Bluetooth settings. The Reticulum BLE peer protocol carries no
+  pairing step and expects an unencrypted link; end-to-end encryption is
+  Reticulum's job. The node now reports `bonds=0` and pairs with nothing. The
+  RNode/KISS service that *did* demand pairing was the source of the "device is
+  not ready to pair" loop and is no longer served in peer builds.
+- **The architecture was corrected mid-flight.** The original framing -- a phone
+  attaching to the node -- is the modem model: a host takes the radio and the
+  node leaves the mesh to serve one client. A phone now joins the mesh *through*
+  the node as a peer, the way it would over TCP, and the node keeps its
+  identity, its radio and its place in the network.
+
+Verified on hardware: chat, hub groups, group chat, propagation backlog delivery
+and Nomadnet sites on both boards, with the client showing a LoRa path rather
+than a modem attachment.
+
+The original plan and its reasoning follow.
 
 Replace the Bluedroid BLE implementation with a NimBLE one that a phone can pair
 from its own Bluetooth settings, per
@@ -345,7 +372,8 @@ declines to participate, not the protocol that lacks it.
 - RRC resources, moderation, persistent rooms and offline bridge.
 - Propagation-node peer sync.
 - Native Columba RRC UI.
-- BLE GATT node-to-node transport.
+- ~~BLE GATT node-to-node transport.~~ **Built** -- see item 5 and
+  [`docs/BLEPeerProtocol.md`](BLEPeerProtocol.md).
 - Resource transfers above the currently reliable measured range.
 - Full embedded Resource API extensions.
 
@@ -381,6 +409,24 @@ Choose the next item by dependency and disaster value, not by novelty:
 4. defer features blocked by unavailable hardware or unstable semantics rather
    than implementing an untestable approximation.
 
-Under that rule, finish review and merge of **RRC client and two-board
-interoperability PR 3**. The next feature branch should then be **automatic
-disaster SoftAP**.
+**Updated 2026-08-30.** The previous version of this paragraph told the reader to
+finish RRC PR 3 and then start SoftAP. Both were done, along with the BLE work in
+item 5, and the line went stale -- the third time this document has misdirected
+work that way. It is not enough to update the items; this paragraph is what gets
+read.
+
+Under that rule the next feature is **4a, propagation-node peering between
+RADs**. It is a live user-visible defect rather than an addition: a message
+stored on one RAD is invisible to a client syncing with the other, so which node
+a client happened to pick silently decides what it receives. It is scoped,
+unblocked by hardware, and pairs with the LXMF bridge in item 4.
+
+It also sequences the ESP-NOW question in
+[`docs/MANETBridgeAnalysis.md`](MANETBridgeAnalysis.md), whose own step 3 says to
+revisit that interface "only if measurements show the peer link is the bottleneck
+rather than the LoRa backhaul". Building 4a over LoRa first produces exactly that
+measurement.
+
+Carried alongside, not waiting for a feature slot: the **SoftAP PSK policy** in
+item 2 -- the MAC-derived key is a speed bump rather than a credential -- and the
+`TASK_WDT` trigger in [`CarriedIssues.md`](CarriedIssues.md) §1.

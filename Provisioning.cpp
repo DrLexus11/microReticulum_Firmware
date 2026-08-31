@@ -69,6 +69,27 @@ uint32_t ble_peer_frag_start();
 #define PROV_BT_STATE_CONNECTED 0x03
 #endif
 
+// LXMF propagation peering. Outside the Bluetooth guard above on purpose:
+// Rev 2 builds with RAD01_NO_BLE and still runs a propagation node, so nesting
+// these there removed them from exactly the board that needs them. Keyed on
+// LXMF_PROPAGATION_NODE, a build flag this file can see -- the note above says
+// plainly that guarding on a macro it cannot see has already lost fields twice.
+#if defined(LXMF_PROPAGATION_NODE)
+extern char lxmf_static_peer[33];
+uint32_t lxmf_peer_count();
+uint32_t lxmf_pn_store_count();
+uint32_t lxmf_announces_propagation();
+uint32_t lxmf_announces_any();
+uint32_t lxmf_sync_attempt_count();
+uint32_t lxmf_sync_link_count();
+uint32_t lxmf_sync_offer_count();
+uint32_t lxmf_sync_response_count();
+uint32_t lxmf_sync_sent_count();
+uint32_t lxmf_sync_last_error();
+uint32_t lxmf_sync_last_resp_size();
+uint32_t lxmf_sync_last_outcome();
+#endif // LXMF_PROPAGATION_NODE
+
 #if MCU_VARIANT == MCU_ESP32
 // Why a board restarted, readable without attaching to it.
 //
@@ -700,6 +721,25 @@ static void register_provisioning_namespaces() {
   // a live radio path from changing key state midway through a Provisioning
   // exchange and stranding the response.
   Provisioner::instance()
+#if defined(LXMF_PROPAGATION_NODE)
+    .register_namespace("LXMF Peering", PROV_NS_LXMF)
+      // The peer's propagation destination hash, 32 hex characters, or empty
+      // for none. Static rather than discovered because announce-based
+      // discovery is unreliable here -- see the note in LXMFPeerSync.h.
+      .field_string("Static Peer", PROV_LXMF_STATIC_PEER, FF_REBOOT_REQUIRED,
+        lxmf_static_peer, sizeof(lxmf_static_peer)-1,
+        [](const Value& v) {
+          const std::string& hex = v.as_string();
+          if (hex.empty()) { lxmf_static_peer[0] = 0; return true; }
+          if (hex.size() != 32) return false;
+          for (char c : hex) if (!isxdigit((unsigned char)c)) return false;
+          snprintf(lxmf_static_peer, sizeof(lxmf_static_peer), "%s", hex.c_str());
+          return true;
+        },
+        []() { return lxmf_static_peer; })
+      .end()
+#endif // LXMF_PROPAGATION_NODE
+
     .register_namespace("LoRa Access Control", PROV_NS_IFAC_LORA)
       .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
         false,
@@ -851,7 +891,33 @@ static void register_provisioning_namespaces() {
       }
     })
 */
-    .end();
+    #if defined(LXMF_PROPAGATION_NODE)
+      .metric_int("LXMF Peers", PROV_METRICS_DEV_PEERS,
+        []() { return static_cast<fint_t>(lxmf_peer_count()); })
+      .metric_int("LXMF Store", PROV_METRICS_DEV_PNSTORE,
+        []() { return static_cast<fint_t>(lxmf_pn_store_count()); })
+      .metric_int("Propagation Announces", PROV_METRICS_DEV_ANNPROP,
+        []() { return static_cast<fint_t>(lxmf_announces_propagation()); })
+      .metric_int("Announces Seen", PROV_METRICS_DEV_ANNANY,
+        []() { return static_cast<fint_t>(lxmf_announces_any()); })
+      .metric_int("Sync Attempts", PROV_METRICS_DEV_SYNCATT,
+        []() { return static_cast<fint_t>(lxmf_sync_attempt_count()); })
+      .metric_int("Sync Links Up", PROV_METRICS_DEV_SYNCLINK,
+        []() { return static_cast<fint_t>(lxmf_sync_link_count()); })
+      .metric_int("Sync Offers Sent", PROV_METRICS_DEV_SYNCOFFER,
+        []() { return static_cast<fint_t>(lxmf_sync_offer_count()); })
+      .metric_int("Sync Responses", PROV_METRICS_DEV_SYNCRESP,
+        []() { return static_cast<fint_t>(lxmf_sync_response_count()); })
+      .metric_int("Sync Messages Sent", PROV_METRICS_DEV_SYNCSENT,
+        []() { return static_cast<fint_t>(lxmf_sync_sent_count()); })
+      .metric_int("Sync Last Error Byte", PROV_METRICS_DEV_SYNCERR,
+        []() { return static_cast<fint_t>(lxmf_sync_last_error()); })
+      .metric_int("Sync Response Size", PROV_METRICS_DEV_SYNCRSZ,
+        []() { return static_cast<fint_t>(lxmf_sync_last_resp_size()); })
+      .metric_int("Sync Outcome", PROV_METRICS_DEV_SYNCOUT,
+        []() { return static_cast<fint_t>(lxmf_sync_last_outcome()); })
+#endif // LXMF_PROPAGATION_NODE
+      .end();
 
   metrics.register_namespace("Addresses", PROV_NS_METRICS_ADDRS)
     .metric_bytes("Transport Identity", PROV_METRICS_TRANS_ID, []() { return RNS::Transport::identity() ? RNS::Transport::identity().hash() : RNS::Bytes{}; })

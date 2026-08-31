@@ -140,7 +140,21 @@
 // shared half-duplex channel that already carries one announce per node per
 // five minutes.
 #ifndef LXMF_PN_ANNOUNCE_INTERVAL_MS
-#define LXMF_PN_ANNOUNCE_INTERVAL_MS 1800000   // 30 minutes
+// Just over RNS's rate-limit target, for the same reason as the NomadNet
+// announce: a relay stops rebroadcasting a destination that announces faster
+// than Interface.DEFAULT_AR_TARGET (3600s) once it exceeds DEFAULT_AR_GRACE (5)
+// violations, and a propagation node nobody can hear about is not one. At the
+// previous 30 minutes this violated on every announce and was blocked after
+// about two and a half hours.
+#define LXMF_PN_ANNOUNCE_INTERVAL_MS 3900000   // 65 minutes
+
+// Re-mesh burst after boot. Until a node announces, clients can neither
+// discover it nor learn the stamp cost they must pay to use it, so a node that
+// has just come back is not a propagation node until it is heard. Spend the
+// grace RNS already allows rather than exceeding it: a few quick announces,
+// then the polite interval, which lets the violation count decay.
+#define LXMF_PN_REMESH_BURST_COUNT 4
+#define LXMF_PN_REMESH_BURST_MS 120000         // 2 minutes
 
 // A propagation node is useless until it has announced, so the first one comes
 // shortly after boot rather than one full interval later. Matches the NomadNet
@@ -200,6 +214,30 @@ inline RNS::Bytes lxmf_pn_app_data() {
 #define LXMF_PN_MAX_BYTES (512 * 1024)
 #endif
 
+// The share of the store a peer node's messages may occupy.
+//
+// This is what makes accepting peer sync safe, and it is not the same guarantee
+// as autopeer_maxdepth. A hop-depth bound does not help here: a Linux lxmd with
+// a 500 MB backlog one hop away is inside any depth we would set, and its
+// backlog would evict the residents' messages this node exists to hold. Bounding
+// the *share* is a guarantee about our own store rather than a guess about the
+// peer's, so it holds whatever is on the other end.
+//
+// Locally-received messages may use the whole store. Peer-received messages may
+// not exceed this fraction, and are evicted before any local message is.
+#ifndef LXMF_PN_PEER_SHARE_PCT
+#define LXMF_PN_PEER_SHARE_PCT 50
+#endif
+static_assert(LXMF_PN_PEER_SHARE_PCT > 0 && LXMF_PN_PEER_SHARE_PCT < 100,
+              "LXMF_PN_PEER_SHARE_PCT must leave room for local messages: at "
+              "100 a peer could fill the store, at 0 peering cannot work");
+
+// Kept on one line each: tests/test_lxmf_protocol.py resolves these #defines to
+// check the share against the store caps, and its parser reads a define as a
+// single line.
+#define LXMF_PN_PEER_MAX_BYTES ((size_t)LXMF_PN_MAX_BYTES * LXMF_PN_PEER_SHARE_PCT / 100)
+#define LXMF_PN_PEER_MAX_MESSAGES ((size_t)LXMF_PN_MAX_MESSAGES * LXMF_PN_PEER_SHARE_PCT / 100)
+
 // Both the advertised limits and the store caps are individually overridable at
 // build time, so the store's guarantee must not rest on the two happening to be
 // chosen sensibly. A single message that cannot fit inside the store, or a sync
@@ -226,6 +264,9 @@ struct LXMFEntry {
 	RNS::Bytes destination_hash;  // blob[0:16] -- who it is for
 	uint32_t   received;          // node-local receive time
 	uint32_t   size;
+	// Received from a peer node's sync rather than from a client of ours.
+	// Persisted in the filename, so it survives a reboot.
+	bool       from_peer;
 };
 
 // In-RAM index, rebuilt from the directory at boot. The files are the source of
@@ -237,11 +278,34 @@ inline std::string lxmf_store_path() {
 	return std::string(RNS::Reticulum::storagepath()) + LXMF_PN_STORE_DIR;
 }
 
-inline std::string lxmf_entry_path(const RNS::Bytes& transient_id, uint32_t received) {
+// Peer-received entries get a "_p" suffix. strtoul() stops at the first
+// non-digit, so the received time still parses and pre-existing files without a
+// suffix read as local -- which is what they are.
+// from_peer is REQUIRED, deliberately. It defaulted to false, and two call
+// sites in the /get handler omitted it -- which built the path without the "_p"
+// suffix for a peer-received entry, so the file was never found. A client could
+// neither fetch nor purge anything synced from a peer, which is exactly the
+// traffic peer sync exists to deliver. Every caller has the LXMFEntry in hand,
+// so the compiler can enforce this rather than a filesystem fallback hiding it.
+inline std::string lxmf_entry_path(const RNS::Bytes& transient_id, uint32_t received,
+                                   bool from_peer) {
 	char name[80];
-	snprintf(name, sizeof(name), "/%s_%lu",
-	         transient_id.toHex().c_str(), (unsigned long)received);
+	snprintf(name, sizeof(name), "/%s_%lu%s",
+	         transient_id.toHex().c_str(), (unsigned long)received,
+	         from_peer ? "_p" : "");
 	return lxmf_store_path() + name;
+}
+
+inline size_t lxmf_store_peer_bytes() {
+	size_t total = 0;
+	for (const auto& e : lxmf_store_index) if (e.from_peer) total += e.size;
+	return total;
+}
+
+inline size_t lxmf_store_peer_count() {
+	size_t n = 0;
+	for (const auto& e : lxmf_store_index) if (e.from_peer) n++;
+	return n;
 }
 
 inline size_t lxmf_store_bytes() {
@@ -257,21 +321,40 @@ inline bool lxmf_store_has(const RNS::Bytes& transient_id) {
 	return false;
 }
 
-// Evict the oldest entry. Called when a cap is hit.
+// Evict the oldest entry, taking peer-received messages before local ones.
+//
+// Origin outranks age here. The people attached to this node are the reason it
+// exists; a peer's backlog is a convenience. Evicting strictly by age would let
+// a busy peer displace exactly the messages this node is responsible for, which
+// is the failure that kept peer sync switched off.
 inline bool lxmf_store_evict_oldest() {
 	if (lxmf_store_index.empty()) return false;
-	size_t oldest = 0;
-	for (size_t i = 1; i < lxmf_store_index.size(); i++) {
-		if (lxmf_store_index[i].received < lxmf_store_index[oldest].received) oldest = i;
-	}
+
+	auto oldest_of = [](bool peer) -> long {
+		long best = -1;
+		for (size_t i = 0; i < lxmf_store_index.size(); i++) {
+			if (lxmf_store_index[i].from_peer != peer) continue;
+			if (best < 0 || lxmf_store_index[i].received < lxmf_store_index[best].received)
+				best = (long)i;
+		}
+		return best;
+	};
+
+	long pick = oldest_of(true);            // peer-received first
+	if (pick < 0) pick = oldest_of(false);  // only then our own
+	if (pick < 0) return false;
+	const size_t oldest = (size_t)pick;
+
 	const LXMFEntry& e = lxmf_store_index[oldest];
-	std::string path = lxmf_entry_path(e.transient_id, e.received);
+	std::string path = lxmf_entry_path(e.transient_id, e.received, e.from_peer);
 	if (!RNS::Utilities::OS::remove_file(path.c_str())) {
 		printf("[lxmf] FAILED to evict %s; store cap remains unchanged\n",
 		       e.transient_id.toHex().substr(0, 16).c_str());
 		return false;
 	}
-	printf("[lxmf] store full, evicted %s\n", e.transient_id.toHex().substr(0, 16).c_str());
+	printf("[lxmf] store full, evicted %s (%s)\n",
+	       e.transient_id.toHex().substr(0, 16).c_str(),
+	       e.from_peer ? "peer-received" : "local");
 	lxmf_store_index.erase(lxmf_store_index.begin() + oldest);
 	return true;
 }
@@ -288,7 +371,8 @@ inline bool lxmf_store_remove(const RNS::Bytes& transient_id) {
 	for (size_t i = 0; i < lxmf_store_index.size(); i++) {
 		if (lxmf_store_index[i].transient_id != transient_id) continue;
 		const std::string path = lxmf_entry_path(transient_id,
-		                                         lxmf_store_index[i].received);
+		                                         lxmf_store_index[i].received,
+		                                         lxmf_store_index[i].from_peer);
 		if (!RNS::Utilities::OS::remove_file(path.c_str())) {
 			printf("[lxmf] FAILED to remove %s; keeping it in the store index\n",
 			       path.c_str());
@@ -303,6 +387,41 @@ inline bool lxmf_store_remove(const RNS::Bytes& transient_id) {
 inline RNS::Bytes lxmf_transient_id(const RNS::Bytes& blob) {
 	if (blob.size() <= LXMF_STAMP_SIZE) return RNS::Bytes();
 	return RNS::Identity::full_hash(blob.left(blob.size() - LXMF_STAMP_SIZE));
+}
+
+// Transient ids this node has asked a peer for in an /offer reply.
+//
+// Origin is tracked by what we requested, not by which link it arrived on.
+// Resource carries no link accessor in this port, and more importantly the
+// request is the honest definition: a message we asked a peer for is
+// peer-received however it reaches us.
+//
+// Bounded, oldest-dropped. An entry that never arrives simply ages out, and the
+// message would then be stored as local -- which errs toward keeping it, the
+// safe direction.
+#ifndef LXMF_PN_MAX_PEER_WANTED
+#define LXMF_PN_MAX_PEER_WANTED 32
+#endif
+inline std::vector<RNS::Bytes>& lxmf_peer_wanted() {
+	static std::vector<RNS::Bytes> wanted;
+	return wanted;
+}
+
+inline void lxmf_expect_from_peer(const RNS::Bytes& transient_id) {
+	for (const auto& id : lxmf_peer_wanted()) if (id == transient_id) return;
+	if (lxmf_peer_wanted().size() >= LXMF_PN_MAX_PEER_WANTED)
+		lxmf_peer_wanted().erase(lxmf_peer_wanted().begin());
+	lxmf_peer_wanted().push_back(transient_id);
+}
+
+// Consuming query: an id is claimed once, by the message that arrives for it.
+inline bool lxmf_claim_peer_wanted(const RNS::Bytes& transient_id) {
+	for (size_t i = 0; i < lxmf_peer_wanted().size(); i++) {
+		if (lxmf_peer_wanted()[i] != transient_id) continue;
+		lxmf_peer_wanted().erase(lxmf_peer_wanted().begin() + i);
+		return true;
+	}
+	return false;
 }
 
 // Store one message blob, stamp included. Returns false if it was rejected or
@@ -324,6 +443,22 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 	RNS::Bytes transient_id = lxmf_transient_id(blob);
 	if (lxmf_store_has(transient_id)) return false;   // already held; not an error
 
+	// Peer-received if we asked a peer for exactly this id.
+	const bool from_peer = lxmf_claim_peer_wanted(transient_id);
+
+	// A peer may only fill its share. Refuse rather than evict: evicting to make
+	// room for a peer's message is precisely the behaviour this share exists to
+	// prevent, and the peer keeps the message and is free to offer it again.
+	if (from_peer) {
+		if (lxmf_store_peer_count() >= LXMF_PN_PEER_MAX_MESSAGES ||
+		    lxmf_store_peer_bytes() + blob.size() > LXMF_PN_PEER_MAX_BYTES) {
+			printf("[lxmf] peer share full (%u msg, %u bytes of %u), refusing\n",
+			       (unsigned)lxmf_store_peer_count(), (unsigned)lxmf_store_peer_bytes(),
+			       (unsigned)LXMF_PN_PEER_MAX_BYTES);
+			return false;
+		}
+	}
+
 	while (lxmf_store_index.size() >= LXMF_PN_MAX_MESSAGES ||
 	       lxmf_store_bytes() + blob.size() > (size_t)LXMF_PN_MAX_BYTES) {
 		if (!lxmf_store_evict_oldest()) break;
@@ -344,7 +479,7 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 	}
 
 	uint32_t received = (uint32_t)RNS::Utilities::OS::time();
-	std::string path = lxmf_entry_path(transient_id, received);
+	std::string path = lxmf_entry_path(transient_id, received, from_peer);
 	if (RNS::Utilities::OS::write_file(path.c_str(), blob) != blob.size()) {
 		printf("[lxmf] FAILED to write %s\n", path.c_str());
 		return false;
@@ -355,10 +490,12 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 	entry.destination_hash = blob.left(LXMF_DESTINATION_LEN);
 	entry.received         = received;
 	entry.size             = blob.size();
+	entry.from_peer        = from_peer;
 	lxmf_store_index.push_back(entry);
 
-	printf("[lxmf] stored %u bytes for <%s> (%u held, %u bytes)\n",
+	printf("[lxmf] stored %u bytes for <%s> from %s (%u held, %u bytes)\n",
 	       (unsigned)blob.size(), entry.destination_hash.toHex().c_str(),
+	       from_peer ? "a peer" : "a client",
 	       (unsigned)lxmf_store_index.size(), (unsigned)lxmf_store_bytes());
 	return true;
 }
@@ -393,6 +530,8 @@ inline void lxmf_store_load() {
 		entry.destination_hash = blob.left(LXMF_DESTINATION_LEN);
 		entry.received         = (uint32_t)strtoul(name.substr(sep + 1).c_str(), nullptr, 10);
 		entry.size             = blob.size();
+		entry.from_peer        = (name.size() > 2 &&
+		                          name.compare(name.size() - 2, 2, "_p") == 0);
 		lxmf_store_index.push_back(entry);
 	}
 	printf("[lxmf] store loaded: %u message(s), %u bytes\n",
@@ -521,7 +660,7 @@ inline void lxmf_resource_concluded(const RNS::Resource& resource) {
 		return;
 	}
 	LXMFIngestResult r = lxmf_ingest_container(resource.data());
-	printf("[lxmf] client resource (%u bytes): %u offered, %u stored, %u duplicate, %u rejected\n",
+	printf("[lxmf] inbound resource (%u bytes): %u offered, %u stored, %u duplicate, %u rejected\n",
 	       (unsigned)resource.data().size(), r.offered, r.stored, r.duplicate, r.rejected);
 }
 
@@ -559,21 +698,87 @@ inline void lxmf_link_established(RNS::Link& link) {
 
 // /offer is the peer-to-peer sync path: another propagation node offering us its
 // message backlog. Clients never call it -- they push messages straight onto the
-// link -- so declining costs us nothing a phone depends on.
+// link -- so this path is peers only.
 //
-// We decline deliberately rather than for lack of implementation. Accepting
-// means taking a Linux node's 500 MB backlog into a 512 KB flash store, where it
-// would immediately evict the local residents' messages that are the entire
-// point of this node. `false` is the protocol's "I want none of these", so the
-// offering peer keeps them and stays free to retry.
+// Request  [peering_key, [transient_ids]]
+// Response [wanted_ids] | false (want none)
+//
+// This node used to decline every offer with `false`. That was deliberate, not
+// unimplemented: a Linux node's 500 MB backlog would evict the residents'
+// messages a 512 KB store exists to hold. What changed is not the risk
+// assessment but the store -- peer-received messages now occupy a bounded share
+// and are evicted before any local message, so the size asymmetry can no longer
+// displace anyone. See LXMF_PN_PEER_SHARE_PCT.
+//
+// We ask only for ids we do not already hold, and only as many as the peer share
+// still has room for. Asking for less than was offered is normal in LXMF; the
+// peer keeps the rest and offers again.
 inline RNS::Bytes lxmf_offer_request(
 	const RNS::Bytes& path, const RNS::Bytes& data, const RNS::Bytes& request_id,
 	const RNS::Bytes& link_id, const RNS::Identity& remote_identity, double requested_at
 ) {
 	if (!remote_identity) return lxmf_pn_error(LXMF_ERROR_NO_IDENTITY);
-	printf("[lxmf] /offer from a peer declined: this node does not accept peer sync\n");
+
+	MsgPack::Unpacker unpacker;
+	unpacker.feed(data.data(), data.size());
+	if (!unpacker.isArray() || unpacker.unpackArraySize() < 2) {
+		printf("[lxmf] /offer malformed, declining\n");
+		return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
+	}
+	// Element 0 is the peering key. We do not gate on it: admission here is the
+	// store share, which is a guarantee about us rather than a claim about them.
+	if      (unpacker.isBin())  { (void)unpacker.unpackBinary<uint8_t>(); }
+	else if (unpacker.isStr())  { (void)unpacker.unpackString(); }
+	else                        { (void)unpacker.unpackNil(); }
+
+	if (!unpacker.isArray()) {
+		printf("[lxmf] /offer has no id list, declining\n");
+		return lxmf_pn_error(LXMF_ERROR_INVALID_DATA);
+	}
+
+	// Room left in the peer share, in whole messages. Bounding the count we ask
+	// for is what keeps the resource the peer sends back inside the sync limit
+	// that lxmf_resource_started() enforces.
+	size_t slots = 0;
+	if (lxmf_store_peer_count() < LXMF_PN_PEER_MAX_MESSAGES)
+		slots = LXMF_PN_PEER_MAX_MESSAGES - lxmf_store_peer_count();
+	const size_t per_sync = LXMF_PN_SYNC_LIMIT_BYTES / LXMF_PN_TRANSFER_LIMIT_BYTES;
+	if (slots > per_sync && per_sync > 0) slots = per_sync;
+
+	const size_t count = unpacker.unpackArraySize();
+	std::vector<RNS::Bytes> wanted;
+	size_t offered = 0, held = 0;
+	for (size_t i = 0; i < count; i++) {
+		if (!unpacker.isBin()) break;
+		MsgPack::bin_t<uint8_t> id_bin = unpacker.unpackBinary<uint8_t>();
+		RNS::Bytes id(id_bin.data(), id_bin.size());
+		offered++;
+		if (id.size() != LXMF_TRANSIENT_ID_LEN) continue;
+		if (lxmf_store_has(id)) { held++; continue; }
+		if (wanted.size() < slots) wanted.push_back(id);
+	}
+
+	printf("[lxmf] /offer from a peer: %u offered, %u already held, "
+	       "%u wanted (peer share %u/%u msg)\n",
+	       (unsigned)offered, (unsigned)held, (unsigned)wanted.size(),
+	       (unsigned)lxmf_store_peer_count(), (unsigned)LXMF_PN_PEER_MAX_MESSAGES);
+
 	MsgPack::Packer packer;
-	packer.serialize(false);
+	if (wanted.empty()) {
+		// The protocol's "I want none of these". The peer keeps them.
+		packer.serialize(false);
+		return RNS::Bytes(packer.data(), packer.size());
+	}
+
+	// Remember what we asked for, so the messages are stored as peer-received.
+	for (const auto& id : wanted) lxmf_expect_from_peer(id);
+
+	// Same packing idiom as the /get response, which is proven against stock
+	// clients. A list of transient ids is exactly what LXMPeer expects here.
+	packer.serialize(MsgPack::arr_size_t(wanted.size()));
+	for (const RNS::Bytes& id : wanted) {
+		packer.serialize(MsgPack::bin_t<uint8_t>(id.data(), id.data() + id.size()));
+	}
 	return RNS::Bytes(packer.data(), packer.size());
 }
 
@@ -679,7 +884,7 @@ inline RNS::Bytes lxmf_message_get_request(
 			const LXMFEntry& e = lxmf_store_index[i];
 			if (e.transient_id != tid || e.destination_hash != client) continue;
 			if (!RNS::Utilities::OS::remove_file(
-			        lxmf_entry_path(e.transient_id, e.received).c_str())) {
+			        lxmf_entry_path(e.transient_id, e.received, e.from_peer).c_str())) {
 				printf("[lxmf] FAILED to purge %s; keeping it in the store index\n",
 				       e.transient_id.toHex().substr(0, 16).c_str());
 				break;
@@ -702,7 +907,7 @@ inline RNS::Bytes lxmf_message_get_request(
 		for (const auto& e : lxmf_store_index) {
 			if (e.transient_id != tid || e.destination_hash != client) continue;
 			RNS::Bytes blob;
-			std::string fp = lxmf_entry_path(e.transient_id, e.received);
+			std::string fp = lxmf_entry_path(e.transient_id, e.received, e.from_peer);
 			if (RNS::Utilities::OS::read_file(fp.c_str(), blob) <= LXMF_STAMP_SIZE) break;
 			size_t next = cumulative + blob.size() + per_message_overhead;
 			if (next > client_limit) break;     // client re-requests the rest
@@ -745,11 +950,16 @@ inline void lxmf_propagation_announce_watch() {
 	// most: after a power restore, when every node in a building is silent at
 	// once. Announce shortly after boot, once the network is definitely up, then
 	// settle into the normal interval.
-	uint32_t due = first_done ? LXMF_PN_ANNOUNCE_INTERVAL_MS : LXMF_PN_FIRST_ANNOUNCE_MS;
+	static uint8_t burst_sent = 0;
+	uint32_t due;
+	if (!first_done)                                    due = LXMF_PN_FIRST_ANNOUNCE_MS;
+	else if (burst_sent < LXMF_PN_REMESH_BURST_COUNT)   due = LXMF_PN_REMESH_BURST_MS;
+	else                                                due = LXMF_PN_ANNOUNCE_INTERVAL_MS;
 	due += jitter;
 	if (millis() - last < due) return;
 	last = millis();
 	jitter = (uint32_t)random(LXMF_PN_ANNOUNCE_JITTER_MS);
+	if (first_done && burst_sent < LXMF_PN_REMESH_BURST_COUNT) burst_sent++;
 	first_done = true;
 	RNS::Bytes app_data = lxmf_pn_app_data();
 	lxmf_propagation_destination.announce(app_data);

@@ -189,15 +189,162 @@ again on the way out. Hash the wrong span and every id the node advertises is
 one no client recognises -- messages that sync but never arrive.
 
 **`/offer` is peer-to-peer only.** Clients never call it; they push straight onto
-the link. §5 was right that peering could be dropped from v1, but the reason
-matters more than expected: the node now *declines* offers deliberately rather
-than for lack of implementation, because accepting means taking a Linux node's
-500 MB backlog into a 512 KB flash store, evicting the local residents' messages
-that are the entire point of the node.
+the link.
 
-The deployment consequence is explicit: a RAD keeps its local backlog but
-cannot hand that backlog to a rooftop Linux blackbox. Adding that capability is
-peer sync, not an accidental extension of `/offer`, and remains follow-up work.
+**Updated: `/offer` is now accepted.** It previously declined every offer, and
+deliberately so -- accepting meant taking a Linux node's 500 MB backlog into a
+512 KB flash store and evicting the local residents' messages that are the entire
+point of the node.
+
+What changed is the store, not the risk assessment. Peer-received messages now
+occupy a bounded share of it (`LXMF_PN_PEER_SHARE_PCT`, 50% by default) and are
+evicted before any local message. That is a guarantee about our own store rather
+than a claim about the peer's, so it holds whatever is on the other end -- which
+is what `autopeer_maxdepth` alone cannot do, since a large peer one hop away is
+inside any depth bound.
+
+The node asks only for ids it does not already hold, and only as many as its
+share has room for. Asking for fewer than were offered is normal in LXMF; the
+peer keeps the rest.
+
+**Verified on hardware, 2026-08-30.** A peer simulator on the deck established a
+Link to Rev 1's propagation destination over LoRa and called `/offer` with four
+transient ids the node could not hold. It replied with a list of **two** -- the
+correct bound -- for all three peering-key encodings (bin, nil and string), and
+`/get` with `[nil, nil]` still returned an empty list, so the client path is
+unregressed.
+
+Two is `LXMF_PN_SYNC_LIMIT_BYTES / LXMF_PN_TRANSFER_LIMIT_BYTES` (8000/4000): the
+node asks for no more than it could receive in one sync if every message were
+maximum size. That is safe but pessimistic, since real messages are far smaller
+and their sizes are not knowable from transient ids alone. Moving a 128-message
+backlog would take 64 rounds. Raising `LXMF_PN_SYNC_LIMIT_KB` is the lever if
+that proves too slow; asking for more than the sync limit is not, because
+`lxmf_resource_started()` would then refuse the transfer it invited.
+
+Note for anyone writing a test client: `Link.request(path, data=...)` takes a
+**native** object. RNS msgpacks the request envelope itself, so pre-packed bytes
+arrive at the handler as a msgpack *bin* rather than an array, and every handler
+in this file answers `0xf4 INVALID_DATA`. That looks exactly like a firmware
+parsing bug and is not one.
+
+### Outbound sync is blocked upstream, not in this firmware
+
+**Measured 2026-08-30.** The outbound half is implemented and demonstrably
+correct up to the point of reading the reply:
+
+- Rev 1 links to a peer's propagation destination over LoRa and issues `/offer`.
+- A Python responder logged the request as `[b'', [<32-byte transient id>]]` --
+  an empty peering key and the ids we hold, which is the right shape.
+- The peer handles it and answers.
+- **The answer arrives empty.**
+
+The cause is in microReticulum's `Link::receive`, in the `RESPONSE` branch:
+
+    MsgPack::bin_t<uint8_t> request_id;
+    MsgPack::bin_t<uint8_t> response_data;
+    unpacker.from_array(request_id, response_data);
+
+The response payload is decoded **only as a msgpack `bin`**. LXMF's `/offer`
+reply is `True`, `False`, or an array of transient ids -- never a bin -- so it
+decodes to nothing and `get_response()` yields an empty `Bytes`.
+
+Confirmed by experiment rather than by reading the code: a test responder that
+replies with a `bin` produced `respsize=13` on the node, while lxmd's real
+replies produced `respsize=0`, alternating within the same run as the node
+cycled between peers.
+
+Note the asymmetry, which is why this went unnoticed: this node *serving* a
+response to a Python client works fine -- Python decodes any msgpack type. It is
+only the C++ side *receiving* a response that is constrained.
+
+Until that is addressed upstream or by a local patch, an embedded node can offer
+its store to a peer but cannot act on the reply. Inbound peering -- accepting
+another node's offer -- is unaffected and works.
+
+### The peering key is a proof-of-work stamp, and we do not compute one
+
+**Measured 2026-08-30.** With the response-decoding fix above in place, lxmd's
+real answer finally arrives: two bytes, `cc f3` -- msgpack `uint8` carrying
+`0xf3`, `ERROR_INVALID_KEY`. It is rejecting our offer, not ignoring it.
+
+From `LXMRouter.offer_request`:
+
+    peering_id        = self.identity.hash + remote_identity.hash
+    peering_key       = data[0]
+    peering_key_valid = LXStamper.validate_peering_key(peering_id, peering_key,
+                                                       self.peering_cost)
+
+and `LXStamper`:
+
+- `peering_id` is the **peer's** identity hash followed by **ours**, 32 bytes.
+- `workblock = concat(HKDF(length=256, derive_from=peering_id,
+  salt=full_hash(peering_id + msgpack(n))) for n in 0..24)` -- 25 rounds of 256
+  bytes, so **6400 bytes**. Note `WORKBLOCK_EXPAND_ROUNDS_PEERING = 25`, far
+  cheaper than the 3000 used for message stamps.
+- The key is valid when `SHA256(workblock || key)` has at least `peering_cost`
+  leading zero bits. lxmd advertises a peering cost of **18**.
+
+We currently send an empty peering key, so every offer is refused.
+
+**Cost, and why it is affordable.** 18 bits is on average 2^18 = 262144 hashes.
+Naively each hash covers 6432 bytes, which would be about 1.7 GB of SHA-256 --
+minutes of solid work on an ESP32. But the workblock is fixed for a given peer
+and is exactly 100 SHA-256 blocks of 64 bytes, so the midstate after it can be
+computed once and cloned per attempt (`mbedtls_sha256_clone`). Each attempt then
+costs a single block instead of a hundred, and the search becomes seconds rather
+than minutes. The workblock itself is ~200 HMAC-SHA256 operations, once per peer.
+
+The key depends only on the two identities, so it can be computed once per peer
+and cached; it does not need recomputing per sync.
+
+**Our inbound handler deliberately does not validate a peering key.** Admission
+on our side is the store share, which is a guarantee about our own storage rather
+than a claim about the peer. That asymmetry is intentional and costs nothing:
+LXMF peers do not require us to challenge them.
+
+### Outbound sync works, verified against lxmd
+
+**2026-08-30.** An ESP32 propagation node syncing into a real Python LXMF node,
+end to end over LoRa:
+
+    [Debug]   Handling request for: /offer
+    [Debug]   Peering key validated for incoming offer in 0s
+    [Debug]   Accepted all 1 offered message from <ba03aa75...>
+    [Debug]   Accepting resource advertisement. Transfer size is 336 B in 1 parts
+    [Debug]   Began 282 B transfer for LXMF propagation resource
+    [Verbose] Received 1 message from peer <ba03aa75...>, validating stamps...
+    [Verbose] All message stamps validated from peer <ba03aa75...>
+
+lxmd's store went from 2 messages to 3, recorded as "1 messages received from
+peered nodes", and it then offered the message onward to its other peer.
+
+Steady state is correct too: on the next cycle the node offers the same id, lxmd
+answers `false` because it now holds it, and the node reports WANT-NONE and
+sends nothing. Messages are not retransmitted once delivered.
+
+Four things had to be right, and each failed silently on its own:
+
+1. **Response decoding.** microReticulum decoded response payloads only as a
+   msgpack bin, so LXMF's bool and array replies arrived empty. Patched in the
+   fork; a bin is still unwrapped as before.
+2. **The peering key.** A propagation node refuses an offer without a valid
+   proof-of-work key and answers `0xf3 ERROR_INVALID_KEY`. See
+   [`LXMFPeeringKey.h`](../LXMFPeeringKey.h).
+3. **`true` means "all of them".** LXMF answers `true` when it wants everything
+   offered, which is the normal answer to a first offer. Handling only `false`
+   and an explicit id list stalled the sync on exactly the case that should
+   succeed.
+4. **Resource lifetime.** The first version created the outbound Resource as a
+   local and tore the link down in the same breath, so the transfer never ran --
+   the peer accepted the same offer every cycle and received nothing. The
+   resource is now held in the sync state and the sync concludes on its
+   callback.
+
+**Both halves are now implemented.** The node accepts offers and makes them.
+Peers are found by static configuration (ns115 field 1) with announce discovery
+as an opportunistic extra -- see the note in `LXMFPeerSync.h` for why announce
+discovery alone is not dependable in this port.
 
 ### What it does
 
@@ -205,9 +352,9 @@ peer sync, not an accidental extension of `/offer`, and remains follow-up work.
 | --- | --- |
 | Announce | `lxmf.propagation`, advertising 4 KB per transfer, 8 KB per sync, stamp costs 16/3/18 |
 | Receive | link packet **and** Resource, both proving or storing as appropriate |
-| Store | LittleFS, capped at 128 messages / 512 KB, oldest evicted first |
+| Store | LittleFS, capped at 128 messages / 512 KB; peer-received messages capped at half that and evicted before any local message |
 | `/get` | list, download, and purge, all scoped to the requesting identity |
-| `/offer` | declines -- no peer sync in v1 |
+| `/offer` | accepts inbound, bounded by a peer share of the store; **and makes outbound offers** -- static peer config (ns115 field 1) with opportunistic announce discovery, peering-key stamp included |
 
 Ownership on `/get` is checked against the delivery destination derived from the
 identity proved on the link, not from anything in the request, so one client

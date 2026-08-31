@@ -23,6 +23,13 @@
 #endif
 #if defined(LXMF_PROPAGATION_NODE)
 #include "LXMFPropagation.h"
+#include "LXMFPeerSync.h"
+// Accessors for Provisioning.cpp. Defined here because that translation unit
+// cannot see the LXMF headers' types.
+uint32_t lxmf_peer_count();
+uint32_t lxmf_pn_store_count();
+uint32_t lxmf_announces_propagation();
+uint32_t lxmf_announces_any();
 #endif
 #if defined(LORA_TRANSPORT)
 #include "LoRaInterface.h"
@@ -295,6 +302,26 @@ const char* ble_peer_last_frag_hdr() { return ble_peer_impl ? ble_peer_impl->las
 uint32_t ble_peer_frag_lone()   { return ble_peer_impl ? ble_peer_impl->frag_lone() : 0; }
 uint32_t ble_peer_frag_start()  { return ble_peer_impl ? ble_peer_impl->frag_start() : 0; }
 #endif
+
+// Accessors for Provisioning.cpp, which cannot see the LXMF headers' types.
+// Guarded on the propagation node, NOT on BLE_PEER_TRANSPORT: under the BLE
+// guard these vanished from Rev 2 and every board without BLE, which still run
+// a propagation node and still register these provisioning fields.
+#if defined(LXMF_PROPAGATION_NODE)
+char lxmf_static_peer[33] = {0};
+uint32_t lxmf_peer_count()            { return (uint32_t)lxmf_peers().size(); }
+uint32_t lxmf_pn_store_count()        { return (uint32_t)lxmf_store_index.size(); }
+uint32_t lxmf_announces_propagation() { return lxmf_peer_announces_filtered(); }
+uint32_t lxmf_announces_any()         { return lxmf_peer_announces_any(); }
+uint32_t lxmf_sync_attempt_count()    { return lxmf_sync_attempts(); }
+uint32_t lxmf_sync_link_count()       { return lxmf_sync_links_up(); }
+uint32_t lxmf_sync_offer_count()      { return lxmf_sync_offers(); }
+uint32_t lxmf_sync_response_count()   { return lxmf_sync_responses(); }
+uint32_t lxmf_sync_sent_count()       { return lxmf_sync_sent(); }
+uint32_t lxmf_sync_last_error()       { return lxmf_sync_error_byte(); }
+uint32_t lxmf_sync_last_resp_size()   { return lxmf_sync_resp_size(); }
+uint32_t lxmf_sync_last_outcome()     { return lxmf_sync_outcome(); }
+#endif // LXMF_PROPAGATION_NODE
 #if defined(TCP_SERVER_TRANSPORT)
 RNS::Interface tcp_server_interface(RNS::Type::NONE);
 #endif
@@ -1422,6 +1449,10 @@ printf("[init] op_mode: %U\n", op_mode);
           LXMF_OFFER_PATH, lxmf_offer_request, RNS::Type::Destination::ALLOW_ALL);
         lxmf_propagation_destination.register_request_handler(
           LXMF_GET_PATH, lxmf_message_get_request, RNS::Type::Destination::ALLOW_ALL);
+        // Outbound half: listen for other propagation nodes so we can offer
+        // them what we hold. Serving /offer alone never makes two nodes
+        // converge, because neither ever initiates.
+        lxmf_peer_sync_begin();
         printf("[lxmf] propagation node destination <%s>\n",
                lxmf_propagation_destination.hash().toHex().c_str());
         lxmf_propagation_destination.set_link_established_callback(lxmf_link_established);
@@ -3068,8 +3099,10 @@ void work_while_waiting() { loop(); }
 // repairs it, and the node looks dead until it is power-cycled -- even though it
 // is up and on WiFi. A periodic announce is what heals that.
 //
-// Announces cost airtime on LoRa, so the interval is deliberately generous;
-// tune NOMADNET_ANNOUNCE_INTERVAL_MS in Config.h.
+// Announces cost airtime on LoRa, and RNS relays stop rebroadcasting a
+// destination that announces faster than once an hour. Both matter, and they
+// pull opposite ways: see NOMADNET_ANNOUNCE_INTERVAL_MS and the re-mesh burst
+// beside it in Config.h for how the balance is struck.
 #if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
 static void nomadnet_announce_watch() {
   static uint32_t last_announce = 0;
@@ -3091,13 +3124,29 @@ static void nomadnet_announce_watch() {
   // socket bound to 0.0.0.0 and is simply lost. That race was previously hidden
   // by a slow startup. Send the first real announce shortly after boot, once the
   // network is definitely up, then settle into the normal interval.
-  uint32_t due = first_done ? NOMADNET_ANNOUNCE_INTERVAL_MS : NOMADNET_FIRST_ANNOUNCE_MS;
+  // Three phases: the first announce shortly after boot, then a short burst so
+  // a node that just recovered is findable quickly, then the steady interval.
+  // The burst is sized to stay inside RNS's rate-limit grace -- exceeding it
+  // gets the announce blocked at relays, which costs the node its name
+  // downstream and is the opposite of re-meshing fast.
+  static uint8_t burst_sent = 0;
+  uint32_t due;
+  if (!first_done)                                  due = NOMADNET_FIRST_ANNOUNCE_MS;
+  else if (burst_sent < NOMADNET_REMESH_BURST_COUNT) due = NOMADNET_REMESH_BURST_MS;
+  else                                              due = NOMADNET_ANNOUNCE_INTERVAL_MS;
   due += announce_jitter;
   if (millis() - last_announce < due) return;
   last_announce = millis();
   announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
+  // Decide the label BEFORE incrementing: the counter describes announces
+  // already sent, so reading it afterwards labelled the last burst announce
+  // "steady" even though it went out on the burst cadence -- which would send
+  // anyone reading these logs looking for a cadence bug that is not there.
+  const bool in_burst = (burst_sent < NOMADNET_REMESH_BURST_COUNT);
+  if (first_done && burst_sent < NOMADNET_REMESH_BURST_COUNT) burst_sent++;
   first_done = true;
-  printf("[announce] re-announcing NomadNet site \"%s\"\n", nomadnet_name);
+  printf("[announce] re-announcing NomadNet site \"%s\" (%s)\n", nomadnet_name,
+         in_burst ? "re-mesh burst" : "steady");
   nomadnet_destination.announce(nomadnet_name);
 }
 #endif
@@ -3517,6 +3566,7 @@ void loop() {
   radio_commit_confirm_watch();
 #if defined(LXMF_PROPAGATION_NODE)
   lxmf_propagation_announce_watch();
+  lxmf_peer_sync_watch();
 #endif
 #endif
 

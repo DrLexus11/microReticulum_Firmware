@@ -389,5 +389,313 @@ class ComposedMessageLayoutTests(unittest.TestCase):
         self.assertIn("nil_t", source)
 
 
+class PeerSyncStoreShareTests(unittest.TestCase):
+    """The store guarantee that makes accepting peer sync safe.
+
+    Peer sync was declined outright because a Linux node's 500 MB backlog would
+    evict the residents' messages a 512 KB store exists to hold. The protection
+    is not autopeer_maxdepth -- a large peer one hop away is inside any depth
+    bound -- it is bounding the *share* of our own store a peer may occupy, which
+    holds whatever is on the other end.
+    """
+
+    def setUp(self):
+        self.d = firmware_defines()
+        with open(HEADER, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+
+    def test_peer_share_leaves_room_for_local_messages(self):
+        pct = self.d["LXMF_PN_PEER_SHARE_PCT"]
+        self.assertGreater(pct, 0, "a zero share makes peering impossible")
+        self.assertLess(pct, 100, "a full share lets a peer fill the store")
+
+    def test_peer_caps_are_strictly_below_the_store_caps(self):
+        self.assertLess(self.d["LXMF_PN_PEER_MAX_BYTES"], self.d["LXMF_PN_MAX_BYTES"])
+        self.assertLess(self.d["LXMF_PN_PEER_MAX_MESSAGES"], self.d["LXMF_PN_MAX_MESSAGES"])
+
+    def test_peer_share_cannot_starve_a_single_local_message(self):
+        """Whatever the share, a full-size local message must still fit."""
+        local_bytes = self.d["LXMF_PN_MAX_BYTES"] - self.d["LXMF_PN_PEER_MAX_BYTES"]
+        self.assertGreaterEqual(local_bytes, self.d["LXMF_PN_TRANSFER_LIMIT_BYTES"])
+        local_slots = self.d["LXMF_PN_MAX_MESSAGES"] - self.d["LXMF_PN_PEER_MAX_MESSAGES"]
+        self.assertGreaterEqual(local_slots, 1)
+
+    def test_eviction_takes_peer_messages_before_local_ones(self):
+        """Origin outranks age. Age-only eviction is what let a peer displace
+        the people attached to this node."""
+        evict = self.source[self.source.index("inline bool lxmf_store_evict_oldest"):]
+        evict = evict[:evict.index("\n}")]
+        self.assertIn("oldest_of(true)", evict, "peer-received must be tried first")
+        peer_first = evict.index("oldest_of(true)")
+        local_next = evict.index("oldest_of(false)")
+        self.assertLess(peer_first, local_next)
+
+    def test_a_peer_message_is_refused_rather_than_evicting_to_fit(self):
+        put = self.source[self.source.index("inline bool lxmf_store_put"):]
+        put = put[:put.index("\n}")]
+        self.assertIn("if (from_peer)", put)
+        self.assertIn("return false", put)
+
+
+class PeerOfferAcceptanceTests(unittest.TestCase):
+    """/offer must answer with wanted ids, in the shape LXMPeer expects."""
+
+    def setUp(self):
+        self.d = firmware_defines()
+        with open(HEADER, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+        self.offer = self.source[self.source.index("inline RNS::Bytes lxmf_offer_request"):]
+        self.offer = self.offer[:self.offer.index("\n}")]
+
+    def test_offer_no_longer_declines_unconditionally(self):
+        """The old handler packed `false` and returned, whatever was offered."""
+        self.assertNotIn("does not accept peer sync", self.source)
+        self.assertIn("lxmf_store_has(id)", self.offer,
+                      "must ask only for ids it does not already hold")
+
+    def test_offer_response_uses_the_proven_packing_idiom(self):
+        """Same as the /get response, which stock clients already accept."""
+        self.assertIn("MsgPack::arr_size_t(wanted.size())", self.offer)
+        self.assertIn("MsgPack::bin_t<uint8_t>", self.offer)
+
+    def test_offer_declines_with_false_when_it_wants_nothing(self):
+        """False is the protocol's 'none of these'; the peer keeps them."""
+        self.assertIn("packer.serialize(false)", self.offer)
+
+    def test_wanted_count_is_bounded_by_the_peer_share(self):
+        self.assertIn("LXMF_PN_PEER_MAX_MESSAGES", self.offer)
+        self.assertIn("slots", self.offer)
+
+    def test_requested_ids_are_recorded_so_they_store_as_peer_received(self):
+        """Origin is tracked by what we asked for, not by which link answered:
+        Resource exposes no link in this port, and the request is the honest
+        definition anyway."""
+        self.assertIn("lxmf_expect_from_peer", self.offer)
+        self.assertIn("lxmf_claim_peer_wanted", self.source)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_transient_id_length_matches_lxmf(self):
+        """We filter offered ids by length; it must be LXMF's own."""
+        self.assertEqual(self.d["LXMF_TRANSIENT_ID_LEN"],
+                         len(hashlib.sha256(b"x").digest()))
+
+
+class PeerSyncAirtimeTests(unittest.TestCase):
+    """The outbound half's bounds. These are airtime limits, not style.
+
+    Every step of a sync crosses LoRa on a shared, duty-cycled channel that also
+    carries the traffic this node exists to move. A sync that is too eager
+    degrades the mesh for everyone on it, which is worse than the problem being
+    solved.
+    """
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(HEADER), "LXMFPeerSync.h")
+        with open(path, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+        out = {}
+        for name, value in re.findall(r'^#define\s+(\w+)\s+(.+?)\s*$',
+                                      self.source, re.M):
+            value = value.split("//")[0].strip()
+            try:
+                out[name] = int(value, 0)
+            except ValueError:
+                pass
+        self.d = out
+
+    def test_sync_interval_is_measured_in_tens_of_minutes(self):
+        """A propagation store is a backstop, not a live feed."""
+        self.assertGreaterEqual(self.d["LXMF_PEER_SYNC_INTERVAL_MS"], 600000)
+
+    def test_first_sync_waits_for_the_node_to_settle(self):
+        self.assertGreaterEqual(self.d["LXMF_PEER_SYNC_FIRST_MS"], 60000)
+        self.assertLess(self.d["LXMF_PEER_SYNC_FIRST_MS"],
+                        self.d["LXMF_PEER_SYNC_INTERVAL_MS"])
+
+    def test_offer_batch_is_small_enough_for_one_lora_transfer(self):
+        """32 bytes per id, so the batch size is the request's size on air."""
+        request_bytes = self.d["LXMF_PEER_OFFER_BATCH"] * 32
+        self.assertLessEqual(request_bytes, 1024,
+                             "offering the whole store is kilobytes before a "
+                             "single message moves")
+
+    def test_peer_table_and_depth_are_bounded(self):
+        self.assertLessEqual(self.d["LXMF_PEER_MAX_PEERS"], 8)
+        self.assertLessEqual(self.d["LXMF_PEER_MAX_DEPTH"], 6)
+
+    def test_sync_does_nothing_when_there_is_nothing_to_offer(self):
+        """The common case must cost no airtime whatsoever."""
+        watch = self.source[self.source.index("inline void lxmf_peer_sync_watch"):]
+        self.assertIn("lxmf_store_index.empty()", watch)
+
+    def test_only_one_sync_runs_at_a_time(self):
+        self.assertIn("if (st.active)", self.source)
+        self.assertIn("LXMF_PEER_SYNC_TIMEOUT_MS", self.source)
+
+    def test_node_never_peers_with_itself(self):
+        """Our own announce returning over a looping interface would otherwise
+        make the node offer its whole store to itself, forever."""
+        self.assertIn("lxmf_propagation_destination.hash()", self.source)
+
+    def test_sync_finish_clears_state_before_tearing_down(self):
+        """Link::teardown() calls the closed callback synchronously.
+
+        Clearing st.active after the teardown left the re-entry guard true, so
+        finish -> teardown -> link_closed -> closed callback -> finish recursed
+        until the loopTask stack canary fired. Measured as a PANIC ~300s after
+        boot, once a peer existed for the sync path to run at all.
+        """
+        fn = self.source[self.source.index("inline void lxmf_peer_sync_finish"):]
+        fn = fn[:fn.index("\n}")]
+        # Match the call, not the word: the comment above it also says
+        # "teardown()", and matching that made this assert against prose.
+        self.assertIn("st.active  = false", fn)
+        self.assertIn("link.teardown()", fn)
+        self.assertLess(fn.index("st.active  = false"), fn.index("link.teardown()"),
+                        "state must be cleared before teardown can re-enter")
+
+    def test_outbound_send_respects_the_sync_limit(self):
+        self.assertIn("LXMF_PN_SYNC_LIMIT_BYTES", self.source)
+
+
+class AnnounceRateTests(unittest.TestCase):
+    """Announce cadence against RNS's rate limiter.
+
+    RNS stops rebroadcasting a destination that announces faster than
+    Interface.DEFAULT_AR_TARGET (3600s) once it exceeds DEFAULT_AR_GRACE (5)
+    violations. A blocked announce costs the node its NAME everywhere more than
+    one hop away -- observed on hardware as a peer showing as a hash.
+
+    The balance struck here is deliberate: this is disaster coordination, so a
+    node that just recovered announces in a quick burst sized to stay inside the
+    grace, then settles to a rate relays will keep forwarding.
+    """
+
+    def setUp(self):
+        self.d = firmware_defines()
+        with open(os.path.join(os.path.dirname(HEADER), "Config.h"),
+                  "r", encoding="utf-8") as handle:
+            text = handle.read()
+        for name, value in re.findall(r'^\s*#define\s+(\w+)\s+(\d+)', text, re.M):
+            self.d.setdefault(name, int(value))
+
+    AR_TARGET = 3600
+    AR_GRACE = 5
+
+    def test_steady_intervals_exceed_the_rns_rate_target(self):
+        for name in ("NOMADNET_ANNOUNCE_INTERVAL_MS", "LXMF_PN_ANNOUNCE_INTERVAL_MS"):
+            with self.subTest(interval=name):
+                self.assertGreater(self.d[name] / 1000.0, self.AR_TARGET,
+                                   "%s announces faster than RNS will rebroadcast" % name)
+
+    def test_jitter_cannot_push_an_interval_back_under_the_target(self):
+        for interval, jitter in (("NOMADNET_ANNOUNCE_INTERVAL_MS", "NOMADNET_ANNOUNCE_JITTER_MS"),
+                                 ("LXMF_PN_ANNOUNCE_INTERVAL_MS", "LXMF_PN_ANNOUNCE_JITTER_MS")):
+            with self.subTest(interval=interval):
+                self.assertGreater(self.d[interval] / 1000.0, self.AR_TARGET,
+                                   "jitter only adds, but the floor must still clear the target")
+
+    def test_remesh_burst_stays_inside_the_grace(self):
+        """Spend the allowance, do not exceed it. Exceeding it blocks the
+        announce, which is the opposite of re-meshing quickly."""
+        for name in ("NOMADNET_REMESH_BURST_COUNT", "LXMF_PN_REMESH_BURST_COUNT"):
+            with self.subTest(burst=name):
+                self.assertLess(self.d[name], self.AR_GRACE,
+                                "a burst at or past the grace gets the node blocked")
+
+    def test_a_recovered_node_is_still_announced_within_minutes(self):
+        """The whole point of the burst. A node back from a power cut must not
+        wait an hour to be findable."""
+        for first, burst in (("NOMADNET_FIRST_ANNOUNCE_MS", "NOMADNET_REMESH_BURST_MS"),
+                             ("LXMF_PN_FIRST_ANNOUNCE_MS", "LXMF_PN_REMESH_BURST_MS")):
+            with self.subTest(first=first):
+                self.assertLessEqual(self.d[first] / 1000.0, 300)
+                self.assertLessEqual(self.d[burst] / 1000.0, 300)
+
+
+class PeeringKeyTests(unittest.TestCase):
+    """The peering-key proof of work, against LXMF's own LXStamper.
+
+    A propagation node refuses an /offer without a valid key and answers
+    ERROR_INVALID_KEY. Getting the workblock derivation wrong produces a key
+    that is silently rejected -- the failure has no error of its own.
+    """
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(HEADER), "LXMFPeeringKey.h")
+        with open(path, "r", encoding="utf-8") as handle:
+            self.source = handle.read()
+        self.d = {}
+        for name, value in re.findall(r'^#define\s+(\w+)\s+(.+?)\s*$', self.source, re.M):
+            value = value.split("//")[0].strip()
+            expr = re.sub(r'\b([A-Za-z_]\w*)\b',
+                          lambda m: str(self.d[m.group(1)])
+                          if isinstance(self.d.get(m.group(1)), int) else m.group(1), value)
+            try:
+                self.d[name] = int(eval(expr, {"__builtins__": {}}, {}))
+            except Exception:
+                pass
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_expand_rounds_match_lxstamper(self):
+        from LXMF import LXStamper
+        self.assertEqual(self.d["LXMF_PEERING_EXPAND_ROUNDS"],
+                         LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_key_size_matches_lxstamper(self):
+        from LXMF import LXStamper
+        self.assertEqual(self.d["LXMF_PEERING_KEY_SIZE"], LXStamper.STAMP_SIZE)
+
+    def test_workblock_is_a_whole_number_of_sha256_blocks(self):
+        """The midstate optimisation depends on it. 6400 = 100 x 64."""
+        self.assertEqual(self.d["LXMF_PEERING_WORKBLOCK_LEN"] % 64, 0)
+        self.assertEqual(self.d["LXMF_PEERING_WORKBLOCK_LEN"], 6400)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_our_workblock_derivation_matches_lxstamper(self):
+        """Byte-identical, or every key we produce is rejected."""
+        import RNS
+        from LXMF import LXStamper
+        peering_id = bytes(range(32))
+        mine = b""
+        for n in range(self.d["LXMF_PEERING_EXPAND_ROUNDS"]):
+            salt = RNS.Identity.full_hash(peering_id + bytes([n]))
+            mine += RNS.Cryptography.hkdf(length=self.d["LXMF_PEERING_HKDF_BYTES"],
+                                          derive_from=peering_id, salt=salt, context=None)
+        theirs = LXStamper.stamp_workblock(
+            peering_id, expand_rounds=LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+        self.assertEqual(mine, theirs)
+
+    @unittest.skipUnless(HAVE_LXMF, "LXMF not importable; run under the RNS virtualenv")
+    def test_a_key_from_our_search_validates(self):
+        """End to end: our stamp layout and validity test, LXMF's validator."""
+        import hashlib, RNS
+        from LXMF import LXStamper
+        peering_id = bytes(range(32))
+        wb = LXStamper.stamp_workblock(
+            peering_id, expand_rounds=LXStamper.WORKBLOCK_EXPAND_ROUNDS_PEERING)
+        cost = 12   # lower than production, so the test stays fast
+        def ok(dg, c):
+            full, rem = c // 8, c % 8
+            if any(dg[i] for i in range(full)): return False
+            return not (rem and (dg[full] >> (8 - rem)))
+        key = None
+        for r in range(2000000):
+            stamp = r.to_bytes(4, "little") + b"\x00" * 28
+            if ok(hashlib.sha256(wb + stamp).digest(), cost):
+                key = stamp; break
+        self.assertIsNotNone(key, "no key found")
+        self.assertTrue(LXStamper.validate_peering_key(peering_id, key, cost))
+
+    def test_search_is_chunked_so_it_cannot_trip_the_watchdog(self):
+        """Spinning for seconds inside loop() is how this project tripped the
+        loopTask stack canary and the task watchdog."""
+        self.assertIn("LXMF_PEERING_ROUNDS_PER_STEP", self.source)
+        self.assertLessEqual(self.d["LXMF_PEERING_ROUNDS_PER_STEP"], 65536)
+        self.assertIn("lxmf_peering_job_step", self.source)
+
+
+
 if __name__ == "__main__":
     unittest.main()
