@@ -296,6 +296,20 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn('"ozdisan_esp32_espnow": 3', script)
         self.assertGreaterEqual(script.count('"ozdisan_esp32_espnow"'), 5)
 
+    def test_provision_target_resolves_rnodeconf_and_propagates_failure(self):
+        script = source(os.path.join(ROOT, "extra_script.py"))
+        helper = script[script.index("def find_rnodeconf"):]
+        helper = helper[:helper.index("#\n# Custom targets")]
+        self.assertIn('shutil.which("rnodeconf")', helper)
+        self.assertIn("rnode-rns-venv/bin/rnodeconf", helper)
+        self.assertIn("if result != 0", helper)
+        self.assertIn("raise RuntimeError", helper)
+
+        target = script[script.index("def target_provision"):]
+        target = target[:target.index("# Add custom targets")]
+        self.assertIn("run_rnodeconf(env", target)
+        self.assertNotIn('f"rnodeconf ', target)
+
 
 if __name__ == "__main__":
     unittest.main()

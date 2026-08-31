@@ -1,5 +1,7 @@
 import time
 import hashlib
+import os
+import shlex
 import shutil
 import platform as platformlib
 
@@ -50,6 +52,42 @@ def get_target():
         arch_name = "unknown"
 
     return os_name + "-" + arch_name
+
+
+def find_rnodeconf():
+    """Locate rnodeconf even when PlatformIO does not inherit its venv PATH."""
+    discovered = shutil.which("rnodeconf")
+    if discovered:
+        return discovered
+
+    # The project's documented local RNS installation uses this dedicated
+    # virtualenv. PlatformIO runs from its own venv, so the executable is not
+    # normally on PATH even though it is installed and usable.
+    local_venv = os.path.expanduser(
+        "~/.local/share/rnode-rns-venv/bin/rnodeconf"
+    )
+    if os.path.isfile(local_venv) and os.access(local_venv, os.X_OK):
+        return local_venv
+    return None
+
+
+def run_rnodeconf(env, arguments):
+    executable = find_rnodeconf()
+    if executable is None:
+        raise RuntimeError(
+            "rnodeconf is required but was not found on PATH or in "
+            "~/.local/share/rnode-rns-venv/bin"
+        )
+    command = " ".join(
+        shlex.quote(str(part)) for part in [executable, *arguments]
+    )
+    result = env.Execute(command)
+    if result != 0:
+        # env.Execute only prints the child failure; without raising, SCons
+        # reports the custom target as SUCCESS (observed during first Ozdisan
+        # provisioning when the shell returned 127).
+        raise RuntimeError(f"rnodeconf failed with exit status {result}")
+    return result
 
 #
 # Custom targets
@@ -414,9 +452,12 @@ def target_provision(target, source, env):
         return
     print(f"--- Provisioning {variant} as PRODUCT_HMBRW/MODEL_FE hwrev {hwrev} ---")
     print("This writes a signed device identity and is normally done once.")
-    env.Execute(
-        f"rnodeconf --product f0 --model fe --hwrev {hwrev} --rom {port}"
-    )
+    run_rnodeconf(env, [
+        "--product", "f0",
+        "--model", "fe",
+        "--hwrev", str(hwrev),
+        "--rom", port,
+    ])
 
 # Add custom targets
 if (platform == "espressif32"):
