@@ -233,8 +233,12 @@ public:
 		// A connected station owns the radio channel. Recovery is forbidden in
 		// that state even if a caller is wrong; normal WiFi must never flap for a
 		// speculative peer search.
-		if (!_started || WiFi.getMode() != WIFI_MODE_STA ||
+		if (WiFi.getMode() != WIFI_MODE_STA ||
 		    WiFi.status() == WL_CONNECTED) return false;
+		// A node with an erased/no SSID configuration reaches fallback
+		// immediately. Do not make that first recovery opportunity depend on the
+		// interface's normal delayed start retry having elapsed.
+		if (!_started && !start()) return false;
 		if (recovery_active()) return true;
 		if (budget_ms < 1000) budget_ms = 1000;
 		if (budget_ms > 60000) budget_ms = 60000;

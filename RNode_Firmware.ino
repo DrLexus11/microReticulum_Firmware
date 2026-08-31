@@ -38,7 +38,11 @@ uint32_t lxmf_announces_any();
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
 #endif
-#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+#if defined(ESPNOW_TRANSPORT)
+// ESPNowInterface.h includes Boards.h and performs its own HAS_WIFI/MCU guard.
+// Do not test HAS_WIFI before that include: radio-equipped targets happened to
+// get Boards.h transitively through LoRaInterface.h, while radio-less targets
+// correctly have no such include ordering side effect.
 #include "ESPNowInterface.h"
 #endif
 // Not nested in the UDP guard: the BLE peer interface has nothing to do with
@@ -855,7 +859,7 @@ void setup() {
     boot_seq();
   #endif
 
-  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2 && BOARD_MODEL != BOARD_RAD01_REV1 && BOARD_MODEL != BOARD_RAD01_REV2
+  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2 && BOARD_MODEL != BOARD_RAD01_REV1 && BOARD_MODEL != BOARD_RAD01_REV2 && BOARD_MODEL != BOARD_OZDISAN_ESP32
     // Some boards need to wait until the hardware UART is set up before booting
     // the full firmware. In the case of the RAK4631, RAK3401, and Heltec T114,
     // the line below will wait until a serial connection is actually established
@@ -1058,6 +1062,16 @@ void setup() {
       }
       if (EEPROM.read(eeprom_addr(ADDR_CONF_WIFI)) == 0xFF) {
         eeprom_update(eeprom_addr(ADDR_CONF_WIFI), WR_WIFI_OFF);
+      }
+    #endif
+
+    // The radio-less Ozdisan fixture is an autonomous ESP-NOW node. On erased
+    // EEPROM, start STA mode without credentials: this intentionally reaches
+    // the bounded scan-before-SoftAP path and never associates to the lab WiFi.
+    // A provisioned non-0xFF choice is always preserved.
+    #if BOARD_MODEL == BOARD_OZDISAN_ESP32 && HAS_EEPROM
+      if (EEPROM.read(eeprom_addr(ADDR_CONF_WIFI)) == 0xFF) {
+        eeprom_update(eeprom_addr(ADDR_CONF_WIFI), WR_WIFI_STA);
       }
     #endif
 
@@ -1872,6 +1886,12 @@ void ISR_VECT receive_callback(int packet_size) {
 }
 
 bool startRadio() {
+#if defined(NO_LORA_HARDWARE)
+  // This is a deliberate ESP-NOW-only node, not a failed modem probe. Host
+  // commands must not dereference the uninstantiated LoRa driver.
+  radio_online = false;
+  return false;
+#else
   update_radio_lock();
   if (!radio_online && !console_active) {
     if (!radio_locked && hw_ready) {
@@ -1951,6 +1971,7 @@ bool startRadio() {
     kiss_indicate_radiostate();
     return true;
   }
+#endif
 }
 
 void stopRadio() {
@@ -3034,7 +3055,12 @@ void validate_status() {
         if (eeprom_checksum_valid()) {
 #endif
           eeprom_ok = true;
-          if (modem_installed) {
+#if defined(NO_LORA_HARDWARE)
+          const bool required_hardware_present = true;
+#else
+          const bool required_hardware_present = modem_installed;
+#endif
+          if (required_hardware_present) {
             #if PLATFORM == PLATFORM_ESP32 || PLATFORM == PLATFORM_NRF52 || PLATFORM == PLATFORM_NATIVE
               if (device_init()) {
                 hw_ready = true;
@@ -3056,13 +3082,22 @@ void validate_status() {
             #endif
           }
           
-          if (hw_ready && eeprom_have_conf()) {
+#if defined(NO_LORA_HARDWARE)
+          const bool node_config_ready = true;
+#else
+          const bool node_config_ready = eeprom_have_conf();
+#endif
+          if (hw_ready && node_config_ready) {
+#if !defined(NO_LORA_HARDWARE)
             eeprom_conf_load();
+#endif
             op_mode = prov_op_mode;
             // A TNC-mode board is autonomous and brings its own radio up. In
             // host mode the attached host owns the radio and starts it with
             // CMD_RADIO_STATE, as upstream RNode expects.
-            if (op_mode == MODE_TNC) { startRadio(); }
+            #if !defined(NO_LORA_HARDWARE)
+              if (op_mode == MODE_TNC) { startRadio(); }
+            #endif
           }
         } else {
           hw_ready = false;
@@ -3551,6 +3586,7 @@ static void heap_watch() {
   #endif
   // Is the modem ever actually keyed? packets_sent only counts queueing, so a
   // CSMA stall looks identical to a working transmitter from the RNS side.
+  #if defined(LORA_TRANSPORT)
   {
     extern volatile uint32_t tx_calls;
     #if MODEM == SX1262
@@ -3583,6 +3619,9 @@ static void heap_watch() {
              (int)current_rssi, (int)noise_floor, (int)radio_online);
     #endif
   }
+  #else
+    printf("[lora] not fitted (ESP-NOW-only target)\n");
+  #endif
   printf("[heap] free %u / %u bytes (%u%%), min-free %u, uptime %lus\n",
          (unsigned)avail, (unsigned)total,
          (unsigned)(total ? (avail * 100 / total) : 0),

@@ -112,7 +112,10 @@ uint32_t wifi_ap_max_defer_ms = WIFI_AP_MAX_DEFER_MS;
 // byte-for-byte familiar until an operator provisions mode 1.
 #define WIFI_ESPNOW_RECOVERY_OFF            0
 #define WIFI_ESPNOW_RECOVERY_BEFORE_SOFTAP  1
-uint8_t  wifi_espnow_recovery_mode = WIFI_ESPNOW_RECOVERY_OFF;
+#ifndef WIFI_ESPNOW_RECOVERY_DEFAULT
+  #define WIFI_ESPNOW_RECOVERY_DEFAULT WIFI_ESPNOW_RECOVERY_OFF
+#endif
+uint8_t  wifi_espnow_recovery_mode = WIFI_ESPNOW_RECOVERY_DEFAULT;
 uint32_t wifi_espnow_scan_budget_ms = 12000;
 uint8_t  wifi_espnow_rendezvous_channel = WR_CHANNEL_DEFAULT;
 bool     wifi_espnow_scan_attempted = false;

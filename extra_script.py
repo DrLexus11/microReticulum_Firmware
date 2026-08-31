@@ -235,8 +235,8 @@ def device_provision(env):
             env.Execute("rnodeconf --product 15 --model 17 --hwrev 1 --rom " + env.subst("$UPLOAD_PORT"))
         case "heltec_t114" | "heltec_t114_local":
             env.Execute("rnodeconf --product c2 --model c7 --hwrev 1 --rom " + env.subst("$UPLOAD_PORT"))
-        case "impr_rad01_rev1" | "impr_rad01_rev2":
-            # RAD-01 is provisioned as PRODUCT_HMBRW / MODEL_FE. App uploads
+        case "impr_rad01_rev1" | "impr_rad01_rev2" | "ozdisan_esp32_espnow":
+            # Local boards are provisioned as PRODUCT_HMBRW / MODEL_FE. App uploads
             # preserve its signed EEPROM identity, so do not rewrite it here.
             #
             # Deliberately NOT auto-provisioning when the EEPROM looks blank:
@@ -246,11 +246,11 @@ def device_provision(env):
             # answer. A query that failed and read as "blank" would overwrite a
             # real signed identity, which is unrecoverable. Provisioning is a
             # once-per-board manufacturing step; run `-t provision` explicitly.
-            print("Preserving existing RAD-01 EEPROM provisioning")
+            print("Preserving existing local-board EEPROM provisioning")
             print("  (a NEW board must be provisioned once first:")
             print("     pio run -e <env> -t provision --upload-port <port>")
-            print("   without it the board boots with hw_ready=0 and the radio")
-            print("   never starts, even though this upload reports success)")
+            print("   without it the board boots with hw_ready=0, even though")
+            print("   this upload reports success)")
         case _:
             print(f"Unknown board variant {variant}, can not provision device!")
 
@@ -279,6 +279,7 @@ def firmware_hash(source, env):
             "heltec_tracker_v2_local",
             "impr_rad01_rev1",
             "impr_rad01_rev2",
+            "ozdisan_esp32_espnow",
         ):
             try:
                 calc_hash = esp_image_sha256(firmware_data)
@@ -290,7 +291,11 @@ def firmware_hash(source, env):
             device_set_firmware_hash(
                 calc_hash,
                 env,
-                reboot_after=variant in ("impr_rad01_rev1", "impr_rad01_rev2"),
+                reboot_after=variant in (
+                    "impr_rad01_rev1",
+                    "impr_rad01_rev2",
+                    "ozdisan_esp32_espnow",
+                ),
             )
         else:
             calc_hash = hashlib.sha256(firmware_data[0:-32]).digest()
@@ -382,7 +387,7 @@ if env.IsCleanTarget():
         full_clean(env)
 
 def target_provision(target, source, env):
-    """Write the RAD-01 device identity into a blank EEPROM. Run ONCE per board.
+    """Write a local-board device identity into a blank EEPROM. Run ONCE per board.
 
     Separate from `upload` on purpose. The identity is signed and locked
     (ADDR_INFO_LOCK), and rewriting it on every flash would destroy it -- so the
@@ -393,8 +398,13 @@ def target_provision(target, source, env):
     """
     variant = env.GetProjectOption("custom_variant")
     # PRODUCT_HMBRW (0xF0) / MODEL_FE (0xFE), see Boards.h. hwrev tracks the
-    # board revision so the identity distinguishes Rev 1 from Rev 2 hardware.
-    hwrev = {"impr_rad01_rev1": 1, "impr_rad01_rev2": 2}.get(variant)
+    # hardware revision distinguishes the two RAD revisions and the radio-less
+    # Ozdisan acceptance fixture.
+    hwrev = {
+        "impr_rad01_rev1": 1,
+        "impr_rad01_rev2": 2,
+        "ozdisan_esp32_espnow": 3,
+    }.get(variant)
     if hwrev is None:
         print(f"No provisioning profile for variant {variant}")
         return
@@ -452,12 +462,16 @@ if platform == "espressif32":
         description="Write the built firmware's hash to an already-running board"
     )
 
-if env.GetProjectOption("custom_variant") in ("impr_rad01_rev1", "impr_rad01_rev2"):
+if env.GetProjectOption("custom_variant") in (
+    "impr_rad01_rev1",
+    "impr_rad01_rev2",
+    "ozdisan_esp32_espnow",
+):
     env.AddCustomTarget(
         name="provision",
         dependencies=None,
         actions=[target_provision],
-        title="Provision RAD-01",
+        title="Provision local board",
         description="Write device identity to a blank EEPROM (once per board)"
     )
 

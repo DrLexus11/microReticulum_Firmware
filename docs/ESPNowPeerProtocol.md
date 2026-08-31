@@ -143,6 +143,11 @@ Provisioning namespace 102 adds:
 Recovery is opt-in for the first hardware-acceptance cycle. Ordinary same-channel
 ESP-NOW discovery and transport remain enabled on both RAD revisions.
 
+The dedicated `ozdisan-esp32-espnow` acceptance target is the one exception to
+the default-off policy. It has no LoRa modem or station credentials, so it
+defaults to `scan-before-softap` in order to exercise recovery as its primary
+mesh ingress. See [OzdisanESPNowFixture.md](OzdisanESPNowFixture.md).
+
 ## Hardware acceptance
 
 Before enabling recovery fleet-wide, exercise Rev1 and Rev2 both associated to

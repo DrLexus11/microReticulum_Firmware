@@ -171,15 +171,15 @@ extern uint32_t lora_bitrate;
 extern uint8_t radio_preset_current();
 extern bool radio_preset_apply(uint8_t idx);
 extern uint8_t implicit_l;
-#if MCU_VARIANT == MCU_ESP32
-extern uint32_t loop_stack_free_min;
-#endif
 extern int noise_floor;
 extern int current_rssi;
 extern int last_rssi;
 extern uint8_t last_snr_raw;
 extern float st_airtime_limit;
 extern float lt_airtime_limit;
+#endif
+#if MCU_VARIANT == MCU_ESP32
+extern uint32_t loop_stack_free_min;
 #endif
 #if defined(UDP_TRANSPORT)
 // udp_interface is only declared in RNode_Firmware.ino under UDP_TRANSPORT,
@@ -759,11 +759,20 @@ static void register_provisioning_namespaces() {
   general
     .end();   // close "General"
 
-#if defined(LORA_TRANSPORT)
-  // ----- LoRa access-control namespace -----
+#if defined(LORA_TRANSPORT) || (HAS_WIFI == true && defined(ESPNOW_TRANSPORT))
+  // ----- Backbone radio access-control namespace -----
   // Changes are deliberately reboot-required. This prevents the two ends of
   // a live radio path from changing key state midway through a Provisioning
-  // exchange and stranding the response.
+  // exchange and stranding the response. ESP-NOW-only nodes retain the same
+  // namespace and fields so they can join an IFAC-protected RAD fleet without
+  // carrying a LoRa modem themselves.
+#if defined(LORA_TRANSPORT)
+  static const char* const backbone_access_name = "LoRa Access Control";
+  static const char* const backbone_access_label = "LoRa";
+#else
+  static const char* const backbone_access_name = "ESP-NOW Access Control";
+  static const char* const backbone_access_label = "ESP-NOW";
+#endif
   Provisioner::instance()
 #if defined(LXMF_PROPAGATION_NODE)
     .register_namespace("LXMF Peering", PROV_NS_LXMF)
@@ -784,7 +793,7 @@ static void register_provisioning_namespaces() {
       .end()
 #endif // LXMF_PROPAGATION_NODE
 
-    .register_namespace("LoRa Access Control", PROV_NS_IFAC_LORA)
+    .register_namespace(backbone_access_name, PROV_NS_IFAC_LORA)
       .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
         false,
         [](const Value& v) { lora_ifac_enabled = v.as_bool(); return true; },
@@ -798,7 +807,7 @@ static void register_provisioning_namespaces() {
         [](const Value& v) { lora_ifac_passphrase = v.as_string(); return true; },
         []() { return lora_ifac_passphrase; })
       .on_commit([](Namespace& ns) {
-        validate_ifac_commit(ns, "LoRa");
+        validate_ifac_commit(ns, backbone_access_label);
       })
       .end();
 #endif
@@ -1215,9 +1224,11 @@ static void register_provisioning_namespaces() {
           [](const Value& v) { wifi_ap_max_defer_ms = (uint32_t)v.as_int() * 1000UL; return true; },
           []() { return (fint_t)(wifi_ap_max_defer_ms / 1000); })
 #if defined(ESPNOW_TRANSPORT)
-        // Recovery is opt-in until its transition matrix has passed on both
-        // RAD revisions. Mode changes are reboot-required so a provisioning
-        // response cannot disappear when the radio leaves its WiFi channel.
+        // Production RAD builds keep recovery opt-in until their transition
+        // matrix has passed. A dedicated acceptance target may override the
+        // compile-time default. Mode changes are reboot-required so a
+        // provisioning response cannot disappear when the radio leaves its
+        // WiFi channel.
         .field_enum("ESP-NOW Recovery", PROV_NET_ESPNOW_RECOVERY,
           FF_REBOOT_REQUIRED, (fint_t)wifi_espnow_recovery_mode,
           {0, 1}, {"off", "scan-before-softap"},
@@ -1310,6 +1321,7 @@ void kiss_indicate_provision_response(const RNS::Bytes& payload) {
 // commit hook runs and the values are persisted exactly as an operator-issued
 // change would be.
 void provisioning_sync_radio_from_runtime() {
+#if defined(LORA_TRANSPORT)
   auto& prov = RNS::Provisioning::Provisioner::instance();
   if (!prov.started()) return;
   prov.field(PROV_NS_RADIO, PROV_RADIO_FREQ, RNS::Provisioning::Value((int)lora_freq));
@@ -1318,6 +1330,7 @@ void provisioning_sync_radio_from_runtime() {
   prov.field(PROV_NS_RADIO, PROV_RADIO_CR, RNS::Provisioning::Value((int)lora_cr));
   prov.field(PROV_NS_RADIO, PROV_RADIO_TXP, RNS::Provisioning::Value((int)lora_txp));
   prov.commit(PROV_NS_RADIO);
+#endif
 }
 
 #endif // HAS_PROVISIONING

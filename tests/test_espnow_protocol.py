@@ -7,6 +7,8 @@ import unittest
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BOARDS = os.path.join(ROOT, "Boards.h")
+DISPLAY = os.path.join(ROOT, "Display.h")
 PROTOCOL = os.path.join(ROOT, "ESPNowProtocol.h")
 INTERFACE = os.path.join(ROOT, "ESPNowInterface.h")
 FIRMWARE = os.path.join(ROOT, "RNode_Firmware.ino")
@@ -168,7 +170,11 @@ class ESPNowArchitectureTests(unittest.TestCase):
     def test_recovery_is_opt_in_and_precedes_existing_softap(self):
         remote = source(REMOTE)
         self.assertIn(
-            "wifi_espnow_recovery_mode = WIFI_ESPNOW_RECOVERY_OFF", remote)
+            "#define WIFI_ESPNOW_RECOVERY_DEFAULT WIFI_ESPNOW_RECOVERY_OFF",
+            remote)
+        self.assertIn(
+            "wifi_espnow_recovery_mode = WIFI_ESPNOW_RECOVERY_DEFAULT",
+            remote)
         recovery = remote.index("espnow_request_recovery_scan(")
         fallback = remote.index("wifi_remote_start_ap_fallback();", recovery)
         self.assertLess(recovery, fallback)
@@ -209,7 +215,7 @@ class ESPNowArchitectureTests(unittest.TestCase):
         self.assertIn(
             'register_request_handler("/page/espnow.mu", serve_page', firmware)
         page = pages[pages.index('path == "/page/espnow.mu"'):]
-        page = page[:page.index("#endif")]
+        page = page[:page.index("else if", 1)]
         self.assertIn("Recovery policy", page)
         self.assertIn("Channel errors", page)
         self.assertNotIn("request_recovery_scan", page)
@@ -224,6 +230,71 @@ class ESPNowArchitectureTests(unittest.TestCase):
         self.assertTrue({8, 9, 10}.isdisjoint({
             fields["PROV_NET_AP_ACTIVE"], fields["PROV_NET_AP_CLIENTS"],
             fields["PROV_NET_AP_SSID"]}))
+
+
+class OzdisanAcceptanceTargetTests(unittest.TestCase):
+    def test_target_is_espnow_only_and_recovery_enabled(self):
+        text = source(PLATFORMIO)
+        target = text[text.index("[env:ozdisan-esp32-espnow]"):]
+        target = target[:target.index("\n[env:", 1)]
+        self.assertIn("board = esp32doit-devkit-v1", target)
+        self.assertIn("-DBOARD_MODEL=BOARD_OZDISAN_ESP32", target)
+        self.assertIn("-DESPNOW_TRANSPORT", target)
+        self.assertIn("-DTCP_SERVER_TRANSPORT", target)
+        self.assertIn("-DWIFI_ESPNOW_RECOVERY_DEFAULT=1", target)
+        self.assertIn("-DLORA_TRANSPORT", target.split("build_unflags", 1)[1])
+
+    def test_board_declares_no_lora_and_meshtastic_oled_pinout(self):
+        boards = source(BOARDS)
+        block = boards[boards.index("#elif BOARD_MODEL == BOARD_OZDISAN_ESP32"):]
+        block = block[:block.index("#elif BOARD_MODEL", 1)]
+        self.assertIn("#define NO_LORA_HARDWARE true", block)
+        self.assertIn("#define HAS_DISPLAY true", block)
+        self.assertIn("#define I2C_SDA 5", block)
+        self.assertIn("#define I2C_SCL 4", block)
+
+        display = source(DISPLAY)
+        block = display[display.index("#elif BOARD_MODEL == BOARD_OZDISAN_ESP32"):]
+        block = block[:block.index("#else", 1)]
+        self.assertIn("#define DISP_RST 16", block)
+        self.assertIn("#define DISP_ADDR 0x3C", block)
+        self.assertIn("#define SCL_OLED 4", block)
+        self.assertIn("#define SDA_OLED 5", block)
+
+    def test_erased_fixture_starts_sta_without_lora_config(self):
+        firmware = source(FIRMWARE)
+        self.assertIn(
+            "#if BOARD_MODEL == BOARD_OZDISAN_ESP32 && HAS_EEPROM",
+            firmware)
+        self.assertIn(
+            "eeprom_update(eeprom_addr(ADDR_CONF_WIFI), WR_WIFI_STA)",
+            firmware)
+        self.assertIn("#if defined(NO_LORA_HARDWARE)", firmware)
+        self.assertIn("const bool required_hardware_present = true", firmware)
+        self.assertIn("const bool node_config_ready = true", firmware)
+        self.assertIn('[lora] not fitted (ESP-NOW-only target)', firmware)
+
+    def test_first_recovery_request_can_start_interface_immediately(self):
+        text = source(INTERFACE)
+        request = text[text.index("bool request_recovery_scan"):]
+        request = request[:request.index("void reset_recovery")]
+        connected_guard = request.index("WiFi.status() == WL_CONNECTED")
+        immediate_start = request.index("if (!_started && !start()) return false")
+        self.assertLess(connected_guard, immediate_start)
+
+    def test_espnow_only_node_keeps_backbone_ifac_namespace(self):
+        text = source(PROVISIONING)
+        self.assertIn(
+            "defined(LORA_TRANSPORT) || (HAS_WIFI == true && defined(ESPNOW_TRANSPORT))",
+            text)
+        self.assertIn('backbone_access_name = "ESP-NOW Access Control"', text)
+        self.assertIn("register_namespace(backbone_access_name, PROV_NS_IFAC_LORA)",
+                      text)
+
+    def test_provisioning_profile_and_firmware_hash_include_fixture(self):
+        script = source(os.path.join(ROOT, "extra_script.py"))
+        self.assertIn('"ozdisan_esp32_espnow": 3', script)
+        self.assertGreaterEqual(script.count('"ozdisan_esp32_espnow"'), 5)
 
 
 if __name__ == "__main__":

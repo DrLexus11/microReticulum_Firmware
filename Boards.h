@@ -109,6 +109,7 @@
   // separate from the homebrew product/model identity stored in EEPROM.
   #define BOARD_RAD01_REV1    0x46 // ESP32-S3 + RFM95W (SX1276)
   #define BOARD_RAD01_REV2    0x47 // ESP32-S3 + Ra-01SH (SX1262)
+  #define BOARD_OZDISAN_ESP32 0x48 // ESP32-WROOM-32 + onboard SSD1306, no LoRa fitted
 
   #define PRODUCT_HELTEC_T114 0xC2 // Heltec Mesh Node T114
   #define BOARD_HELTEC_T114   0x3C
@@ -614,6 +615,29 @@
       const int pin_dio = 6;
       const int pin_led_rx = 4;
       const int pin_led_tx = 4;
+
+    #elif BOARD_MODEL == BOARD_OZDISAN_ESP32
+      // Özdisan/OzdArduino ESP32-WROOM-32 development board. The original
+      // Meshtastic fixture paired it with an external RFM95, but these boards
+      // are deliberately used bare: ESP-NOW is their only node-to-node radio.
+      #define NO_LORA_HARDWARE true
+      #define HAS_DISPLAY true
+      #define HAS_CONSOLE false
+      #define HAS_SD false
+      #define HAS_EEPROM true
+      #define HAS_WIFI true
+      #define HAS_BLUETOOTH false
+      #define HAS_BLE false
+      #define I2C_SDA 5
+      #define I2C_SCL 4
+
+      // Keep the legacy pin symbols valid for generic status/LED code. No
+      // modem driver is compiled and none of these values is driven.
+      const int pin_cs = -1;
+      const int pin_reset = -1;
+      const int pin_dio = -1;
+      const int pin_led_rx = -1;
+      const int pin_led_tx = -1;
 
     #elif BOARD_MODEL == BOARD_RNODE_NG_20
       #define HAS_DISPLAY true

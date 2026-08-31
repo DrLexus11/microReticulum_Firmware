@@ -406,7 +406,11 @@ RNS::Bytes serve_page(
     else if (path == "/page/espnow.mu") {
       char local_phy[16];
       char peer_phy[16];
+#if defined(LORA_TRANSPORT)
       snprintf(local_phy, sizeof(local_phy), "%08lx", (unsigned long)lora_phy_hash());
+#else
+      snprintf(local_phy, sizeof(local_phy), "none");
+#endif
       snprintf(peer_phy, sizeof(peer_phy), "%08lx", (unsigned long)espnow_last_peer_phy_hash());
       content = "> ESP-NOW Recovery\n\n";
       content << "`State       : " << espnow_recovery_state_name() << "`\n";
