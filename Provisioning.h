@@ -56,6 +56,7 @@
 #define PROV_NS_RRC             113
 #define PROV_NS_LXMF            115
 #define PROV_NS_BLUETOOTH       114
+#define PROV_NS_IFACE_ESPNOW    116
 
 #define PROV_BT_ENABLED            1
 #define PROV_BT_PAIR               2
@@ -165,6 +166,18 @@
 #define PROV_METRICS_UDP_ADDR   1
 #define PROV_METRICS_UDP_PORT   2
 #define PROV_METRICS_WIFI_SSID  3
+
+#define PROV_METRICS_ESPNOW_UP          1
+#define PROV_METRICS_ESPNOW_CHANNEL     2
+#define PROV_METRICS_ESPNOW_PEERS       3
+#define PROV_METRICS_ESPNOW_IN          4
+#define PROV_METRICS_ESPNOW_OUT         5
+#define PROV_METRICS_ESPNOW_DISCOVERIES 6
+#define PROV_METRICS_ESPNOW_RXDROP      7
+#define PROV_METRICS_ESPNOW_TXDROP      8
+#define PROV_METRICS_ESPNOW_SENDFAIL    9
+#define PROV_METRICS_ESPNOW_REASS_TO   10
+#define PROV_METRICS_ESPNOW_PHYHASH    11
 
 #define PROV_RADIO_OP_MODE      1
 #define PROV_RADIO_FREQ         2

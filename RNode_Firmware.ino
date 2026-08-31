@@ -38,6 +38,9 @@ uint32_t lxmf_announces_any();
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+#include "ESPNowInterface.h"
+#endif
 // Not nested in the UDP guard: the BLE peer interface has nothing to do with
 // UDP, and the portable build has no UDP at all -- so nesting it there silently
 // dropped the include and the class with it.
@@ -279,6 +282,21 @@ RTC_NOINIT_ATTR uint8_t  loop_phase_at_reset;
 RNS::Interface lora_interface(RNS::Type::NONE);
 #if defined(UDP_TRANSPORT)
 RNS::Interface udp_interface(RNS::Type::NONE);
+#endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+RNS::Interface espnow_interface(RNS::Type::NONE);
+ESPNowInterface* espnow_impl = nullptr;
+bool espnow_started()                  { return espnow_impl ? espnow_impl->started() : false; }
+uint32_t espnow_channel()              { return espnow_impl ? espnow_impl->channel() : 0; }
+uint32_t espnow_peer_count()           { return espnow_impl ? espnow_impl->peer_count() : 0; }
+uint32_t espnow_packets_in()           { return espnow_impl ? espnow_impl->packets_in() : 0; }
+uint32_t espnow_packets_out()          { return espnow_impl ? espnow_impl->packets_out() : 0; }
+uint32_t espnow_discoveries_in()       { return espnow_impl ? espnow_impl->discoveries_in() : 0; }
+uint32_t espnow_rx_dropped()           { return espnow_impl ? espnow_impl->rx_dropped() : 0; }
+uint32_t espnow_tx_dropped()           { return espnow_impl ? espnow_impl->tx_dropped() : 0; }
+uint32_t espnow_send_failures()        { return espnow_impl ? espnow_impl->send_failures() : 0; }
+uint32_t espnow_reassembly_timeouts()  { return espnow_impl ? espnow_impl->reassembly_timeouts() : 0; }
+uint32_t espnow_last_peer_phy_hash()   { return espnow_impl ? espnow_impl->last_peer_phy_hash() : 0; }
 #endif
 #if defined(BLE_PEER_TRANSPORT)
 // Accessors for Provisioning.cpp, which cannot see this translation unit's
@@ -1311,6 +1329,15 @@ void setup() {
         udp_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
       }
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      if (wifi_mode != WR_WIFI_OFF) {
+        espnow_impl = new ESPNowInterface();
+        espnow_interface = espnow_impl;
+        // ESP-NOW is a one-hop link only. MODE_GATEWAY permits normal RNS
+        // announce propagation; Reticulum remains the sole routing layer.
+        espnow_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+      }
+#endif
 #if defined(BLE_PEER_TRANSPORT)
       ble_peer_impl = new BLEPeerInterface();
       ble_peer_interface = ble_peer_impl;
@@ -1380,6 +1407,13 @@ void setup() {
         HEAD("Registering UDP Interface...", RNS::LOG_TRACE);
         RNS::Transport::register_interface(udp_interface);
         TRACEF("UDPInterface hash: %s", udp_interface.get_hash().toHex().c_str());
+      }
+#endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      if (wifi_mode != WR_WIFI_OFF && espnow_interface) {
+        HEAD("Registering ESP-NOW Interface...", RNS::LOG_TRACE);
+        RNS::Transport::register_interface(espnow_interface);
+        TRACEF("ESPNowInterface hash: %s", espnow_interface.get_hash().toHex().c_str());
       }
 #endif
 #if defined(BLE_PEER_TRANSPORT)

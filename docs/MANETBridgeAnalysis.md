@@ -3,8 +3,9 @@
 Whether to add self-forming peer networking beneath Reticulum for the command
 backbone, and what shape it should take.
 
-Status: **analysis, nothing implemented.** Written 2026-08-28, prompted by the
-question of whether to bridge a MANET layer rather than encapsulate.
+Status: **ESP-NOW one-hop interface implemented; hardware acceptance pending.**
+Written 2026-08-28 and implemented 2026-08-31. The wire and runtime contract is
+in [ESPNowPeerProtocol.md](ESPNowPeerProtocol.md).
 
 ---
 
@@ -82,10 +83,10 @@ Two honest constraints:
   channel 6. In the disaster case -- no router, nodes free to pick a common
   channel -- this is fine, and that is the case the feature exists for. When the
   building network is healthy the nodes are already on it and do not need this.
-- **No transport security needed, and that is deliberate.** Reticulum encrypts
-  end to end regardless of interface, so the link layer does not need its own
-  confidentiality. Admission control, if wanted, is IFAC's job -- which we
-  already have -- not a second key system.
+- **No second transport-security system is needed.** Reticulum encrypts end to
+  end regardless of interface. Admission control is IFAC's job; the implemented
+  interface reuses the LoRa/backbone IFAC credentials and secure-node policy so
+  it cannot remain an open ingress when the radio backbone is locked down.
 
 ## 5. What the flash work bought
 

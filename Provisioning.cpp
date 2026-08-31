@@ -206,6 +206,20 @@ extern uint8_t wifi_ap_client_count;
 #if defined(TCP_SERVER_TRANSPORT)
 extern RNS::Interface tcp_server_interface;
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+extern RNS::Interface espnow_interface;
+bool espnow_started();
+uint32_t espnow_channel();
+uint32_t espnow_peer_count();
+uint32_t espnow_packets_in();
+uint32_t espnow_packets_out();
+uint32_t espnow_discoveries_in();
+uint32_t espnow_rx_dropped();
+uint32_t espnow_tx_dropped();
+uint32_t espnow_send_failures();
+uint32_t espnow_reassembly_timeouts();
+uint32_t espnow_last_peer_phy_hash();
+#endif
 #if HAS_WIFI
 extern void wifi_remote_apply_kiss_policy();
 #endif
@@ -296,6 +310,14 @@ static void apply_all_ifac_configuration() {
   apply_ifac_configuration(lora_interface,
                            lora_ifac_enabled || secure_node_enabled,
                            lora_ifac_netname, lora_ifac_passphrase, 8, "LoRa");
+#endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  // ESP-NOW is another radio/backbone interface, so it deliberately shares
+  // LoRa's eight-byte IFAC and secure-node policy instead of creating an
+  // independently configurable open path into the mesh.
+  apply_ifac_configuration(espnow_interface,
+                           lora_ifac_enabled || secure_node_enabled,
+                           lora_ifac_netname, lora_ifac_passphrase, 8, "ESP-NOW");
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
   apply_ifac_configuration(tcp_server_interface,
@@ -721,7 +743,6 @@ static void register_provisioning_namespaces() {
       );
   }
 #endif
-
   general
     .end();   // close "General"
 
@@ -982,6 +1003,24 @@ static void register_provisioning_namespaces() {
         .metric_string("ip_addr", PROV_METRICS_UDP_ADDR, []() { return wr_device_ip.toString().c_str(); })
         .metric_int("udp_port", PROV_METRICS_UDP_PORT, []() { return udp_port; })
         .metric_string("wifi_ssid", PROV_METRICS_WIFI_SSID, []() { return wr_ssid; })
+        .end();
+  }
+#endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  if (espnow_interface) {
+    metrics_ifaces
+      .register_namespace(espnow_interface.name().c_str(), PROV_NS_IFACE_ESPNOW)
+        .metric_int("Started", PROV_METRICS_ESPNOW_UP, []() { return (fint_t)espnow_started(); })
+        .metric_int("WiFi Channel", PROV_METRICS_ESPNOW_CHANNEL, []() { return (fint_t)espnow_channel(); })
+        .metric_int("Recent Peers", PROV_METRICS_ESPNOW_PEERS, []() { return (fint_t)espnow_peer_count(); })
+        .metric_int("Packets In", PROV_METRICS_ESPNOW_IN, []() { return (fint_t)espnow_packets_in(); })
+        .metric_int("Packets Out", PROV_METRICS_ESPNOW_OUT, []() { return (fint_t)espnow_packets_out(); })
+        .metric_int("Discoveries In", PROV_METRICS_ESPNOW_DISCOVERIES, []() { return (fint_t)espnow_discoveries_in(); })
+        .metric_int("RX Dropped", PROV_METRICS_ESPNOW_RXDROP, []() { return (fint_t)espnow_rx_dropped(); })
+        .metric_int("TX Dropped", PROV_METRICS_ESPNOW_TXDROP, []() { return (fint_t)espnow_tx_dropped(); })
+        .metric_int("Send Failures", PROV_METRICS_ESPNOW_SENDFAIL, []() { return (fint_t)espnow_send_failures(); })
+        .metric_int("Reassembly Timeouts", PROV_METRICS_ESPNOW_REASS_TO, []() { return (fint_t)espnow_reassembly_timeouts(); })
+        .metric_int("Last Peer PHY Hash", PROV_METRICS_ESPNOW_PHYHASH, []() { return (fint_t)espnow_last_peer_phy_hash(); })
         .end();
   }
 #endif
