@@ -52,6 +52,33 @@ extern uint16_t udp_port;
 extern uint8_t wifi_mode;
 extern char wr_ssid[];
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+extern RNS::Interface espnow_interface;
+bool espnow_started();
+uint32_t espnow_channel();
+uint32_t espnow_peer_count();
+uint32_t espnow_packets_in();
+uint32_t espnow_packets_out();
+uint32_t espnow_discoveries_in();
+uint32_t espnow_rx_dropped();
+uint32_t espnow_tx_dropped();
+uint32_t espnow_send_failures();
+uint32_t espnow_reassembly_timeouts();
+uint32_t espnow_last_peer_phy_hash();
+const char* espnow_recovery_state_name();
+uint32_t espnow_recovery_channel();
+uint32_t espnow_recovery_scans();
+uint32_t espnow_recovery_successes();
+uint32_t espnow_recovery_failures();
+uint32_t espnow_recovery_proof_failures();
+uint32_t espnow_recovery_channel_errors();
+uint32_t espnow_accepted_packets_in();
+uint32_t espnow_accepted_from_selected();
+const char* espnow_recovery_peer_mac();
+extern uint8_t wifi_espnow_recovery_mode;
+extern uint32_t wifi_espnow_scan_budget_ms;
+extern uint8_t wifi_espnow_rendezvous_channel;
+#endif
 extern RNS::Destination nomadnet_destination;
 
 void add_interface_details(RNS::Bytes& content, const RNS::Interface& interface) {
@@ -148,6 +175,9 @@ RNS::Bytes serve_page(
       content << ">> Device\n";
       content << "`!`[• General`:/page/device.mu`c=general]`\n";
       content << "`!`[• Interface`:/page/device.mu`c=interfaces]`\n";
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      content << "`!`[• ESP-NOW Recovery`:/page/espnow.mu]`\n";
+#endif
 #if defined(RRC_HUB)
       content << "`!`[• RRC Hub`:/page/device.mu`c=rrc]`\n";
 #endif
@@ -372,6 +402,43 @@ RNS::Bytes serve_page(
         content = "CATEGORY NOT FOUND\n";
       }
     }
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+    else if (path == "/page/espnow.mu") {
+      char local_phy[16];
+      char peer_phy[16];
+      snprintf(local_phy, sizeof(local_phy), "%08lx", (unsigned long)lora_phy_hash());
+      snprintf(peer_phy, sizeof(peer_phy), "%08lx", (unsigned long)espnow_last_peer_phy_hash());
+      content = "> ESP-NOW Recovery\n\n";
+      content << "`State       : " << espnow_recovery_state_name() << "`\n";
+      content << "`Interface   : " << (espnow_started() ? "up" : "down") << "`\n";
+      content << "`WiFi channel: " << std::to_string(espnow_channel()) << "`\n";
+      content << "`Peers recent: " << std::to_string(espnow_peer_count()) << "`\n";
+      content << "`Local PHY   : " << local_phy << "`\n";
+      content << "`Last peer PHY: " << peer_phy << "`\n\n";
+      content << ">> Recovery policy\n";
+      content << "`Mode        : " << (wifi_espnow_recovery_mode == 1 ? "scan-before-softap" : "off") << "`\n";
+      content << "`Scan budget : " << std::to_string(wifi_espnow_scan_budget_ms / 1000) << " s`\n";
+      content << "`Rendezvous  : channel " << std::to_string(wifi_espnow_rendezvous_channel) << "`\n";
+      content << "`Selected    : " << espnow_recovery_peer_mac() << "`\n";
+      content << "`Pinned chan : " << std::to_string(espnow_recovery_channel()) << "`\n";
+      content << "`Scans       : " << std::to_string(espnow_recovery_scans()) << "`\n";
+      content << "`Succeeded   : " << std::to_string(espnow_recovery_successes()) << "`\n";
+      content << "`Failed      : " << std::to_string(espnow_recovery_failures()) << "`\n";
+      content << "`Proof fails : " << std::to_string(espnow_recovery_proof_failures()) << "`\n";
+      content << "`Channel errors: " << std::to_string(espnow_recovery_channel_errors()) << "`\n\n";
+      content << ">> Traffic and health\n";
+      content << "`Packets in  : " << std::to_string(espnow_packets_in()) << "`\n";
+      content << "`Packets out : " << std::to_string(espnow_packets_out()) << "`\n";
+      content << "`IFAC accepted: " << std::to_string(espnow_accepted_packets_in()) << "`\n";
+      content << "`From selected: " << std::to_string(espnow_accepted_from_selected()) << "`\n";
+      content << "`Discoveries : " << std::to_string(espnow_discoveries_in()) << "`\n";
+      content << "`RX drops    : " << std::to_string(espnow_rx_dropped()) << "`\n";
+      content << "`TX drops    : " << std::to_string(espnow_tx_dropped()) << "`\n";
+      content << "`Send failures: " << std::to_string(espnow_send_failures()) << "`\n";
+      content << "`Reassembly timeouts: " << std::to_string(espnow_reassembly_timeouts()) << "`\n\n";
+      content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n";
+    }
+#endif
 #ifdef HAS_BME
     else if (path == "/page/telemetry.mu") {
       if (!BME680::bme.performReading()) {

@@ -8,9 +8,10 @@ Target deployment: rooftop "blackbox" relays on apartment buildings, IMPR-RAD
 nodes inside apartments, residents attaching with phones. Nodes must survive
 losing their relay and re-absorb automatically when a field team restores one.
 
-Status: **the SoftAP fallback described here is implemented and shipped.**
-Written 2026-08-23 as a proposal; corrected 2026-08-27 once the behaviour had
-been in the firmware for some time and the status line had not kept up.
+Status: **SoftAP fallback is implemented and shipped. The one-hop ESP-NOW
+transport and opt-in scan-before-SoftAP recovery are implemented on
+`feature/esp-now-peer`; hardware acceptance is pending.** Written 2026-08-23 as
+a proposal; corrected as the implementation advanced.
 
 `Remote.h` implements the fallback state machine -- `wifi_build_ap_ssid()`,
 `wifi_remote_start_ap_fallback()`, the station-failure timer, the retry window
@@ -31,20 +32,22 @@ mind.
 
 ---
 
-## 1. Layer the roles, do not mesh on every radio
+## 1. Layer the roles; do not create a second routing mesh
 
 The single most important architectural decision:
 
 | Layer                | Medium                    | Role                                        |
 | -------------------- | ------------------------- | ------------------------------------------- |
-| **Backbone**         | LoRa 868 MHz              | node ↔ node. *This is the mesh.*            |
+| **Backbone**         | LoRa 868 MHz              | node ↔ node. Primary long-range mesh.       |
+| **Local bridge**     | ESP-NOW 2.4 GHz           | one-hop RNS adjacency on one WiFi channel.  |
 | **Client attachment**| BLE, WiFi SoftAP          | human ↔ node. Short range, higher rate.     |
 | **Uplink** (optional)| WiFi STA → TCP            | mesh ↔ internet, when infrastructure lives. |
 
-Do **not** try to mesh over BLE or WiFi. Both are 2.4 GHz, both are badly
-attenuated by reinforced concrete, and both cost far more power than LoRa RX.
-Their value is attaching people to a node that is already meshed, which is a
-different and easier problem.
+Do **not** create another routing layer over BLE or WiFi. Both are 2.4 GHz and
+are badly attenuated by reinforced concrete. ESP-NOW is still useful as a
+bounded one-hop Reticulum interface: it can attach an orphan to a nearby RAD,
+after which Reticulum and that peer's LoRa link do the routing. It neither
+repeats ESP-NOW frames nor replaces the LoRa backbone.
 
 ## 2. What already works today (verified)
 
@@ -201,6 +204,15 @@ WiFi stack, draws an order of magnitude more power than LoRa RX (~100–200 mA v
 ~10 mA), and propagates badly through buildings. For a battery/solar rooftop
 box it is the wrong trade.
 
+**Can ESP-NOW provide a local bridge?** Yes. The implemented interface carries
+complete Reticulum frames between RADs sharing the ESP32's current 2.4 GHz
+channel. When associated to infrastructure, the station channel remains strict
+and is never changed. When the station has already failed long enough for
+SoftAP fallback to be due, an opt-in recovery phase can briefly scan channels,
+select an IFAC-proven RAD, and remain on that channel. The selected RAD's LoRa
+interface then provides the longer path. This is opportunistic attachment, not
+a parallel ESP-NOW routing protocol.
+
 **What SoftAP is genuinely worth doing:** when the building's AP is gone, a RAD
 raises its own AP so residents' phones can join and reach the mesh. That is high
 value in exactly the disaster scenario this project targets — but it only
@@ -221,8 +233,8 @@ reach the node it is attached to, which a KISS host over BLE cannot, because the
 board does not loop its own transmissions back to a KISS host. Another reason to
 prefer TCP for resident attachment.
 
-What remains for the disaster case is SoftAP itself — the interface works, but a
-node still only raises its own AP if configured to. That is the next step.
+SoftAP fallback is now automatic and its transition/return path has been
+accepted on hardware; evidence is recorded below.
 
 ## 5. The orphan problem, and the stampede that must be avoided
 
@@ -330,27 +342,52 @@ transmissions back to the host, so a BLE-attached phone may not learn a path to
 the board it is attached to. Resolve this by experiment before designing around
 it.
 
+## 6b. ESP-NOW pre-fallback recovery (implemented, hardware acceptance pending)
+
+This handles a narrower and faster orphan signal than the future LoRa preset
+sweep: the configured station is unreachable and SoftAP fallback is due.
+
+1. In normal or connected-station operation ESP-NOW stays on the WiFi-owned
+   channel. Same-channel RADs are ordinary one-hop Reticulum neighbours.
+2. If recovery is provisioned, a disconnected station runs a bounded active
+   scan before SoftAP. The fleet rendezvous channel is visited first.
+3. Nearby RADs answer a nonce solicitation after jitter. A reply must match the
+   scanner's current nonce and its proof must agree with the shared backbone
+   IFAC policy.
+4. The scanner pins to the first proven peer. Only discovery or Reticulum input
+   accepted through IFAC keeps that selection alive.
+5. The absence of a proven peer, a lease expiry, or repeated channel-setting
+   failures cannot strand the node: control returns to the established SoftAP
+   fallback. A pinned node periodically retries its configured station network.
+
+The recovery mode defaults to off until the Rev1/Rev2 transition matrix is run.
+The NomadNet `ESP-NOW Recovery` page is present by default on ESP-NOW RAD builds
+and is read-only, so viewing diagnostics cannot disturb a station connection.
+Wire details and acceptance steps live in `docs/ESPNowPeerProtocol.md`.
+
 ## 7. Build order
 
 1. ~~**`TCPServerInterface`** (inbound)~~ — **done 2026-08-23.** Five clients,
    default on for RAD-01. Sized to an average EU household (4-5 residents, one
    Reticulum identity each), which is also roughly what the lwIP socket budget
    allows alongside the UDP interface and KISS console.
-2. **SoftAP** — the node raises its own AP when building infrastructure is gone,
+2. ~~**SoftAP**~~ — **done.** The node raises its own AP when building infrastructure is gone,
    so residents can attach with no surviving router.
 3. **`TCPClientInterface`** (outbound) — lets a node anchor itself to an
    always-on off-site transport through NAT, with no port forwarding. Useful for
    remote monitoring in normal times; not part of the disaster path, since in an
    earthquake there is no internet to dial out to.
-3. **Announce jitter + duty-cycle enforcement** — small, and required before any
+4. **Announce jitter + duty-cycle enforcement** — small, and required before any
    real deployment.
-4. **Orphan state machine with listen-only preset sweep.**
-5. *(Optional, later)* BLE GATT node-to-node as a short-range last resort, only
+5. ~~**One-hop ESP-NOW + pre-SoftAP recovery**~~ — implemented; hardware
+   acceptance pending, recovery default off until it passes.
+6. **LoRa orphan state machine with listen-only preset sweep.**
+7. *(Optional, later)* BLE GATT node-to-node as a short-range last resort, only
    if field experience shows it is needed.
 
 ## 8. Non-goals
 
-- BLE or WiFi as a mesh backbone.
+- BLE or WiFi as an independent mesh/routing backbone.
 - ESP-WIFI-MESH.
 - Changes to Reticulum core routing. The stack already heals; the work is
   keeping nodes on a common PHY and attached to something.

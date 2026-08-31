@@ -12,6 +12,7 @@
 #if HAS_WIFI == true && MCU_VARIANT == MCU_ESP32
 
 #include <microReticulum.h>
+#include <microReticulum/Cryptography/HKDF.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -31,6 +32,14 @@ inline void espnow_send_trampoline(const uint8_t* mac, esp_now_send_status_t sta
 
 class ESPNowInterface : public RNS::InterfaceImpl {
 public:
+	enum RecoveryState : uint8_t {
+		RECOVERY_STRICT = 0,
+		RECOVERY_REQUESTED = 1,
+		RECOVERY_SCANNING = 2,
+		RECOVERY_PINNED = 3,
+		RECOVERY_FAILED = 4,
+	};
+
 	ESPNowInterface(const char* name) : RNS::InterfaceImpl(name) {
 		_IN = true;
 		_OUT = true;
@@ -114,6 +123,8 @@ public:
 		_send_kind = SEND_NONE;
 		clear_rx_queue();
 		clear_reassembly();
+		reset_recovery();
+		_recovery_reply_pending = false;
 	}
 
 	void detach() override { stop(); }
@@ -142,6 +153,28 @@ public:
 		service_send_completion(now);
 		if (!_started || _send_waiting || _send_done) return;
 
+		if (_recovery_state == RECOVERY_REQUESTED) start_recovery_scan(now);
+		if (_recovery_state == RECOVERY_SCANNING) {
+			if (_recovery_reply_pending && time_reached(now, _recovery_reply_at)) {
+				send_recovery_reply(now);
+			}
+			else {
+				service_recovery_scan(now);
+			}
+			return;
+		}
+		if (_recovery_state == RECOVERY_PINNED &&
+		    (uint32_t)(now - _recovery_peer_last_seen) > ESPNOW_PEER_TIMEOUT_MS) {
+			_recovery_state = RECOVERY_FAILED;
+			_recovery_failures++;
+			return;
+		}
+
+		if (_recovery_reply_pending && time_reached(now, _recovery_reply_at)) {
+			send_recovery_reply(now);
+			return;
+		}
+
 		if (_tx_tail != _tx_head) {
 			send_current_fragment(now);
 		}
@@ -168,6 +201,55 @@ public:
 	uint32_t send_failures() const { return _send_failures; }
 	uint32_t reassembly_timeouts() const { return _reassembly_timeouts; }
 	uint32_t last_peer_phy_hash() const { return _last_peer_phy_hash; }
+	RecoveryState recovery_state() const { return _recovery_state; }
+	const char* recovery_state_name() const {
+		switch (_recovery_state) {
+			case RECOVERY_REQUESTED: return "requested";
+			case RECOVERY_SCANNING:  return "scanning";
+			case RECOVERY_PINNED:    return "pinned";
+			case RECOVERY_FAILED:    return "failed";
+			default:                 return "strict";
+		}
+	}
+	bool recovery_active() const {
+		return _recovery_state == RECOVERY_REQUESTED ||
+		       _recovery_state == RECOVERY_SCANNING ||
+		       _recovery_state == RECOVERY_PINNED;
+	}
+	bool recovery_pinned() const { return _recovery_state == RECOVERY_PINNED; }
+	bool recovery_failed() const { return _recovery_state == RECOVERY_FAILED; }
+	uint8_t recovery_channel() const { return _recovery_selected_channel; }
+	uint32_t recovery_pinned_since() const { return _recovery_pinned_since; }
+	uint32_t recovery_scans() const { return _recovery_scans; }
+	uint32_t recovery_successes() const { return _recovery_successes; }
+	uint32_t recovery_failures() const { return _recovery_failures; }
+	uint32_t recovery_proof_failures() const { return _recovery_proof_failures; }
+	uint32_t recovery_channel_errors() const { return _recovery_channel_errors; }
+	uint32_t accepted_packets_in() const { return _accepted_packets_in; }
+	uint32_t accepted_from_selected() const { return _accepted_from_selected; }
+	const char* recovery_peer_mac() const { return _recovery_peer_text; }
+
+	bool request_recovery_scan(uint32_t budget_ms, uint8_t rendezvous_channel) {
+		// A connected station owns the radio channel. Recovery is forbidden in
+		// that state even if a caller is wrong; normal WiFi must never flap for a
+		// speculative peer search.
+		if (!_started || WiFi.getMode() != WIFI_MODE_STA ||
+		    WiFi.status() == WL_CONNECTED) return false;
+		if (recovery_active()) return true;
+		if (budget_ms < 1000) budget_ms = 1000;
+		if (budget_ms > 60000) budget_ms = 60000;
+		_recovery_budget_ms = budget_ms;
+		_recovery_rendezvous = rendezvous_channel;
+		_recovery_state = RECOVERY_REQUESTED;
+		return true;
+	}
+
+	void reset_recovery() {
+		_recovery_state = RECOVERY_STRICT;
+		_recovery_selected_channel = 0;
+		_recovery_peer_text[0] = 0;
+		memset(_recovery_peer_mac, 0, sizeof(_recovery_peer_mac));
+	}
 
 	// WiFi-task callbacks: copy or record only. Reticulum parsing, logging and
 	// reassembly all happen later in loop() on the Arduino loop task.
@@ -260,7 +342,13 @@ private:
 		ESPNowDiscovery discovery;
 	};
 
-	enum SendKind : uint8_t { SEND_NONE, SEND_DATA, SEND_DISCOVERY };
+	enum SendKind : uint8_t {
+		SEND_NONE,
+		SEND_DATA,
+		SEND_DISCOVERY,
+		SEND_SOLICIT,
+		SEND_RECOVERY_REPLY,
+	};
 
 	static bool time_reached(uint32_t now, uint32_t deadline) {
 		return (int32_t)(now - deadline) >= 0;
@@ -325,6 +413,12 @@ private:
 				touch_peer(frame.mac, nullptr);
 				handle_fragment(frame.mac, header, payload, payload_length);
 			}
+			else if (header.type == ESPNOW_FRAME_SOLICIT) {
+				handle_solicit(header, payload, payload_length);
+			}
+			else if (header.type == ESPNOW_FRAME_RECOVERY_REPLY) {
+				handle_recovery_reply(frame.mac, header, payload, payload_length);
+			}
 			else {
 				_rx_dropped++;
 			}
@@ -344,8 +438,83 @@ private:
 			return;
 		}
 		touch_peer(mac, &discovery);
+		if (_recovery_state == RECOVERY_PINNED &&
+		    memcmp(mac, _recovery_peer_mac, 6) == 0) {
+			_recovery_peer_last_seen = millis();
+		}
 		_last_peer_phy_hash = discovery.phy_hash;
 		_discoveries_in++;
+	}
+
+	void handle_solicit(const ESPNowFrameHeader& header,
+	                    const uint8_t* payload, size_t payload_length) {
+		if (header.fragment_index != 0 || header.fragment_count != 1 ||
+		    header.total_length != ESPNOW_SOLICIT_SIZE) {
+			_rx_dropped++;
+			return;
+		}
+		uint32_t nonce = 0;
+		if (!espnow_read_solicit(payload, payload_length, nonce)) {
+			_rx_dropped++;
+			return;
+		}
+		// Keep the first outstanding nonce. A burst of scanners (or malformed
+		// traffic) must not postpone the reply forever by continually replacing
+		// its deadline.
+		if (_recovery_reply_pending) return;
+		_recovery_reply_nonce = nonce;
+		_recovery_reply_pending = true;
+		// Several fixed peers may hear one solicitation. Jitter avoids making
+		// all of their replies collide at the scanner.
+		_recovery_reply_at = millis() + 20u + (esp_random() % 81u);
+	}
+
+	void handle_recovery_reply(const uint8_t* mac,
+	                           const ESPNowFrameHeader& header,
+	                           const uint8_t* payload, size_t payload_length) {
+		if (_recovery_state != RECOVERY_SCANNING) return;
+		if (header.fragment_index != 0 || header.fragment_count != 1 ||
+		    header.total_length != ESPNOW_RECOVERY_REPLY_SIZE) {
+			_rx_dropped++;
+			return;
+		}
+		uint32_t nonce = 0;
+		ESPNowDiscovery discovery;
+		const uint8_t* proof = nullptr;
+		if (!espnow_read_recovery_reply(payload, payload_length, nonce,
+		                                 discovery, proof)) {
+			_rx_dropped++;
+			return;
+		}
+		if (nonce != _recovery_nonce) return;
+
+		const bool local_has_ifac = _ifac_key.size() > 0;
+		const bool remote_has_proof =
+		    (discovery.capabilities & ESPNOW_CAP_IFAC_PROOF) != 0;
+		if (_ifac_required && !local_has_ifac) {
+			_recovery_proof_failures++;
+			return;
+		}
+		if (local_has_ifac != remote_has_proof ||
+		    (local_has_ifac && !verify_recovery_proof(payload, proof))) {
+			_recovery_proof_failures++;
+			return;
+		}
+
+		touch_peer(mac, &discovery);
+		memcpy(_recovery_peer_mac, mac, 6);
+		snprintf(_recovery_peer_text, sizeof(_recovery_peer_text),
+		         "%02x:%02x:%02x:%02x:%02x:%02x",
+		         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+		_recovery_selected_channel = _channel;
+		_recovery_peer_last_seen = millis();
+		_recovery_pinned_since = millis();
+		_recovery_state = RECOVERY_PINNED;
+		_recovery_successes++;
+		_last_peer_phy_hash = discovery.phy_hash;
+		_next_discovery_at = millis();
+		printf("[espnow] recovery peer %s proven on channel %u\n",
+		       _recovery_peer_text, (unsigned)_channel);
 	}
 
 	Peer* touch_peer(const uint8_t* mac, const ESPNowDiscovery* discovery) {
@@ -444,7 +613,16 @@ private:
 				slot->used = false;
 				_packets_in++;
 				try {
+					const uint32_t accepted_before = RNS::Transport::packets_received();
 					handle_incoming(packet);
+					if (RNS::Transport::packets_received() != accepted_before) {
+						_accepted_packets_in++;
+						if (_recovery_state == RECOVERY_PINNED &&
+						    memcmp(mac, _recovery_peer_mac, 6) == 0) {
+							_accepted_from_selected++;
+							_recovery_peer_last_seen = millis();
+						}
+					}
 				}
 				catch (const std::bad_alloc&) {
 					_rx_dropped++;
@@ -499,7 +677,8 @@ private:
 		}
 		if (!done) return;
 		_send_waiting = false;
-		if (_send_kind == SEND_DISCOVERY) {
+		if (_send_kind == SEND_DISCOVERY || _send_kind == SEND_SOLICIT ||
+		    _send_kind == SEND_RECOVERY_REPLY) {
 			if (!ok) _send_failures++;
 			_send_kind = SEND_NONE;
 			_send_retry = 0;
@@ -535,6 +714,76 @@ private:
 		return (uint8_t)((length + ESPNOW_FRAGMENT_PAYLOAD - 1) / ESPNOW_FRAGMENT_PAYLOAD);
 	}
 
+	void start_recovery_scan(uint32_t now) {
+		// Stop the unsuccessful association attempt before setting channels. This
+		// does not erase credentials; Remote.h will call WiFi.begin() again when
+		// the station retry window arrives.
+		WiFi.disconnect(false, false);
+
+		wifi_country_t country = {};
+		_scan_first_channel = 1;
+		_scan_last_channel = 11;
+		if (esp_wifi_get_country(&country) == ESP_OK && country.nchan > 0) {
+			_scan_first_channel = country.schan < 1 ? 1 : country.schan;
+			uint16_t last = (uint16_t)country.schan + country.nchan - 1u;
+			_scan_last_channel = last > 13 ? 13 : (uint8_t)last;
+		}
+		if (_scan_first_channel > _scan_last_channel) {
+			_scan_first_channel = 1;
+			_scan_last_channel = 11;
+		}
+		if (_recovery_rendezvous < _scan_first_channel ||
+		    _recovery_rendezvous > _scan_last_channel) {
+			_recovery_rendezvous = _scan_first_channel;
+		}
+
+		_recovery_state = RECOVERY_SCANNING;
+		_recovery_scan_deadline = now + _recovery_budget_ms;
+		_recovery_next_hop = now;
+		_scan_channel = 0;
+		_scan_first_hop = true;
+		_recovery_scans++;
+		printf("[espnow] recovery scan started (%lums, channels %u-%u, rendezvous %u)\n",
+		       (unsigned long)_recovery_budget_ms,
+		       (unsigned)_scan_first_channel, (unsigned)_scan_last_channel,
+		       (unsigned)_recovery_rendezvous);
+	}
+
+	void service_recovery_scan(uint32_t now) {
+		if (time_reached(now, _recovery_scan_deadline)) {
+			_recovery_state = RECOVERY_FAILED;
+			_recovery_failures++;
+			printf("[espnow] recovery scan found no proven peer\n");
+			return;
+		}
+		if (!time_reached(now, _recovery_next_hop)) return;
+
+		uint8_t next_channel;
+		if (_scan_first_hop) {
+			next_channel = _recovery_rendezvous;
+			_scan_first_hop = false;
+		}
+		else {
+			next_channel = _scan_channel >= _scan_last_channel
+			             ? _scan_first_channel : (uint8_t)(_scan_channel + 1u);
+		}
+		_scan_channel = next_channel;
+		if (esp_wifi_set_channel(next_channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+			_recovery_channel_errors++;
+			_recovery_next_hop = now + 50;
+			return;
+		}
+		refresh_channel();
+		_recovery_nonce = esp_random();
+		if (_recovery_nonce == 0) _recovery_nonce = 1;
+		send_solicit(now);
+		// Spend longer on the fleet rendezvous channel so two orphans entering
+		// recovery a little apart can still meet. Other channels are active
+		// probes and need only enough time for a jittered response.
+		_recovery_next_hop = now +
+		    (next_channel == _recovery_rendezvous ? 900u : 260u);
+	}
+
 	void send_current_fragment(uint32_t now) {
 		TxPacket& packet = _tx_queue[_tx_tail];
 		const uint8_t count = fragment_count(packet.length);
@@ -557,12 +806,7 @@ private:
 		begin_send(SEND_DATA, wire, ESPNOW_HEADER_SIZE + payload_length, now);
 	}
 
-	void send_discovery(uint32_t now) {
-		uint8_t wire[ESPNOW_HEADER_SIZE + ESPNOW_DISCOVERY_SIZE];
-		ESPNowFrameHeader header = {
-			ESPNOW_FRAME_DISCOVERY, 0, 0, 1, ESPNOW_DISCOVERY_SIZE
-		};
-		espnow_write_header(wire, sizeof(wire), header);
+	ESPNowDiscovery local_discovery() const {
 		ESPNowDiscovery discovery = {};
 #if defined(LORA_TRANSPORT)
 		extern uint32_t lora_phy_hash();
@@ -578,10 +822,71 @@ private:
 		discovery.capabilities |= ESPNOW_CAP_LORA;
 #endif
 		if (RNS::Reticulum::transport_enabled()) discovery.capabilities |= ESPNOW_CAP_TRANSPORT;
+		if (_ifac_key.size() > 0) discovery.capabilities |= ESPNOW_CAP_IFAC_PROOF;
 		discovery.wifi_channel = _channel;
+		return discovery;
+	}
+
+	void send_discovery(uint32_t now) {
+		uint8_t wire[ESPNOW_HEADER_SIZE + ESPNOW_DISCOVERY_SIZE];
+		ESPNowFrameHeader header = {
+			ESPNOW_FRAME_DISCOVERY, 0, 0, 1, ESPNOW_DISCOVERY_SIZE
+		};
+		espnow_write_header(wire, sizeof(wire), header);
+		ESPNowDiscovery discovery = local_discovery();
 		espnow_write_discovery(wire + ESPNOW_HEADER_SIZE, ESPNOW_DISCOVERY_SIZE, discovery);
 		_next_discovery_at = now + ESPNOW_DISCOVERY_INTERVAL_MS + (esp_random() % 2000u);
 		begin_send(SEND_DISCOVERY, wire, sizeof(wire), now);
+	}
+
+	void send_solicit(uint32_t now) {
+		uint8_t wire[ESPNOW_HEADER_SIZE + ESPNOW_SOLICIT_SIZE];
+		ESPNowFrameHeader header = {
+			ESPNOW_FRAME_SOLICIT, 0, 0, 1, ESPNOW_SOLICIT_SIZE
+		};
+		espnow_write_header(wire, sizeof(wire), header);
+		espnow_write_solicit(wire + ESPNOW_HEADER_SIZE,
+		                      ESPNOW_SOLICIT_SIZE, _recovery_nonce);
+		begin_send(SEND_SOLICIT, wire, sizeof(wire), now);
+	}
+
+	void make_recovery_proof(const uint8_t* material, uint8_t* proof) const {
+		memset(proof, 0, ESPNOW_RECOVERY_PROOF_SIZE);
+		if (_ifac_key.size() == 0) return;
+		const RNS::Bytes salt(material, ESPNOW_SOLICIT_SIZE + ESPNOW_DISCOVERY_SIZE);
+		const RNS::Bytes derived = RNS::Cryptography::hkdf(
+		    ESPNOW_RECOVERY_PROOF_SIZE, _ifac_key, salt);
+		memcpy(proof, derived.data(), ESPNOW_RECOVERY_PROOF_SIZE);
+	}
+
+	bool verify_recovery_proof(const uint8_t* material, const uint8_t* proof) const {
+		uint8_t expected[ESPNOW_RECOVERY_PROOF_SIZE];
+		make_recovery_proof(material, expected);
+		uint8_t difference = 0;
+		for (uint8_t i = 0; i < ESPNOW_RECOVERY_PROOF_SIZE; ++i) {
+			difference |= expected[i] ^ proof[i];
+		}
+		return difference == 0;
+	}
+
+	void send_recovery_reply(uint32_t now) {
+		uint8_t wire[ESPNOW_HEADER_SIZE + ESPNOW_RECOVERY_REPLY_SIZE];
+		ESPNowFrameHeader header = {
+			ESPNOW_FRAME_RECOVERY_REPLY, 0, 0, 1, ESPNOW_RECOVERY_REPLY_SIZE
+		};
+		espnow_write_header(wire, sizeof(wire), header);
+		ESPNowDiscovery discovery = local_discovery();
+		uint8_t material[ESPNOW_SOLICIT_SIZE + ESPNOW_DISCOVERY_SIZE];
+		espnow_put_u32(material, _recovery_reply_nonce);
+		espnow_write_discovery(material + ESPNOW_SOLICIT_SIZE,
+		                         ESPNOW_DISCOVERY_SIZE, discovery);
+		uint8_t proof[ESPNOW_RECOVERY_PROOF_SIZE];
+		make_recovery_proof(material, proof);
+		espnow_write_recovery_reply(wire + ESPNOW_HEADER_SIZE,
+		                            ESPNOW_RECOVERY_REPLY_SIZE,
+		                            _recovery_reply_nonce, discovery, proof);
+		_recovery_reply_pending = false;
+		begin_send(SEND_RECOVERY_REPLY, wire, sizeof(wire), now);
 	}
 
 	void begin_send(SendKind kind, const uint8_t* data, size_t length, uint32_t now) {
@@ -607,6 +912,25 @@ private:
 	uint32_t _last_channel_check = 0;
 	uint32_t _next_discovery_at = 0;
 	uint32_t _last_expiry = 0;
+
+	RecoveryState _recovery_state = RECOVERY_STRICT;
+	uint32_t _recovery_budget_ms = 0;
+	uint32_t _recovery_scan_deadline = 0;
+	uint32_t _recovery_next_hop = 0;
+	uint32_t _recovery_nonce = 0;
+	uint32_t _recovery_pinned_since = 0;
+	uint32_t _recovery_peer_last_seen = 0;
+	uint32_t _recovery_reply_nonce = 0;
+	uint32_t _recovery_reply_at = 0;
+	uint8_t _recovery_rendezvous = 1;
+	uint8_t _recovery_selected_channel = 0;
+	uint8_t _scan_first_channel = 1;
+	uint8_t _scan_last_channel = 11;
+	uint8_t _scan_channel = 0;
+	bool _scan_first_hop = true;
+	bool _recovery_reply_pending = false;
+	uint8_t _recovery_peer_mac[6] = {0};
+	char _recovery_peer_text[18] = {0};
 
 	Peer _peers[MAX_PEERS];
 	Reassembly _reassembly[REASSEMBLY_SLOTS];
@@ -638,6 +962,13 @@ private:
 	uint32_t _send_failures = 0;
 	uint32_t _reassembly_timeouts = 0;
 	uint32_t _last_peer_phy_hash = 0;
+	uint32_t _accepted_packets_in = 0;
+	uint32_t _accepted_from_selected = 0;
+	uint32_t _recovery_scans = 0;
+	uint32_t _recovery_successes = 0;
+	uint32_t _recovery_failures = 0;
+	uint32_t _recovery_proof_failures = 0;
+	uint32_t _recovery_channel_errors = 0;
 };
 
 inline void espnow_receive_trampoline(const uint8_t* mac, const uint8_t* data, int length) {

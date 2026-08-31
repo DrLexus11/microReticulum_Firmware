@@ -11,6 +11,9 @@ PROTOCOL = os.path.join(ROOT, "ESPNowProtocol.h")
 INTERFACE = os.path.join(ROOT, "ESPNowInterface.h")
 FIRMWARE = os.path.join(ROOT, "RNode_Firmware.ino")
 PROVISIONING = os.path.join(ROOT, "Provisioning.cpp")
+PROVISIONING_HEADER = os.path.join(ROOT, "Provisioning.h")
+REMOTE = os.path.join(ROOT, "Remote.h")
+PAGES = os.path.join(ROOT, "Pages.h")
 PLATFORMIO = os.path.join(ROOT, "platformio.ini")
 
 
@@ -69,6 +72,29 @@ class ESPNowWireContractTests(unittest.TestCase):
         interface = source(INTERFACE)
         self.assertNotIn("radio_preset_apply", interface)
         self.assertNotIn("update_radio_lock", interface)
+
+    def test_active_recovery_frames_fit_one_action_frame(self):
+        self.assertEqual(3, self.d["ESPNOW_FRAME_SOLICIT"])
+        self.assertEqual(4, self.d["ESPNOW_FRAME_RECOVERY_REPLY"])
+        self.assertEqual(4, self.d["ESPNOW_SOLICIT_SIZE"])
+        self.assertEqual(8, self.d["ESPNOW_RECOVERY_PROOF_SIZE"])
+        reply_payload = (self.d["ESPNOW_SOLICIT_SIZE"] +
+                         self.d["ESPNOW_DISCOVERY_SIZE"] +
+                         self.d["ESPNOW_RECOVERY_PROOF_SIZE"])
+        self.assertEqual(28, reply_payload)
+        self.assertLessEqual(self.d["ESPNOW_HEADER_SIZE"] + reply_payload,
+                             self.d["ESPNOW_WIRE_MTU"])
+
+    def test_recovery_reply_layout_binds_nonce_discovery_and_proof(self):
+        nonce = 0x10203040
+        discovery = struct.pack("!IIIBBBB", 0x11223344, 868100000,
+                                125000, 9, 5, 6, 7)
+        proof = bytes.fromhex("0102030405060708")
+        payload = struct.pack("!I", nonce) + discovery + proof
+        self.assertEqual(28, len(payload))
+        self.assertEqual(nonce, struct.unpack("!I", payload[:4])[0])
+        self.assertEqual(discovery, payload[4:20])
+        self.assertEqual(proof, payload[20:])
 
 
 class ESPNowArchitectureTests(unittest.TestCase):
@@ -129,6 +155,75 @@ class ESPNowArchitectureTests(unittest.TestCase):
         block = block[:block.index("#endif")]
         self.assertIn("lora_ifac_enabled || secure_node_enabled", block)
         self.assertIn("lora_ifac_netname, lora_ifac_passphrase, 8", block)
+
+    def test_connected_station_cannot_be_channel_hopped(self):
+        text = source(INTERFACE)
+        request = text[text.index("bool request_recovery_scan"):]
+        request = request[:request.index("void reset_recovery")]
+        self.assertIn("WiFi.getMode() != WIFI_MODE_STA", request)
+        self.assertIn("WiFi.status() == WL_CONNECTED", request)
+        self.assertIn("return false", request)
+        self.assertNotIn("esp_wifi_set_channel", request)
+
+    def test_recovery_is_opt_in_and_precedes_existing_softap(self):
+        remote = source(REMOTE)
+        self.assertIn(
+            "wifi_espnow_recovery_mode = WIFI_ESPNOW_RECOVERY_OFF", remote)
+        recovery = remote.index("espnow_request_recovery_scan(")
+        fallback = remote.index("wifi_remote_start_ap_fallback();", recovery)
+        self.assertLess(recovery, fallback)
+        self.assertIn("completed failed scan falls through", remote)
+
+    def test_recovery_admission_uses_nonce_and_backbone_ifac(self):
+        text = source(INTERFACE)
+        handler = text[text.index("void handle_recovery_reply"):]
+        handler = handler[:handler.index("Peer* touch_peer")]
+        self.assertIn("nonce != _recovery_nonce", handler)
+        self.assertIn("verify_recovery_proof", handler)
+        self.assertIn("ESPNOW_CAP_IFAC_PROOF", handler)
+        proof = text[text.index("void make_recovery_proof"):]
+        proof = proof[:proof.index("void send_recovery_reply")]
+        self.assertIn("Cryptography::hkdf", proof)
+        self.assertIn("difference |=", proof)
+
+    def test_solicit_burst_cannot_keep_postponing_a_pending_reply(self):
+        text = source(INTERFACE)
+        handler = text[text.index("void handle_solicit"):]
+        handler = handler[:handler.index("void handle_recovery_reply")]
+        guard = handler.index("if (_recovery_reply_pending) return")
+        deadline = handler.index("_recovery_reply_at =")
+        self.assertLess(guard, deadline)
+
+    def test_selected_peer_health_uses_reticulum_acceptance(self):
+        text = source(INTERFACE)
+        inbound = text[text.index("const uint32_t accepted_before"):]
+        inbound = inbound[:inbound.index("catch (const std::bad_alloc&)")]
+        self.assertIn("handle_incoming(packet)", inbound)
+        self.assertIn("Transport::packets_received() != accepted_before", inbound)
+        self.assertIn("_accepted_from_selected++", inbound)
+        self.assertIn("_recovery_peer_last_seen = millis()", inbound)
+
+    def test_recovery_diagnostics_are_read_only_and_registered(self):
+        firmware = source(FIRMWARE)
+        pages = source(PAGES)
+        self.assertIn(
+            'register_request_handler("/page/espnow.mu", serve_page', firmware)
+        page = pages[pages.index('path == "/page/espnow.mu"'):]
+        page = page[:page.index("#endif")]
+        self.assertIn("Recovery policy", page)
+        self.assertIn("Channel errors", page)
+        self.assertNotIn("request_recovery_scan", page)
+
+    def test_recovery_provisioning_ids_do_not_overlap_ap_metrics(self):
+        header = source(PROVISIONING_HEADER)
+        fields = dict((name, int(value)) for name, value in re.findall(
+            r"^#define\s+(PROV_NET_\w+)\s+(\d+)\s*$", header, re.M))
+        self.assertEqual(8, fields["PROV_NET_ESPNOW_RECOVERY"])
+        self.assertEqual(9, fields["PROV_NET_ESPNOW_SCAN_S"])
+        self.assertEqual(10, fields["PROV_NET_ESPNOW_CHANNEL"])
+        self.assertTrue({8, 9, 10}.isdisjoint({
+            fields["PROV_NET_AP_ACTIVE"], fields["PROV_NET_AP_CLIENTS"],
+            fields["PROV_NET_AP_SSID"]}))
 
 
 if __name__ == "__main__":

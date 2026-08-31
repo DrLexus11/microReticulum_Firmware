@@ -297,6 +297,26 @@ uint32_t espnow_tx_dropped()           { return espnow_impl ? espnow_impl->tx_dr
 uint32_t espnow_send_failures()        { return espnow_impl ? espnow_impl->send_failures() : 0; }
 uint32_t espnow_reassembly_timeouts()  { return espnow_impl ? espnow_impl->reassembly_timeouts() : 0; }
 uint32_t espnow_last_peer_phy_hash()   { return espnow_impl ? espnow_impl->last_peer_phy_hash() : 0; }
+uint32_t espnow_recovery_state()       { return espnow_impl ? (uint32_t)espnow_impl->recovery_state() : 0; }
+const char* espnow_recovery_state_name() { return espnow_impl ? espnow_impl->recovery_state_name() : "disabled"; }
+bool espnow_recovery_active()          { return espnow_impl ? espnow_impl->recovery_active() : false; }
+bool espnow_recovery_pinned()          { return espnow_impl ? espnow_impl->recovery_pinned() : false; }
+bool espnow_recovery_failed()          { return espnow_impl ? espnow_impl->recovery_failed() : false; }
+uint32_t espnow_recovery_channel()     { return espnow_impl ? espnow_impl->recovery_channel() : 0; }
+uint32_t espnow_recovery_pinned_since(){ return espnow_impl ? espnow_impl->recovery_pinned_since() : 0; }
+uint32_t espnow_recovery_scans()       { return espnow_impl ? espnow_impl->recovery_scans() : 0; }
+uint32_t espnow_recovery_successes()   { return espnow_impl ? espnow_impl->recovery_successes() : 0; }
+uint32_t espnow_recovery_failures()    { return espnow_impl ? espnow_impl->recovery_failures() : 0; }
+uint32_t espnow_recovery_proof_failures() { return espnow_impl ? espnow_impl->recovery_proof_failures() : 0; }
+uint32_t espnow_recovery_channel_errors() { return espnow_impl ? espnow_impl->recovery_channel_errors() : 0; }
+uint32_t espnow_accepted_packets_in()  { return espnow_impl ? espnow_impl->accepted_packets_in() : 0; }
+uint32_t espnow_accepted_from_selected() { return espnow_impl ? espnow_impl->accepted_from_selected() : 0; }
+const char* espnow_recovery_peer_mac() { return espnow_impl ? espnow_impl->recovery_peer_mac() : ""; }
+bool espnow_request_recovery_scan(uint32_t budget_ms, uint8_t rendezvous_channel) {
+  return espnow_impl ? espnow_impl->request_recovery_scan(budget_ms, rendezvous_channel) : false;
+}
+void espnow_reset_recovery() { if (espnow_impl) espnow_impl->reset_recovery(); }
+void espnow_before_wifi_reset() { if (espnow_impl) espnow_impl->stop(); }
 #endif
 #if defined(BLE_PEER_TRANSPORT)
 // Accessors for Provisioning.cpp, which cannot see this translation unit's
@@ -1518,9 +1538,15 @@ printf("[init] op_mode: %U\n", op_mode);
 #ifdef NOMADNET_PAGES_ALLOW_ALL
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#endif
 #else
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#endif
 #endif
 #ifdef HAS_BME
         if (BME680::bme_installed) {

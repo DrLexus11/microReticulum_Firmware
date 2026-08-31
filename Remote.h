@@ -106,6 +106,26 @@ uint32_t wifi_ap_fallback_ms = WIFI_AP_FALLBACK_MS;
 uint32_t wifi_ap_retry_sta_ms = WIFI_AP_RETRY_STA_MS;
 uint32_t wifi_ap_max_defer_ms = WIFI_AP_MAX_DEFER_MS;
 
+#if defined(ESPNOW_TRANSPORT)
+// Optional node-to-node recovery phase inserted before SoftAP fallback. It is
+// opt-in for the first release: normal station and fallback behaviour stays
+// byte-for-byte familiar until an operator provisions mode 1.
+#define WIFI_ESPNOW_RECOVERY_OFF            0
+#define WIFI_ESPNOW_RECOVERY_BEFORE_SOFTAP  1
+uint8_t  wifi_espnow_recovery_mode = WIFI_ESPNOW_RECOVERY_OFF;
+uint32_t wifi_espnow_scan_budget_ms = 12000;
+uint8_t  wifi_espnow_rendezvous_channel = WR_CHANNEL_DEFAULT;
+bool     wifi_espnow_scan_attempted = false;
+
+bool espnow_request_recovery_scan(uint32_t budget_ms, uint8_t rendezvous_channel);
+bool espnow_recovery_active();
+bool espnow_recovery_pinned();
+bool espnow_recovery_failed();
+uint32_t espnow_recovery_pinned_since();
+void espnow_reset_recovery();
+void espnow_before_wifi_reset();
+#endif
+
 // Mirrors WiFi.softAPgetStationNum() so provisioning can report it without
 // pulling the WiFi headers into that translation unit. Updated wherever the
 // fallback state machine already asks.
@@ -222,6 +242,9 @@ void wifi_remote_start_ap_fallback() {
 	wr_device_ip = WiFi.softAPIP();
 	wr_wifi_status = WL_CONNECTED;
 	wifi_ap_deferring_since = 0;
+#if defined(ESPNOW_TRANSPORT)
+	wifi_espnow_scan_attempted = false;
+#endif
 	// The key is NOT logged by default.
 	//
 	// serial_write() sends log output to whichever host transport is attached --
@@ -312,6 +335,9 @@ void wifi_remote_start_sta() {
 }
 
 void wifi_remote_stop() {
+#if defined(ESPNOW_TRANSPORT)
+  espnow_before_wifi_reset();
+#endif
   remote_listener.end();
   kiss_bound_ip = IPAddress((uint32_t)0);
   WiFi.softAPdisconnect(true);
@@ -385,6 +411,12 @@ void wifi_remote_apply_kiss_policy() {
 
 void wifi_remote_init() {
   printf("Initializing WiFi...\n");
+#if defined(ESPNOW_TRANSPORT)
+  // WiFi.mode(NULL) and back to STA can occur entirely between two interface
+  // loop calls. Stop ESP-NOW explicitly so it cannot retain callbacks bound to
+  // the old netif while appearing started.
+  espnow_before_wifi_reset();
+#endif
   memcpy(wr_hostname, bt_devname, 5);
   memcpy(wr_hostname+5, bt_devname+6, 4);
   wr_hostname[9] = 0x00;
@@ -523,8 +555,6 @@ void wifi_update_status() {
   if (wifi_mode == WR_WIFI_AP && wifi_initialized) { wr_device_ip = WiFi.softAPIP(); wr_wifi_status = WL_CONNECTED; }
   if (wifi_init_ran && wifi_mode == WR_WIFI_STA && !wifi_ap_fallback_active &&
       wr_wifi_status != WL_CONNECTED) {
-    if (millis()-wr_last_connect_try >= WR_RECONNECT_INTERVAL_MS) { wifi_remote_init(); }
-
 #if WIFI_AP_FALLBACK_MS > 0
     // A node whose network is gone is useless to the people around it. After
     // trying long enough that this is not merely a router rebooting, raise our
@@ -535,15 +565,59 @@ void wifi_update_status() {
     // a network that does not exist.
     bool never_configured = (wr_ssid[0] == 0x00);
     if (wifi_sta_failing_since == 0) { wifi_sta_failing_since = millis(); }
-    if (never_configured || (millis() - wifi_sta_failing_since >= wifi_ap_fallback_ms)) {
+    const bool fallback_due = never_configured ||
+        (millis() - wifi_sta_failing_since >= wifi_ap_fallback_ms);
+
+#if defined(ESPNOW_TRANSPORT)
+    if (espnow_recovery_pinned()) {
+      // A proven peer is keeping this orphan attached to Reticulum. Periodic
+      // station retries still win eventually, just as they do from SoftAP.
+      if (millis() - espnow_recovery_pinned_since() >= wifi_ap_retry_sta_ms) {
+        printf("[WiFi] ESP-NOW recovery interval elapsed -- retrying station network \"%s\"\n",
+               wr_ssid);
+        espnow_reset_recovery();
+        wifi_espnow_scan_attempted = false;
+        wifi_sta_failing_since = millis();
+        wifi_remote_init();
+      }
+      return;
+    }
+
+    if (fallback_due &&
+        wifi_espnow_recovery_mode == WIFI_ESPNOW_RECOVERY_BEFORE_SOFTAP) {
+      if (espnow_recovery_active()) return;
+      if (!wifi_espnow_scan_attempted) {
+        wifi_espnow_scan_attempted = true;
+        if (espnow_request_recovery_scan(wifi_espnow_scan_budget_ms,
+                                         wifi_espnow_rendezvous_channel)) {
+          printf("[WiFi] station unreachable -- trying ESP-NOW recovery before SoftAP\n");
+          return;
+        }
+        printf("[WiFi] ESP-NOW recovery unavailable -- continuing to SoftAP\n");
+      }
+      // A completed failed scan falls through to the established SoftAP path.
+    }
+#endif
+
+    if (fallback_due) {
       printf("[WiFi] %s -- falling back to own AP\n",
              never_configured ? "no station network configured"
                               : "station network unreachable");
       wifi_remote_start_ap_fallback();
+      return;
     }
 #endif
+
+    // Still inside the grace period: continue ordinary station retries. Once
+    // fallback is due, recovery/SoftAP above takes precedence so a reconnect
+    // cannot tear down a scan in the same status pass.
+    if (millis()-wr_last_connect_try >= WR_RECONNECT_INTERVAL_MS) { wifi_remote_init(); }
   } else if (wr_wifi_status == WL_CONNECTED && !wifi_ap_fallback_active) {
     wifi_sta_failing_since = 0;      // connected: reset the fallback timer
+#if defined(ESPNOW_TRANSPORT)
+    wifi_espnow_scan_attempted = false;
+    espnow_reset_recovery();
+#endif
   }
 
 #if WIFI_AP_FALLBACK_MS > 0
@@ -586,12 +660,18 @@ void wifi_update_status() {
       wifi_ap_fallback_active = false;
       wifi_sta_failing_since = 0;
       wifi_ap_deferring_since = 0;
+#if defined(ESPNOW_TRANSPORT)
+      wifi_espnow_scan_attempted = false;
+#endif
       wifi_remote_init();
     } else {
       wifi_ap_deferring_since = 0;
       printf("[WiFi] fallback AP idle -- retrying station network \"%s\"\n", wr_ssid);
       wifi_ap_fallback_active = false;
       wifi_sta_failing_since = 0;
+#if defined(ESPNOW_TRANSPORT)
+      wifi_espnow_scan_attempted = false;
+#endif
       wifi_remote_init();
     }
   }

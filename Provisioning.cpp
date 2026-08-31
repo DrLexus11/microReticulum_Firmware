@@ -219,6 +219,19 @@ uint32_t espnow_tx_dropped();
 uint32_t espnow_send_failures();
 uint32_t espnow_reassembly_timeouts();
 uint32_t espnow_last_peer_phy_hash();
+uint32_t espnow_recovery_state();
+uint32_t espnow_recovery_channel();
+uint32_t espnow_recovery_scans();
+uint32_t espnow_recovery_successes();
+uint32_t espnow_recovery_failures();
+uint32_t espnow_recovery_proof_failures();
+uint32_t espnow_recovery_channel_errors();
+uint32_t espnow_accepted_packets_in();
+uint32_t espnow_accepted_from_selected();
+const char* espnow_recovery_peer_mac();
+extern uint8_t wifi_espnow_recovery_mode;
+extern uint32_t wifi_espnow_scan_budget_ms;
+extern uint8_t wifi_espnow_rendezvous_channel;
 #endif
 #if HAS_WIFI
 extern void wifi_remote_apply_kiss_policy();
@@ -1021,6 +1034,16 @@ static void register_provisioning_namespaces() {
         .metric_int("Send Failures", PROV_METRICS_ESPNOW_SENDFAIL, []() { return (fint_t)espnow_send_failures(); })
         .metric_int("Reassembly Timeouts", PROV_METRICS_ESPNOW_REASS_TO, []() { return (fint_t)espnow_reassembly_timeouts(); })
         .metric_int("Last Peer PHY Hash", PROV_METRICS_ESPNOW_PHYHASH, []() { return (fint_t)espnow_last_peer_phy_hash(); })
+        .metric_int("Recovery State", PROV_METRICS_ESPNOW_REC_STATE, []() { return (fint_t)espnow_recovery_state(); })
+        .metric_int("Recovery Scans", PROV_METRICS_ESPNOW_REC_SCANS, []() { return (fint_t)espnow_recovery_scans(); })
+        .metric_int("Recovery Successes", PROV_METRICS_ESPNOW_REC_OK, []() { return (fint_t)espnow_recovery_successes(); })
+        .metric_int("Recovery Failures", PROV_METRICS_ESPNOW_REC_FAIL, []() { return (fint_t)espnow_recovery_failures(); })
+        .metric_int("Recovery Proof Failures", PROV_METRICS_ESPNOW_PROOFFAIL, []() { return (fint_t)espnow_recovery_proof_failures(); })
+        .metric_int("Recovery Channel Errors", PROV_METRICS_ESPNOW_CHANERR, []() { return (fint_t)espnow_recovery_channel_errors(); })
+        .metric_int("IFAC-Accepted Packets", PROV_METRICS_ESPNOW_ACCEPTED, []() { return (fint_t)espnow_accepted_packets_in(); })
+        .metric_int("Accepted From Selected", PROV_METRICS_ESPNOW_SEL_ACCEPT, []() { return (fint_t)espnow_accepted_from_selected(); })
+        .metric_string("Recovery Peer", PROV_METRICS_ESPNOW_REC_PEER, []() { return std::string(espnow_recovery_peer_mac()); })
+        .metric_int("Recovery Channel", PROV_METRICS_ESPNOW_REC_CHAN, []() { return (fint_t)espnow_recovery_channel(); })
         .end();
   }
 #endif
@@ -1191,6 +1214,26 @@ static void register_provisioning_namespaces() {
           (fint_t)(wifi_ap_max_defer_ms / 1000), (fint_t)60, (fint_t)86400,
           [](const Value& v) { wifi_ap_max_defer_ms = (uint32_t)v.as_int() * 1000UL; return true; },
           []() { return (fint_t)(wifi_ap_max_defer_ms / 1000); })
+#if defined(ESPNOW_TRANSPORT)
+        // Recovery is opt-in until its transition matrix has passed on both
+        // RAD revisions. Mode changes are reboot-required so a provisioning
+        // response cannot disappear when the radio leaves its WiFi channel.
+        .field_enum("ESP-NOW Recovery", PROV_NET_ESPNOW_RECOVERY,
+          FF_REBOOT_REQUIRED, (fint_t)wifi_espnow_recovery_mode,
+          {0, 1}, {"off", "scan-before-softap"},
+          [](const Value& v) { wifi_espnow_recovery_mode = (uint8_t)v.as_int(); return true; },
+          []() { return (fint_t)wifi_espnow_recovery_mode; })
+        .field_int("ESP-NOW Scan Budget (s)", PROV_NET_ESPNOW_SCAN_S,
+          FF_LIVE_APPLY, (fint_t)(wifi_espnow_scan_budget_ms / 1000),
+          (fint_t)5, (fint_t)60,
+          [](const Value& v) { wifi_espnow_scan_budget_ms = (uint32_t)v.as_int() * 1000UL; return true; },
+          []() { return (fint_t)(wifi_espnow_scan_budget_ms / 1000); })
+        .field_int("ESP-NOW Rendezvous Channel", PROV_NET_ESPNOW_CHANNEL,
+          FF_REBOOT_REQUIRED, (fint_t)wifi_espnow_rendezvous_channel,
+          (fint_t)1, (fint_t)13,
+          [](const Value& v) { wifi_espnow_rendezvous_channel = (uint8_t)v.as_int(); return true; },
+          []() { return (fint_t)wifi_espnow_rendezvous_channel; })
+#endif
         // Read-only state. Without these an operator cannot tell whether a node
         // is on the building network or serving its own, which is the first
         // question to ask about a node that has gone quiet.

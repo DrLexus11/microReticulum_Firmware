@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #define ESPNOW_PROTO_MAGIC_0        0x52  // R
 #define ESPNOW_PROTO_MAGIC_1        0x4e  // N
@@ -15,6 +16,8 @@
 
 #define ESPNOW_FRAME_DISCOVERY      0x01
 #define ESPNOW_FRAME_DATA           0x02
+#define ESPNOW_FRAME_SOLICIT        0x03
+#define ESPNOW_FRAME_RECOVERY_REPLY 0x04
 
 // ESP-IDF 4.4, used by the current Arduino core, limits an ESP-NOW action
 // frame's application data to 250 bytes. The ten-byte header leaves 240 bytes
@@ -36,6 +39,15 @@
 
 #define ESPNOW_CAP_LORA              0x01
 #define ESPNOW_CAP_TRANSPORT         0x02
+#define ESPNOW_CAP_IFAC_PROOF        0x04
+
+// Active recovery uses a nonce so a scanner accepts only replies to its
+// current channel probe. The reply carries the normal advisory discovery plus
+// a short proof derived from the existing backbone IFAC key. It is admission
+// evidence, not a replacement for Reticulum's packet-level IFAC validation.
+#define ESPNOW_SOLICIT_SIZE            4
+#define ESPNOW_RECOVERY_PROOF_SIZE      8
+#define ESPNOW_RECOVERY_REPLY_SIZE     (ESPNOW_SOLICIT_SIZE + ESPNOW_DISCOVERY_SIZE + ESPNOW_RECOVERY_PROOF_SIZE)
 
 struct ESPNowFrameHeader {
 	uint8_t  type;
@@ -126,5 +138,43 @@ inline bool espnow_read_discovery(const uint8_t* data, size_t length,
 	discovery.coding_rate      = data[13];
 	discovery.wifi_channel     = data[14];
 	discovery.capabilities     = data[15];
+	return true;
+}
+
+inline size_t espnow_write_solicit(uint8_t* out, size_t capacity,
+	                                uint32_t nonce) {
+	if (out == nullptr || capacity < ESPNOW_SOLICIT_SIZE) return 0;
+	espnow_put_u32(out, nonce);
+	return ESPNOW_SOLICIT_SIZE;
+}
+
+inline bool espnow_read_solicit(const uint8_t* data, size_t length,
+	                             uint32_t& nonce) {
+	if (data == nullptr || length != ESPNOW_SOLICIT_SIZE) return false;
+	nonce = espnow_get_u32(data);
+	return true;
+}
+
+inline size_t espnow_write_recovery_reply(uint8_t* out, size_t capacity,
+	                                       uint32_t nonce,
+	                                       const ESPNowDiscovery& discovery,
+	                                       const uint8_t* proof) {
+	if (out == nullptr || proof == nullptr || capacity < ESPNOW_RECOVERY_REPLY_SIZE) return 0;
+	espnow_put_u32(out, nonce);
+	espnow_write_discovery(out + ESPNOW_SOLICIT_SIZE, ESPNOW_DISCOVERY_SIZE, discovery);
+	memcpy(out + ESPNOW_SOLICIT_SIZE + ESPNOW_DISCOVERY_SIZE,
+	       proof, ESPNOW_RECOVERY_PROOF_SIZE);
+	return ESPNOW_RECOVERY_REPLY_SIZE;
+}
+
+inline bool espnow_read_recovery_reply(const uint8_t* data, size_t length,
+	                                    uint32_t& nonce,
+	                                    ESPNowDiscovery& discovery,
+	                                    const uint8_t*& proof) {
+	if (data == nullptr || length != ESPNOW_RECOVERY_REPLY_SIZE) return false;
+	nonce = espnow_get_u32(data);
+	if (!espnow_read_discovery(data + ESPNOW_SOLICIT_SIZE,
+	                           ESPNOW_DISCOVERY_SIZE, discovery)) return false;
+	proof = data + ESPNOW_SOLICIT_SIZE + ESPNOW_DISCOVERY_SIZE;
 	return true;
 }
