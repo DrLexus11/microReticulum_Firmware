@@ -82,6 +82,8 @@ uint32_t ble_peer_frag_start();
 uint32_t prov_loop_phase_last_wdt();
 uint32_t prov_loop_phase_worst_id();
 uint32_t prov_loop_phase_worst_ms();
+uint32_t prov_loop_phase_recent_id();
+uint32_t prov_loop_phase_recent_ms();
 #if defined(LXMF_PROPAGATION_NODE)
 extern char lxmf_static_peer[33];
 uint32_t lxmf_peer_count();
@@ -885,6 +887,10 @@ static void register_provisioning_namespaces() {
       []() { return static_cast<fint_t>(prov_loop_phase_worst_id()); })
     .metric_int("Slowest Phase ms", PROV_METRICS_DEV_SLOWMS,
       []() { return static_cast<fint_t>(prov_loop_phase_worst_ms()); })
+    .metric_int("Recent Slow Phase", PROV_METRICS_DEV_RECENTPH,
+      []() { return static_cast<fint_t>(prov_loop_phase_recent_id()); })
+    .metric_int("Recent Slow ms", PROV_METRICS_DEV_RECENTMS,
+      []() { return static_cast<fint_t>(prov_loop_phase_recent_ms()); })
     .metric_int("Boot Count", PROV_METRICS_DEV_BOOTS,
       []() { return (fint_t)boot_count; })
 #endif

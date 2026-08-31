@@ -267,6 +267,8 @@ RNS::Reticulum reticulum(RNS::Type::NONE);
 uint32_t prov_loop_phase_last_wdt() { return (uint32_t)loop_phase_last_wdt(); }
 uint32_t prov_loop_phase_worst_id() { return (uint32_t)loop_phase_worst_id(); }
 uint32_t prov_loop_phase_worst_ms() { return loop_phase_worst_ms(); }
+uint32_t prov_loop_phase_recent_id() { return (uint32_t)loop_phase_recent_id(); }
+uint32_t prov_loop_phase_recent_ms() { return loop_phase_recent_ms(); }
 #if defined(ESP32)
 // Storage for the loop-phase breadcrumb declared in LoopPhase.h. NOINIT so it
 // survives a reset -- that is the whole point; see the header.

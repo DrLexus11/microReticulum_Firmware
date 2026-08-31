@@ -80,6 +80,49 @@ inline uint32_t* loop_phase_worst() {
 	return worst;
 }
 
+// A second table, rolled on a timer rather than cleared on read.
+//
+// The table above is a running maximum, so it only ever rises: a value growing
+// between two reads is equally consistent with one rare spike as with a phase
+// getting progressively slower, and those call for opposite investigations. A
+// per-window maximum separates them.
+//
+// The window MUST roll on a timer, not on read. Clearing inside the getter was
+// tried and silently reported zero for a window that contained a 2133ms call:
+// the provisioning serializer evaluates a metric lambda more than once, so the
+// first call returned the value and cleared it and the second -- the one
+// actually serialized -- returned 0. Metric getters here must be pure.
+#ifndef LOOP_PHASE_WINDOW_MS
+#define LOOP_PHASE_WINDOW_MS 60000
+#endif
+
+inline uint32_t* loop_phase_recent() {
+	static uint32_t recent[LOOP_PHASE_COUNT] = {0};
+	return recent;
+}
+
+// The window just completed, which is what a reader should see. Kept separate
+// from the window being filled so a poll never observes a half-built window.
+inline uint32_t* loop_phase_last_window() {
+	static uint32_t last[LOOP_PHASE_COUNT] = {0};
+	return last;
+}
+
+inline uint32_t& loop_phase_window_started() {
+	static uint32_t started = 0;
+	return started;
+}
+
+// Roll the window if it is due. Called from loop_phase(), never from a getter.
+inline void loop_phase_roll_window(uint32_t now) {
+	if (now - loop_phase_window_started() < LOOP_PHASE_WINDOW_MS) return;
+	loop_phase_window_started() = now;
+	for (uint8_t i = 0; i < LOOP_PHASE_COUNT; i++) {
+		loop_phase_last_window()[i] = loop_phase_recent()[i];
+		loop_phase_recent()[i] = 0;
+	}
+}
+
 inline uint8_t& loop_phase_active() {
 	static uint8_t active = LOOP_PHASE_NONE;
 	return active;
@@ -97,8 +140,10 @@ inline void loop_phase(uint8_t phase) {
 	const uint8_t prev = loop_phase_active();
 	if (prev != LOOP_PHASE_NONE && prev < LOOP_PHASE_COUNT) {
 		const uint32_t took = now - loop_phase_started();
-		if (took > loop_phase_worst()[prev]) loop_phase_worst()[prev] = took;
+		if (took > loop_phase_worst()[prev])  loop_phase_worst()[prev]  = took;
+		if (took > loop_phase_recent()[prev]) loop_phase_recent()[prev] = took;
 	}
+	loop_phase_roll_window(now);
 	loop_phase_active()  = phase;
 	loop_phase_started() = now;
 	loop_phase_current   = phase;   // the breadcrumb, in RTC memory
@@ -132,6 +177,25 @@ inline uint8_t loop_phase_worst_id() {
 	}
 	return worst;
 }
+// Worst phase in the last completed window. Both getters are pure.
+inline uint8_t loop_phase_recent_id() {
+	uint8_t worst = LOOP_PHASE_NONE; uint32_t best = 0;
+	for (uint8_t i = 1; i < LOOP_PHASE_COUNT; i++) {
+		if (loop_phase_last_window()[i] > best) {
+			best = loop_phase_last_window()[i]; worst = i;
+		}
+	}
+	return worst;
+}
+
+inline uint32_t loop_phase_recent_ms() {
+	uint32_t best = 0;
+	for (uint8_t i = 1; i < LOOP_PHASE_COUNT; i++) {
+		if (loop_phase_last_window()[i] > best) best = loop_phase_last_window()[i];
+	}
+	return best;
+}
+
 inline uint32_t loop_phase_worst_ms() {
 	uint32_t best = 0;
 	for (uint8_t i = 1; i < LOOP_PHASE_COUNT; i++) {
@@ -147,5 +211,7 @@ inline void loop_phase_boot(bool was_task_wdt) { (void)was_task_wdt; }
 inline uint8_t  loop_phase_last_wdt()  { return LOOP_PHASE_NONE; }
 inline uint8_t  loop_phase_worst_id()  { return LOOP_PHASE_NONE; }
 inline uint32_t loop_phase_worst_ms()  { return 0; }
+inline uint8_t  loop_phase_recent_id() { return LOOP_PHASE_NONE; }
+inline uint32_t loop_phase_recent_ms() { return 0; }
 
 #endif

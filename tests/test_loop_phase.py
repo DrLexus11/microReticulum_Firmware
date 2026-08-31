@@ -24,13 +24,14 @@ class LoopPhaseTests(unittest.TestCase):
             self.header = handle.read()
         with open(SKETCH, "r", encoding="utf-8") as handle:
             self.sketch = handle.read()
+        # Only the phase enumeration block: everything up to and including
+        # LOOP_PHASE_COUNT. Config constants defined after it -- WINDOW_MS,
+        # MAGIC -- match the name pattern but are not phases.
+        enum_block = self.header[:self.header.index("LOOP_PHASE_COUNT") + 200]
         self.phases = dict(
             (name, int(value))
-            # Decimal only and anchored to end of line: LOOP_PHASE_MAGIC is a hex
-            # literal, and a bare digit match picked up the "0" of its "0x...",
-            # inventing a phase that then failed every check.
             for name, value in re.findall(
-                r"#define\s+(LOOP_PHASE_\w+)\s+([0-9]+)\s*$", self.header, re.M)
+                r"#define\s+(LOOP_PHASE_\w+)\s+([0-9]+)\s*$", enum_block, re.M)
         )
 
     def test_every_phase_has_a_name(self):
@@ -66,6 +67,23 @@ class LoopPhaseTests(unittest.TestCase):
         self.assertIn("RTC_NOINIT_ATTR uint8_t  loop_phase_current", self.header)
         self.assertIn("LOOP_PHASE_MAGIC", self.header,
                       "a magic must guard against reading uninitialised RTC memory")
+
+    def test_metric_getters_are_pure(self):
+        """The provisioning serializer evaluates a metric lambda more than once.
+
+        A getter that cleared the window returned the value on the first call and
+        zero on the second -- and the second is the one serialized. That reported
+        an empty window for an interval containing a 2133ms call, which is worse
+        than no metric at all. The window must roll on a timer instead.
+        """
+        self.assertIn("loop_phase_roll_window", self.header)
+        self.assertIn("LOOP_PHASE_WINDOW_MS", self.header)
+        self.assertNotIn("_and_clear", self.header,
+                         "a metric getter must not have side effects")
+        # The roll happens on the write path, not a read path.
+        roll = self.header[self.header.index("inline void loop_phase(uint8_t phase)"):]
+        roll = roll[:roll.index("\n}")]
+        self.assertIn("loop_phase_roll_window(now)", roll)
 
     def test_the_final_phase_is_closed_before_the_watchdog_is_fed(self):
         """Otherwise the last section of loop() is never measured."""
