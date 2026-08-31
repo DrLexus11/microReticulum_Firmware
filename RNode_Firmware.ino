@@ -3138,10 +3138,15 @@ static void nomadnet_announce_watch() {
   if (millis() - last_announce < due) return;
   last_announce = millis();
   announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
+  // Decide the label BEFORE incrementing: the counter describes announces
+  // already sent, so reading it afterwards labelled the last burst announce
+  // "steady" even though it went out on the burst cadence -- which would send
+  // anyone reading these logs looking for a cadence bug that is not there.
+  const bool in_burst = (burst_sent < NOMADNET_REMESH_BURST_COUNT);
   if (first_done && burst_sent < NOMADNET_REMESH_BURST_COUNT) burst_sent++;
   first_done = true;
   printf("[announce] re-announcing NomadNet site \"%s\" (%s)\n", nomadnet_name,
-         (burst_sent < NOMADNET_REMESH_BURST_COUNT) ? "re-mesh burst" : "steady");
+         in_burst ? "re-mesh burst" : "steady");
   nomadnet_destination.announce(nomadnet_name);
 }
 #endif

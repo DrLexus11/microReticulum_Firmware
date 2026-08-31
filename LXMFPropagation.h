@@ -281,8 +281,14 @@ inline std::string lxmf_store_path() {
 // Peer-received entries get a "_p" suffix. strtoul() stops at the first
 // non-digit, so the received time still parses and pre-existing files without a
 // suffix read as local -- which is what they are.
+// from_peer is REQUIRED, deliberately. It defaulted to false, and two call
+// sites in the /get handler omitted it -- which built the path without the "_p"
+// suffix for a peer-received entry, so the file was never found. A client could
+// neither fetch nor purge anything synced from a peer, which is exactly the
+// traffic peer sync exists to deliver. Every caller has the LXMFEntry in hand,
+// so the compiler can enforce this rather than a filesystem fallback hiding it.
 inline std::string lxmf_entry_path(const RNS::Bytes& transient_id, uint32_t received,
-                                   bool from_peer = false) {
+                                   bool from_peer) {
 	char name[80];
 	snprintf(name, sizeof(name), "/%s_%lu%s",
 	         transient_id.toHex().c_str(), (unsigned long)received,
@@ -878,7 +884,7 @@ inline RNS::Bytes lxmf_message_get_request(
 			const LXMFEntry& e = lxmf_store_index[i];
 			if (e.transient_id != tid || e.destination_hash != client) continue;
 			if (!RNS::Utilities::OS::remove_file(
-			        lxmf_entry_path(e.transient_id, e.received).c_str())) {
+			        lxmf_entry_path(e.transient_id, e.received, e.from_peer).c_str())) {
 				printf("[lxmf] FAILED to purge %s; keeping it in the store index\n",
 				       e.transient_id.toHex().substr(0, 16).c_str());
 				break;
@@ -901,7 +907,7 @@ inline RNS::Bytes lxmf_message_get_request(
 		for (const auto& e : lxmf_store_index) {
 			if (e.transient_id != tid || e.destination_hash != client) continue;
 			RNS::Bytes blob;
-			std::string fp = lxmf_entry_path(e.transient_id, e.received);
+			std::string fp = lxmf_entry_path(e.transient_id, e.received, e.from_peer);
 			if (RNS::Utilities::OS::read_file(fp.c_str(), blob) <= LXMF_STAMP_SIZE) break;
 			size_t next = cumulative + blob.size() + per_message_overhead;
 			if (next > client_limit) break;     // client re-requests the rest

@@ -66,7 +66,7 @@ identifier is versioned so that adding per-sender signatures later is a
 
 Decide it before a unified client ships assuming otherwise.
 
-## 5. Rev 1's UNKNOWN resets are reduced, not explained
+## 5. Rev 1's UNKNOWN resets are reduced, not explained -- **answered, see CarriedIssues.md §1**
 
 Rev 1 restarted repeatedly with `reset reason: UNKNOWN (0)`. Two things are now
 known:
@@ -79,9 +79,18 @@ known:
   minutes of continuous uptime with internal free flat at ~57.5 KB, against a
   previous rate of roughly 15 KB/hour ending in a self-restart.
 
-**Not established:** whether any UNKNOWN resets remain once the observer is
-removed. The way to answer it is the metrics poller -- one long-lived port
-connection, uptime as ground truth -- rather than repeated console attachments.
+**Answered 2026-08-30. They are `TASK_WDT`.** The persisted bootlog from an
+unattended battery run recorded four task-watchdog resets at 540s, 2581s, 240s
+and 11641s. Not brownout (zero across 77 entries) and not memory (21% free at an
+observed reset, against a 98% reboot threshold). The intervals are irregular --
+4 minutes to 3h14m -- so the "roughly every two hours" framing was wrong too.
+
+Environment is ruled out: a `TASK_WDT` also occurred on USB power, at home in
+WiFi range, stationary, with a BLE peer continuously connected.
+
+The full record, including what starves the watchdog (still open) and the next
+diagnostic, is in [`CarriedIssues.md`](CarriedIssues.md) §1. This item is closed;
+track it there.
 
 ## 6. Roster and history bounds are untested at their limits
 

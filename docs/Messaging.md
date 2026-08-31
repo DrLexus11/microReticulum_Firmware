@@ -354,7 +354,7 @@ discovery alone is not dependable in this port.
 | Receive | link packet **and** Resource, both proving or storing as appropriate |
 | Store | LittleFS, capped at 128 messages / 512 KB; peer-received messages capped at half that and evicted before any local message |
 | `/get` | list, download, and purge, all scoped to the requesting identity |
-| `/offer` | accepts, bounded by a peer share of the store; outbound offers not yet implemented |
+| `/offer` | accepts inbound, bounded by a peer share of the store; **and makes outbound offers** -- static peer config (ns115 field 1) with opportunistic announce discovery, peering-key stamp included |
 
 Ownership on `/get` is checked against the delivery destination derived from the
 identity proved on the link, not from anything in the request, so one client
