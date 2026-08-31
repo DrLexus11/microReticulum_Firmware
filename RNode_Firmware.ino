@@ -17,6 +17,7 @@
 #ifdef HAS_RNS
 #include <microReticulum.h>
 #include "Provisioning.h"
+#include "LoopPhase.h"
 #include "RadioPresets.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
@@ -263,6 +264,16 @@ protected:
 
 // CBA RNS
 RNS::Reticulum reticulum(RNS::Type::NONE);
+uint32_t prov_loop_phase_last_wdt() { return (uint32_t)loop_phase_last_wdt(); }
+uint32_t prov_loop_phase_worst_id() { return (uint32_t)loop_phase_worst_id(); }
+uint32_t prov_loop_phase_worst_ms() { return loop_phase_worst_ms(); }
+#if defined(ESP32)
+// Storage for the loop-phase breadcrumb declared in LoopPhase.h. NOINIT so it
+// survives a reset -- that is the whole point; see the header.
+RTC_NOINIT_ATTR uint32_t loop_phase_magic;
+RTC_NOINIT_ATTR uint8_t  loop_phase_current;
+RTC_NOINIT_ATTR uint8_t  loop_phase_at_reset;
+#endif
 RNS::Interface lora_interface(RNS::Type::NONE);
 #if defined(UDP_TRANSPORT)
 RNS::Interface udp_interface(RNS::Type::NONE);
@@ -672,6 +683,10 @@ void setup() {
              rr, (int)esp_reset_reason(), (unsigned long)boot_prev_uptime);
     }
     boot_reset_reason = rr;
+    // Read the breadcrumb the previous run left behind. Only meaningful when
+    // that run ended in a task watchdog; after a power loss the RTC value is
+    // uninitialised and says nothing.
+    loop_phase_boot(esp_reset_reason() == ESP_RST_TASK_WDT);
   }
 #endif
 #ifdef HAS_RNS
@@ -1884,6 +1899,7 @@ void stopRadio() {
   // (e.g. lora_receive() at the tail of flush_queue) asserts on a null
   // spiChip.
   #if defined(LORA_TRANSPORT)
+  loop_phase(LOOP_PHASE_RADIO_ON);
   if (radio_online) {
     printf("[radio] stopRadio: shutting down a RUNNING radio at %lums\n",
            (unsigned long)millis());
@@ -3540,12 +3556,15 @@ static void heap_watch() {
 
 void loop() {
 #if defined(ESP32) && defined(HAS_RNS)
+  loop_phase(LOOP_PHASE_HEAP);
   heap_watch();
 #endif
 #if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+  loop_phase(LOOP_PHASE_NOMAD_ANN);
   nomadnet_announce_watch();
 #endif
 #if defined(HAS_RNS) && defined(RRC_HUB)
+  loop_phase(LOOP_PHASE_RRC);
   rrc_hub_loop();
 #endif
 #if defined(BLE_PEER_TRANSPORT)
@@ -3558,14 +3577,20 @@ void loop() {
       SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
     ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
   }
+  loop_phase(LOOP_PHASE_BLE_PEER);
   if (ble_peer_impl != nullptr) ble_peer_impl->loop();
 #endif
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+  loop_phase(LOOP_PHASE_RADIO_WD);
   radio_rx_watchdog();
+  loop_phase(LOOP_PHASE_LORA_CFG);
   lora_config_consistency_watch();
+  loop_phase(LOOP_PHASE_RADIO_CMT);
   radio_commit_confirm_watch();
 #if defined(LXMF_PROPAGATION_NODE)
+  loop_phase(LOOP_PHASE_LXMF_ANN);
   lxmf_propagation_announce_watch();
+  loop_phase(LOOP_PHASE_LXMF_SYNC);
   lxmf_peer_sync_watch();
 #endif
 #endif
@@ -3583,6 +3608,7 @@ void loop() {
 
 #ifdef HAS_RNS
   // CBA
+  loop_phase(LOOP_PHASE_RETICULUM);
   if (reticulum) {
     try {
       reticulum.loop();
@@ -3642,6 +3668,7 @@ void loop() {
     #endif
 
       sample_loop_stack();
+  loop_phase(LOOP_PHASE_TX_QUEUE);
   tx_queue_handler();
     check_modem_status();
     #if MCU_VARIANT == MCU_NATIVE
@@ -3678,6 +3705,7 @@ void loop() {
     ws_console::service();
   #endif
 
+  loop_phase(LOOP_PHASE_PERIPH);
   #if HAS_DISPLAY
     if (disp_ready && !display_updating) update_display();
   #endif
@@ -3700,11 +3728,15 @@ void loop() {
 
   // Feed WDT
 #if MCU_VARIANT == MCU_ESP32
+  // Close the final phase before feeding the watchdog, so the last
+  // section of the loop is measured like every other.
+  loop_phase(LOOP_PHASE_NONE);
   esp_task_wdt_reset();
 #elif MCU_VARIANT == MCU_NRF52
   NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 #endif
 
+  loop_phase(LOOP_PHASE_MEMORY);
   if (memory_low) {
     #if PLATFORM == PLATFORM_ESP32
       if (esp_get_free_heap_size() < 8192) {

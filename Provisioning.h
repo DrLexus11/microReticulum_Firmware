@@ -133,6 +133,11 @@
 #define PROV_METRICS_DEV_SYNCERR    23
 #define PROV_METRICS_DEV_SYNCRSZ    24
 #define PROV_METRICS_DEV_SYNCOUT    25
+// Which part of loop() was running when the task watchdog last fired, and the
+// slowest phase since boot. See LoopPhase.h and CarriedIssues.md §1.
+#define PROV_METRICS_DEV_WDTPHASE   26
+#define PROV_METRICS_DEV_SLOWPHASE  27
+#define PROV_METRICS_DEV_SLOWMS     28
 
 #define PROV_METRICS_LORA_FREQ  1
 #define PROV_METRICS_LORA_BW    2

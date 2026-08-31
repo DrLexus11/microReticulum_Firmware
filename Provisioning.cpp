@@ -74,6 +74,14 @@ uint32_t ble_peer_frag_start();
 // these there removed them from exactly the board that needs them. Keyed on
 // LXMF_PROPAGATION_NODE, a build flag this file can see -- the note above says
 // plainly that guarding on a macro it cannot see has already lost fields twice.
+
+// Loop-phase diagnostics. No guard: these are platform-generic and every board
+// has a loop() worth measuring. Declaring them inside the Bluetooth guard
+// removed them from Rev 2, which is where an unexplained watchdog would be
+// hardest to chase.
+uint32_t prov_loop_phase_last_wdt();
+uint32_t prov_loop_phase_worst_id();
+uint32_t prov_loop_phase_worst_ms();
 #if defined(LXMF_PROPAGATION_NODE)
 extern char lxmf_static_peer[33];
 uint32_t lxmf_peer_count();
@@ -871,6 +879,12 @@ static void register_provisioning_namespaces() {
     // Boots since the rail was last lost. A board restarting itself climbs
     // this; a board that was unplugged starts over. Polling it is how a
     // restart between two samples becomes visible at all.
+    .metric_int("WDT Phase", PROV_METRICS_DEV_WDTPHASE,
+      []() { return static_cast<fint_t>(prov_loop_phase_last_wdt()); })
+    .metric_int("Slowest Phase", PROV_METRICS_DEV_SLOWPHASE,
+      []() { return static_cast<fint_t>(prov_loop_phase_worst_id()); })
+    .metric_int("Slowest Phase ms", PROV_METRICS_DEV_SLOWMS,
+      []() { return static_cast<fint_t>(prov_loop_phase_worst_ms()); })
     .metric_int("Boot Count", PROV_METRICS_DEV_BOOTS,
       []() { return (fint_t)boot_count; })
 #endif
