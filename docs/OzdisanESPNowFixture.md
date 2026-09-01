@@ -1,6 +1,7 @@
 # Özdisan ESP-NOW Acceptance Fixture
 
-Status: firmware target implemented and host-built; hardware acceptance pending.
+Status: radio-layer hardware acceptance passed on 2026-08-31; the NomadNet
+link/request check remains open as a separate higher-layer issue.
 
 ## Hardware identity
 
@@ -89,3 +90,48 @@ Acceptance evidence should show:
 The NomadNet `/page/espnow.mu` page is the primary on-mesh diagnostic surface.
 On this fixture, `Local PHY` correctly reports `none`; a peer's discovery can
 still report its LoRa PHY hash.
+
+## Hardware acceptance record
+
+The attached fixture was identified as an ESP32-D0WDQ6 revision 1.0 behind a
+CP2102 bridge (MAC `40:91:51:9b:2d:d0`). Rev1 was the infrastructure-connected
+responder (MAC `80:b5:4e:f4:c7:a4`). The home AP changed between channels 8,
+9, and 10 during testing; each fresh recovery sweep found and pinned Rev1 on
+the channel it was actually using.
+
+An open fixture correctly refused a protected Rev1 responder. After enrolling
+the fixture in the same published lab IFAC vector, the nonce/proof handshake
+succeeded. That first success uncovered a wraparound bug: the loop timestamp
+was captured before inbound handling, while the proof handler recorded a
+slightly newer `last_seen`; unsigned subtraction made the peer appear almost
+2^32 milliseconds old and immediately selected SoftAP. Refreshing the time
+snapshot after draining inbound frames fixes recovery, peer, and reassembly
+expiry together.
+
+The final retained-handle run started both ESP-NOW counters from zero, pinned
+the fixture on channel 9, and forced normal Reticulum traffic through the
+post-boot announce schedule. The resulting counters were:
+
+| Endpoint | Packets in | Packets out | IFAC accepted | Accepted from selected | Recovery |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Özdisan | 1 | 1 | 1 | 1 | pinned, 0 failures |
+| Rev1 | 1 | 3 | 1 | n/a | strict responder, 0 send failures |
+
+This proves bidirectional, IFAC-protected Reticulum packet exchange while the
+fixture has no configured infrastructure SSID and no LoRa hardware. Separate
+negative runs also proved bounded no-peer fallback to SoftAP.
+
+The next-morning check found both RAD IPs reachable with no ping loss and both
+TCP RNS servers open. A fresh path request resolved the fixture's NomadNet
+destination three hops away through wall-powered Rev2, consistent with the
+intended Rev2/LoRa/Rev1/ESP-NOW topology. An encrypted NomadNet link still
+closed during establishment (`status=4`), however, so an application-level
+page request or LXMF round trip is not claimed as passed. Track that alongside
+the existing direct-RNode link/identity instability rather than weakening the
+radio-layer acceptance above.
+
+The fixture also boots more slowly than the four-second post-upload firmware
+hash delay used by the RAD boards. A hash write at that point is lost and the
+next boot reports `hw_ready=0`. Its upload/fixhash path now waits 20 seconds
+before writing, and hardware was restored and verified with `hw_ready=1`, TNC
+mode, and transport enabled.

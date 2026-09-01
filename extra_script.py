@@ -205,12 +205,17 @@ def device_set_firmware_hash(firmware_hash, env, reboot_after=False):
     import serial
 
     port_path = env.subst("$UPLOAD_PORT")
+    variant = env.GetProjectOption("custom_variant")
     frame = firmware_hash_kiss_frame(firmware_hash)
     print("Writing firmware hash directly over KISS...")
     with serial.Serial(port_path, 115200, timeout=0.1) as port:
         # Opening native USB can reset an ESP32-S3. Drain startup output and
-        # wait until setup() has reached the serial command loop.
-        ready_at = time.monotonic() + 4.0
+        # wait until setup() has reached the serial command loop. The original
+        # ESP32 Özdisan fixture takes materially longer while loading its
+        # on-device RNS state; a four-second write is silently discarded and
+        # the next boot then fails firmware validation with hw_ready=0.
+        boot_wait = 20.0 if variant == "ozdisan_esp32_espnow" else 4.0
+        ready_at = time.monotonic() + boot_wait
         while time.monotonic() < ready_at:
             port.read(4096)
         port.write(frame)

@@ -130,7 +130,7 @@ public:
 	void detach() override { stop(); }
 
 	void loop() override {
-		const uint32_t now = millis();
+		uint32_t now = millis();
 		wifi_interface_t desired;
 		if (!active_wifi_interface(desired)) {
 			if (_started) stop();
@@ -149,6 +149,11 @@ public:
 		}
 
 		drain_inbound();
+		// Inbound handlers timestamp newly seen peers and fragments with millis().
+		// Refresh the loop snapshot afterwards. Otherwise a handler can record a
+		// timestamp a few milliseconds newer than `now`, and the unsigned elapsed
+		// checks below interpret it as almost 2^32 milliseconds old.
+		now = millis();
 		expire_state(now);
 		service_send_completion(now);
 		if (!_started || _send_waiting || _send_done) return;
@@ -673,6 +678,8 @@ private:
 		portEXIT_CRITICAL(&_send_mux);
 
 		if (!done && _send_waiting && (uint32_t)(now - _send_started) > SEND_TIMEOUT_MS) {
+			printf("[espnow] send completion timeout (kind=%u, recovery=%s)\n",
+			       (unsigned)_send_kind, recovery_state_name());
 			_send_failures++;
 			_send_waiting = false;
 			_send_kind = SEND_NONE;

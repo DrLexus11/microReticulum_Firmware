@@ -120,6 +120,16 @@ class ESPNowArchitectureTests(unittest.TestCase):
         self.assertIn("slot->next_fragment == slot->fragment_count", text)
         self.assertIn("handle_incoming(packet);", text)
 
+    def test_expiry_snapshot_is_refreshed_after_inbound_timestamps(self):
+        text = source(INTERFACE)
+        loop = text[text.index("void loop() override"):]
+        loop = loop[:loop.index("bool started() const")]
+        drained = loop.index("drain_inbound();")
+        refreshed = loop.index("now = millis();", drained)
+        expired = loop.index("expire_state(now);", drained)
+        self.assertLess(drained, refreshed)
+        self.assertLess(refreshed, expired)
+
     def test_link_layer_does_not_forward_or_route(self):
         text = source(INTERFACE)
         self.assertNotIn("Transport::outbound", text)
@@ -309,6 +319,14 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         target = target[:target.index("# Add custom targets")]
         self.assertIn("run_rnodeconf(env", target)
         self.assertNotIn('f"rnodeconf ', target)
+
+    def test_hash_writer_waits_for_slow_ozdisan_boot(self):
+        script = source(os.path.join(ROOT, "extra_script.py"))
+        writer = script[script.index("def device_set_firmware_hash"):]
+        writer = writer[:writer.index("def target_fixhash")]
+        self.assertIn('variant == "ozdisan_esp32_espnow"', writer)
+        self.assertIn("boot_wait = 20.0", writer)
+        self.assertIn("time.monotonic() + boot_wait", writer)
 
 
 if __name__ == "__main__":
