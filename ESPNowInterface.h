@@ -315,7 +315,7 @@ private:
 	static constexpr uint8_t RX_QUEUE_DEPTH = 9;  // ring capacity is depth - 1
 	static constexpr uint8_t TX_QUEUE_DEPTH = 5;
 	static constexpr uint8_t RX_DRAIN_PER_LOOP = 4;
-	static constexpr uint8_t SEND_RETRIES = 1;
+	static constexpr uint8_t SEND_RETRIES = 3;
 	static constexpr uint32_t SEND_TIMEOUT_MS = 1000;
 	static constexpr uint32_t START_RETRY_MS = 5000;
 	static constexpr uint32_t CHANNEL_CHECK_MS = 1000;
@@ -712,7 +712,10 @@ private:
 		_tx_fragment++;
 		TxPacket& packet = _tx_queue[_tx_tail];
 		const uint8_t count = fragment_count(packet.length);
-		if (_tx_fragment >= count) {
+		// The receiver reassembles strictly in order, so once a fragment is lost
+		// the rest of this packet can never be reassembled. Drop them instead of
+		// spending airtime the retries of the next packet could use.
+		if (_tx_fragment >= count || _tx_packet_failed) {
 			if (_tx_packet_failed) _tx_dropped++;
 			else _packets_out++;
 			_tx_tail = (uint8_t)((_tx_tail + 1u) % TX_QUEUE_DEPTH);
@@ -900,12 +903,56 @@ private:
 		begin_send(SEND_RECOVERY_REPLY, wire, sizeof(wire), now);
 	}
 
+	// ESP-NOW broadcast frames are never acknowledged by the 802.11 MAC, so the
+	// send callback reports SUCCESS as soon as the frame is queued to the radio
+	// and a lost fragment is invisible. That makes SEND_RETRIES dead code and
+	// leaves fragmented packets with no recovery path: the reassembler below is
+	// strictly sequential, so dropping one fragment of a 3-fragment packet
+	// discards the whole packet. Unicast frames *are* acknowledged and are
+	// retried in hardware, so send data to a specific peer whenever we know one.
+	// Discovery/solicit/recovery traffic stays broadcast - it has to reach peers
+	// we have not learned yet.
+	bool ensure_unicast_peer(const uint8_t* mac) {
+		if (esp_now_is_peer_exist(mac)) return true;
+		esp_now_peer_info_t peer = {};
+		memcpy(peer.peer_addr, mac, 6);
+		peer.channel = 0;  // follow the interface's current WiFi channel
+		peer.ifidx = _wifi_interface;
+		peer.encrypt = false;
+		const esp_err_t err = esp_now_add_peer(&peer);
+		return (err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST);
+	}
+
+	// Returns the peer to unicast data to, or nullptr to fall back to broadcast.
+	const uint8_t* unicast_target() {
+		if (_recovery_state == RECOVERY_PINNED) {
+			static const uint8_t zero[6] = {0};
+			if (memcmp(_recovery_peer_mac, zero, 6) != 0) return _recovery_peer_mac;
+		}
+		// Otherwise only unicast when there is exactly one known peer. With
+		// several peers a broadcast is still the only way to reach all of them
+		// in one send, so accept the lower reliability rather than silently
+		// talking to just one of them.
+		const uint8_t* found = nullptr;
+		for (uint8_t i = 0; i < MAX_PEERS; ++i) {
+			if (!_peers[i].used) continue;
+			if (found) return nullptr;
+			found = _peers[i].mac;
+		}
+		return found;
+	}
+
 	void begin_send(SendKind kind, const uint8_t* data, size_t length, uint32_t now) {
 		static const uint8_t broadcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 		_send_kind = kind;
 		_send_waiting = true;
 		_send_started = now;
-		const esp_err_t err = esp_now_send(broadcast_mac, data, length);
+		const uint8_t* target = broadcast_mac;
+		if (kind == SEND_DATA) {
+			const uint8_t* peer = unicast_target();
+			if (peer && ensure_unicast_peer(peer)) target = peer;
+		}
+		const esp_err_t err = esp_now_send(target, data, length);
 		if (err != ESP_OK) {
 			_send_waiting = false;
 			portENTER_CRITICAL(&_send_mux);
