@@ -25,6 +25,7 @@ The local PlatformIO environment is `ozdisan-esp32-espnow`. It uses board ID
 `BOARD_OZDISAN_ESP32`, declares no LoRa hardware, enables ESP-NOW and the TCP
 server, and gives the 4 MB flash a no-OTA partition layout. The target uses
 `PRODUCT_HMBRW`, `MODEL_FE`, hardware revision 3 for its signed device record.
+Its device, fallback-AP, DHCP-host and default NomadNet label is `OZD-ARD-01`.
 
 ## Intended boot behavior
 
@@ -38,7 +39,11 @@ It visits the configured rendezvous channel first and then sweeps the legal
 2.4 GHz channels. A valid nonce/IFAC proof pins it to the responder's channel.
 At that point Reticulum traffic can cross ESP-NOW even though the fixture has
 no infrastructure WiFi and no LoRa. A RAD peer can forward that traffic over
-its own LoRa interface.
+its own LoRa interface. Because this fixture has no configured SSID, it does
+not abandon a healthy pinned peer for the generic periodic station retry. It
+stays on the selected channel while discovery from the already proven MAC or
+accepted Reticulum traffic keeps that peer alive. Loss of the selected peer
+for the peer timeout ends the pin and allows the normal recovery/fallback flow.
 
 If no proven peer is found within the scan budget, the existing SoftAP fallback
 still runs. This is intentional: the fixture remains locally recoverable rather
@@ -61,6 +66,10 @@ pio run -e ozdisan-esp32-espnow -t upload --upload-port /dev/ttyUSBX
 pio run -e ozdisan-esp32-espnow -t provision --upload-port /dev/ttyUSBX
 pio run -e ozdisan-esp32-espnow -t fixhash --upload-port /dev/ttyUSBX
 ```
+
+This target uploads at 115200 baud. Its CP2102 connection proved unreliable at
+460800 through the Steam Deck's shared hub and once disconnected during an app
+partition write; the conservative rate completed and verified the same image.
 
 Do not guess the port when Rev1 is attached at the same time. Match USB VID/PID,
 serial number, and disconnect/reconnect behavior before writing. Provisioning

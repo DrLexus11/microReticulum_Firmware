@@ -573,9 +573,12 @@ void wifi_update_status() {
 
 #if defined(ESPNOW_TRANSPORT)
     if (espnow_recovery_pinned()) {
-      // A proven peer is keeping this orphan attached to Reticulum. Periodic
-      // station retries still win eventually, just as they do from SoftAP.
-      if (millis() - espnow_recovery_pinned_since() >= wifi_ap_retry_sta_ms) {
+      // A proven peer is keeping this orphan attached to Reticulum. Only a
+      // node with an actual home SSID should periodically leave that peer to
+      // retry infrastructure WiFi. A deliberately unconfigured recovery node
+      // (such as the Ozdisan fixture) remains pinned while the peer is alive.
+      if (wr_ssid[0] != 0x00 &&
+          millis() - espnow_recovery_pinned_since() >= wifi_ap_retry_sta_ms) {
         printf("[WiFi] ESP-NOW recovery interval elapsed -- retrying station network \"%s\"\n",
                wr_ssid);
         espnow_reset_recovery();

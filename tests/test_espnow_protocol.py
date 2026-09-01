@@ -248,6 +248,7 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         target = text[text.index("[env:ozdisan-esp32-espnow]"):]
         target = target[:target.index("\n[env:", 1)]
         self.assertIn("board = esp32doit-devkit-v1", target)
+        self.assertIn("upload_speed = 115200", target)
         self.assertIn("-DBOARD_MODEL=BOARD_OZDISAN_ESP32", target)
         self.assertIn("-DESPNOW_TRANSPORT", target)
         self.assertIn("-DTCP_SERVER_TRANSPORT", target)
@@ -283,6 +284,25 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("const bool required_hardware_present = true", firmware)
         self.assertIn("const bool node_config_ready = true", firmware)
         self.assertIn('[lora] not fitted (ESP-NOW-only target)', firmware)
+
+    def test_fixture_has_stable_device_and_nomadnet_name(self):
+        firmware = source(FIRMWARE)
+        self.assertGreaterEqual(
+            firmware.count(
+                'snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01")'),
+            1)
+        self.assertGreaterEqual(
+            firmware.count(
+                'snprintf(nomadnet_name, sizeof(nomadnet_name), "OZD-ARD-01")'),
+            1)
+
+    def test_unconfigured_pinned_fixture_does_not_retry_blank_station(self):
+        remote = source(REMOTE)
+        pinned = remote[remote.index("if (espnow_recovery_pinned())"):
+                        remote.index("if (fallback_due", remote.index(
+                            "if (espnow_recovery_pinned())"))]
+        self.assertIn("wr_ssid[0] != 0x00", pinned)
+        self.assertIn("espnow_recovery_pinned_since()", pinned)
 
     def test_first_recovery_request_can_start_interface_immediately(self):
         text = source(INTERFACE)

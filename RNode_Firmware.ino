@@ -1073,6 +1073,10 @@ void setup() {
       if (EEPROM.read(eeprom_addr(ADDR_CONF_WIFI)) == 0xFF) {
         eeprom_update(eeprom_addr(ADDR_CONF_WIFI), WR_WIFI_STA);
       }
+      // This fixture has no Bluetooth stack to derive bt_devname from, but the
+      // same buffer also names its fallback AP and DHCP host. Give lab boards
+      // a stable, unmistakable identity instead of leaving that name empty.
+      snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01");
     #endif
 
     #if HAS_BLUETOOTH || HAS_BLE == true
@@ -1406,7 +1410,11 @@ void setup() {
 
 #ifdef URTN_STATS_PAGES
       // Provisioning default
+#if BOARD_MODEL == BOARD_OZDISAN_ESP32
+      snprintf(nomadnet_name, sizeof(nomadnet_name), "OZD-ARD-01");
+#else
       snprintf(nomadnet_name, sizeof(nomadnet_name), "microReticulum Node [%s]", device_uid_str);
+#endif
 #endif
 
 #ifdef HAS_PROVISIONING
