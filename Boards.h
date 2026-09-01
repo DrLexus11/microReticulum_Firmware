@@ -626,8 +626,14 @@
       #define HAS_SD false
       #define HAS_EEPROM true
       #define HAS_WIFI true
+      // ESP32-WROOM-32 has both radios. Classic BT stays off -- Bluedroid's
+      // BR/EDR half is the expensive one in flash, and nothing here uses it.
+      // BLE is on: a Columba client is the only non-mesh way into a board with
+      // no LoRa fitted, so it is what makes an outside-to-inside test possible.
+      // Bluedroid costs ~820 KB, which overflows the 2 MB app slot of
+      // no_ota.csv, hence boards/ozdisan_esp32.csv. The two must move together.
       #define HAS_BLUETOOTH false
-      #define HAS_BLE false
+      #define HAS_BLE true
       #define I2C_SDA 5
       #define I2C_SCL 4
 
