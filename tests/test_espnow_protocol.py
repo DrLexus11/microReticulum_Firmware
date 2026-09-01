@@ -347,6 +347,7 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn('variant == "ozdisan_esp32_espnow"', writer)
         self.assertIn("boot_wait = 20.0", writer)
         self.assertIn("time.monotonic() + boot_wait", writer)
+        self.assertNotIn("firmware_reset_kiss_frame()", writer)
 
 
 if __name__ == "__main__":

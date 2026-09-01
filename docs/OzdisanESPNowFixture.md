@@ -70,6 +70,11 @@ pio run -e ozdisan-esp32-espnow -t fixhash --upload-port /dev/ttyUSBX
 This target uploads at 115200 baud. Its CP2102 connection proved unreliable at
 460800 through the Steam Deck's shared hub and once disconnected during an app
 partition write; the conservative rate completed and verified the same image.
+Firmware-hash persistence also stages all 32 bytes before one ESP32 EEPROM
+commit. Per-byte commits produced a recoverable torn hash on this fixture when
+a reset preserved 26 bytes of the new digest and six from the previous image.
+The device resets itself after accepting a replacement hash; the uploader does
+not queue a redundant second reset during that new boot.
 
 Do not guess the port when Rev1 is attached at the same time. Match USB VID/PID,
 serial number, and disconnect/reconnect behavior before writing. Provisioning

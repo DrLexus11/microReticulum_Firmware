@@ -8,7 +8,6 @@ import platform as platformlib
 from firmware_image import (
     esp_image_sha256,
     firmware_hash_kiss_frame,
-    firmware_reset_kiss_frame,
 )
 
 #
@@ -201,7 +200,7 @@ def firmware_hash_write_notice(hex_hash, env):
           % (env.subst("$PIOENV"), port_path))
     print("")
 
-def device_set_firmware_hash(firmware_hash, env, reboot_after=False):
+def device_set_firmware_hash(firmware_hash, env):
     import serial
 
     port_path = env.subst("$UPLOAD_PORT")
@@ -220,12 +219,13 @@ def device_set_firmware_hash(firmware_hash, env, reboot_after=False):
             port.read(4096)
         port.write(frame)
         port.flush()
+        # A running image that needs a new target hash is currently invalid.
+        # device_save_firmware_hash() commits it and calls hard_reset() itself.
+        # Sending another reset a second later leaves that command buffered
+        # during the new boot and produces a confusing second reboot once the
+        # serial loop starts. A valid image receiving the same hash needs no
+        # reboot, so the host must not reset in either case.
         time.sleep(1)
-        if reboot_after:
-            print("Rebooting device so device_init() validates the new hash...")
-            port.write(firmware_reset_kiss_frame())
-            port.flush()
-            time.sleep(0.2)
 
 def target_fixhash(target, source, env):
     """Write the built firmware's hash to a board that is already running.
@@ -249,8 +249,8 @@ def target_fixhash(target, source, env):
     print("      sources changed since the flash, re-flash rather than running this,")
     print("      or the stored hash will not match the running image and hw_ready")
     print("      will stay 0 for a different reason.")
-    device_set_firmware_hash(calc_hash, env, reboot_after=True)
-    print("Hash written and reboot requested; device_init() will re-validate it.")
+    device_set_firmware_hash(calc_hash, env)
+    print("Hash written; an invalid running image resets itself after commit.")
 
 def device_provision(env):
     # Device provision
@@ -330,16 +330,7 @@ def firmware_hash(source, env):
                 print(f"Unable to calculate firmware hash: {error}")
                 return
             print("firmware_hash:", calc_hash.hex())
-            variant = env.GetProjectOption("custom_variant")
-            device_set_firmware_hash(
-                calc_hash,
-                env,
-                reboot_after=variant in (
-                    "impr_rad01_rev1",
-                    "impr_rad01_rev2",
-                    "ozdisan_esp32_espnow",
-                ),
-            )
+            device_set_firmware_hash(calc_hash, env)
         else:
             calc_hash = hashlib.sha256(firmware_data[0:-32]).digest()
             part_hash = firmware_data[-32:]
