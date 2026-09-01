@@ -3230,6 +3230,9 @@ static void nomadnet_announce_watch() {
   static uint32_t announce_jitter = 0;
   static bool armed = false;
   static bool first_done = false;
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  static bool recovery_attach_announced = false;
+#endif
   if (!nomadnet_enabled || !nomadnet_destination) return;
   // Jitter is rolled when arming as well as after each announce: the very
   // first announce is the one most likely to collide fleet-wide, because a
@@ -3239,6 +3242,19 @@ static void nomadnet_announce_watch() {
     announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
     return;
   }
+  // The startup announce can precede an orphan's channel sweep, so it is sent
+  // where no peer can hear it. Treat the first proven ESP-NOW attachment after
+  // boot as the first scheduled announce: publish immediately on the selected
+  // channel, then continue the normal bounded re-mesh burst. Later re-pins use
+  // that cadence instead of spending another rate-limit allowance.
+  bool recovery_attach = false;
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  const uint32_t recovery_successes = espnow_recovery_successes();
+  if (!recovery_attach_announced && recovery_successes > 0) {
+    recovery_attach = espnow_recovery_pinned();
+    if (recovery_attach) recovery_attach_announced = true;
+  }
+#endif
   // The startup announce in setup() is NOT sufficient. It fires at ~t+4s, about
   // a second before DHCP completes and the UDP socket is rebound to a real
   // address (see the rebind in Remote.h), so on a fast boot it is emitted into a
@@ -3256,7 +3272,7 @@ static void nomadnet_announce_watch() {
   else if (burst_sent < NOMADNET_REMESH_BURST_COUNT) due = NOMADNET_REMESH_BURST_MS;
   else                                              due = NOMADNET_ANNOUNCE_INTERVAL_MS;
   due += announce_jitter;
-  if (millis() - last_announce < due) return;
+  if (!recovery_attach && millis() - last_announce < due) return;
   last_announce = millis();
   announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
   // Decide the label BEFORE incrementing: the counter describes announces
@@ -3267,7 +3283,8 @@ static void nomadnet_announce_watch() {
   if (first_done && burst_sent < NOMADNET_REMESH_BURST_COUNT) burst_sent++;
   first_done = true;
   printf("[announce] re-announcing NomadNet site \"%s\" (%s)\n", nomadnet_name,
-         in_burst ? "re-mesh burst" : "steady");
+         recovery_attach ? "ESP-NOW attach" :
+         (in_burst ? "re-mesh burst" : "steady"));
   nomadnet_destination.announce(nomadnet_name);
 }
 #endif

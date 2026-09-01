@@ -304,6 +304,31 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("wr_ssid[0] != 0x00", pinned)
         self.assertIn("espnow_recovery_pinned_since()", pinned)
 
+    def test_unconfigured_fixture_rescans_after_selected_peer_is_lost(self):
+        remote = source(REMOTE)
+        recovery = remote[remote.index("if (fallback_due &&"):]
+        recovery = recovery[:recovery.index("// A completed failed scan")]
+        retry = recovery.index("espnow_recovery_failed()")
+        blank_ssid = recovery.index("wr_ssid[0] == 0x00", retry)
+        clear_attempt = recovery.index("wifi_espnow_scan_attempted = false", blank_ssid)
+        request = recovery.index("espnow_request_recovery_scan", clear_attempt)
+        self.assertLess(retry, blank_ssid)
+        self.assertLess(blank_ssid, clear_attempt)
+        self.assertLess(clear_attempt, request)
+
+    def test_new_recovery_attachment_immediately_announces_nomadnet_site(self):
+        firmware = source(FIRMWARE)
+        watch = firmware[firmware.index("static void nomadnet_announce_watch()") :]
+        watch = watch[:watch.index("// Recover a wedged modem")]
+        success = watch.index("espnow_recovery_successes()")
+        pinned = watch.index("espnow_recovery_pinned()", success)
+        bypass = watch.index("if (!recovery_attach &&", pinned)
+        announce = watch.index("nomadnet_destination.announce", bypass)
+        self.assertLess(success, pinned)
+        self.assertLess(pinned, bypass)
+        self.assertLess(bypass, announce)
+        self.assertIn('recovery_attach ? "ESP-NOW attach"', watch)
+
     def test_first_recovery_request_can_start_interface_immediately(self):
         text = source(INTERFACE)
         request = text[text.index("bool request_recovery_scan"):]

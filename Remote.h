@@ -592,6 +592,15 @@ void wifi_update_status() {
     if (fallback_due &&
         wifi_espnow_recovery_mode == WIFI_ESPNOW_RECOVERY_BEFORE_SOFTAP) {
       if (espnow_recovery_active()) return;
+      // A deliberately unconfigured orphan has no infrastructure network to
+      // return to, and its own AP would strand it on a fixed local channel.
+      // If a proven peer disappears (for example because the peer's home AP
+      // changed channel), resume the sweep instead of making that loss
+      // permanent. Configured stations retain the one-shot recovery attempt
+      // and established SoftAP fallback behaviour below.
+      if (espnow_recovery_failed() && wr_ssid[0] == 0x00) {
+        wifi_espnow_scan_attempted = false;
+      }
       if (!wifi_espnow_scan_attempted) {
         wifi_espnow_scan_attempted = true;
         if (espnow_request_recovery_scan(wifi_espnow_scan_budget_ms,
