@@ -21,6 +21,7 @@ import unittest
 
 HEADER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "BLEPeerProtocol.h")
+INTERFACE = os.path.join(os.path.dirname(HEADER), "BLEPeerInterface.h")
 REFERENCE = os.environ.get("BLE_REFERENCE", "")
 
 # The Kotlin client, checked out beside this repo. Overridable, and skipped
@@ -44,6 +45,11 @@ def firmware_defines():
             except ValueError:
                 pass
     return out
+
+
+def interface_source():
+    with open(INTERFACE, "r", encoding="utf-8") as handle:
+        return handle.read()
 
 
 class WireFormatTests(unittest.TestCase):
@@ -72,8 +78,7 @@ class WireFormatTests(unittest.TestCase):
         """
         self.assertEqual(b"\x01\x00\x00\x00\x01",
                          struct.pack("!BHH", self.d["BLE_PEER_TYPE_START"], 0, 1))
-        source = open(os.path.join(os.path.dirname(HEADER),
-                                   "BLEPeerInterface.h"), encoding="utf-8").read()
+        source = interface_source()
         emit = source[source.index("const uint8_t type = "):]
         emit = emit[:emit.index(";")]
         self.assertNotIn("BLE_PEER_TYPE_LONE", emit,
@@ -127,8 +132,7 @@ class WireFormatTests(unittest.TestCase):
                          self.d["BLE_PEER_HEADER_SIZE"] + 11,
                          "16 bytes is also a valid fragment, hence the state gate")
 
-        source = open(os.path.join(os.path.dirname(HEADER),
-                                   "BLEPeerInterface.h"), encoding="utf-8").read()
+        source = interface_source()
         self.assertIn("_peer_identity.size() == 0", source,
                       "the 16-byte check must be gated on not knowing the identity")
         # Identity goes central -> peripheral on RX. It is never a TX notify:
@@ -160,8 +164,7 @@ class WireFormatTests(unittest.TestCase):
         """
         self.assertIn("BLE_PEER_BITRATE", self.d)
         self.assertGreater(self.d["BLE_PEER_BITRATE"], 0)
-        source = open(os.path.join(os.path.dirname(HEADER),
-                                   "BLEPeerInterface.h"), encoding="utf-8").read()
+        source = interface_source()
         self.assertIn("_bitrate = BLE_PEER_BITRATE", source)
 
     def test_keepalive_is_inside_the_android_idle_timeout(self):
@@ -210,6 +213,86 @@ class AgainstColumbaClientTests(unittest.TestCase):
     def test_att_header_overhead_matches(self):
         """Both sides must subtract the same 3 bytes, or fragments overrun."""
         self.assertEqual(self.kotlin_const("ATT_HEADER_SIZE"), 3)
+
+
+class DeckClientTests(unittest.TestCase):
+    """The deck-side client in tools/ble must agree with the firmware header.
+
+    That client stands in for Columba during acceptance, so a disagreement here
+    does not merely break a tool -- it produces a passing test run against a
+    client that is wrong in the same way the phone is not, which is worse than
+    no test at all. The constants are duplicated in Python because the interface
+    has to load standalone inside RNS; these assertions are what keeps the
+    duplicate honest.
+    """
+
+    def setUp(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "tools", "ble", "BLEPeerClientInterface.py")
+        if not os.path.exists(path):
+            self.skipTest("deck-side client not present")
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        # Executed with the bleak import stripped: the constants and the two
+        # sizing helpers are pure, and requiring a BLE stack to check arithmetic
+        # would mean this only runs on a machine with a radio.
+        source = source.replace("from bleak import BleakClient, BleakScanner", "")
+        source = source.replace("import RNS", "RNS = None")
+        namespace = {}
+        exec(compile(source.split("class BLEPeerClientInterface")[0],
+                     path, "exec"), namespace)
+        self.client = namespace
+        self.firmware = firmware_defines()
+
+    def test_uuids_match_the_firmware(self):
+        for client_name, firmware_name in (
+                ("SERVICE_UUID", "BLE_PEER_SERVICE_UUID"),
+                ("TX_UUID", "BLE_PEER_TX_UUID"),
+                ("RX_UUID", "BLE_PEER_RX_UUID"),
+                ("IDENTITY_UUID", "BLE_PEER_IDENTITY_UUID")):
+            self.assertEqual(self.client[client_name].lower(),
+                             self.firmware[firmware_name].lower(), firmware_name)
+
+    def test_framing_constants_match_the_firmware(self):
+        for client_name, firmware_name in (
+                ("HEADER_SIZE", "BLE_PEER_HEADER_SIZE"),
+                ("ATT_HEADER", "BLE_PEER_ATT_HEADER"),
+                ("MIN_MTU", "BLE_PEER_MIN_MTU"),
+                ("MAX_ATTR", "BLE_PEER_MAX_ATTR"),
+                ("IDENTITY_SIZE", "BLE_PEER_IDENTITY_SIZE"),
+                ("KEEPALIVE_BYTE", "BLE_PEER_KEEPALIVE_BYTE"),
+                ("TYPE_LONE", "BLE_PEER_TYPE_LONE"),
+                ("TYPE_START", "BLE_PEER_TYPE_START"),
+                ("TYPE_CONTINUE", "BLE_PEER_TYPE_CONTINUE"),
+                ("TYPE_END", "BLE_PEER_TYPE_END")):
+            self.assertEqual(self.client[client_name],
+                             self.firmware[firmware_name], firmware_name)
+
+    def test_sizing_matches_the_firmware_helpers(self):
+        # Same clamps as ble_peer_usable_value_length(): floor at the minimum
+        # ATT MTU, ceiling at the maximum attribute length.
+        usable = self.client["usable_value_length"]
+        payload = self.client["payload_size"]
+        self.assertEqual(usable(23), 20)
+        self.assertEqual(usable(10), 20)          # below the floor
+        self.assertEqual(usable(517), 512)        # above the ceiling
+        self.assertEqual(payload(20), 15)
+        self.assertEqual(payload(512), 507)
+        self.assertEqual(payload(4), 1)           # never zero
+
+    def test_a_single_fragment_packet_is_start_not_lone(self):
+        # The mistake this guards is specific and has already been made once:
+        # LONE is declared by the reference client and never emitted by it, and
+        # its reassembler drops types it does not recognise. Sending LONE makes
+        # the entire outbound direction vanish while inbound keeps working.
+        source_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "tools", "ble", "BLEPeerClientInterface.py")
+        with open(source_path, "r", encoding="utf-8") as handle:
+            body = handle.read().split("async def _send_packet")[1]
+        self.assertIn("ftype = TYPE_START", body)
+        self.assertNotIn("ftype = TYPE_LONE", body)
 
 
 if __name__ == "__main__":

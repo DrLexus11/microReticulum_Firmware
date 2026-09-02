@@ -392,6 +392,39 @@ static void validate_ifac_commit(RNS::Provisioning::Namespace& ns,
 static void register_provisioning_namespaces() {
   using namespace RNS::Provisioning;
 
+#if defined(OZD_COMPACT_PROVISIONING)
+  // The no-PSRAM OZD fixture needs persisted backbone access control, but the
+  // complete firmware + microReticulum schema consumes the heap required by
+  // NimBLE, Wi-Fi, ESP-NOW and RNS. Keep the stable namespace/field IDs so the
+  // existing /config/ns109.msgpack and ns112.msgpack files remain compatible.
+  // Unknown fields in an older, larger namespace file are intentionally
+  // ignored by Provisioning's forward-compatible loader.
+  Provisioner::instance()
+    .register_namespace("ESP-NOW Access Control", PROV_NS_IFAC_LORA)
+      .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { lora_ifac_enabled = v.as_bool(); return true; },
+        []() { return lora_ifac_enabled; })
+      .field_string("Network Name", PROV_IFAC_LORA_NETNAME,
+        FF_REBOOT_REQUIRED, "", 64,
+        [](const Value& v) { lora_ifac_netname = v.as_string(); return true; },
+        []() { return lora_ifac_netname; })
+      .field_string("Passphrase", PROV_IFAC_LORA_PASSPHRASE,
+        (fflags_t)(FF_REBOOT_REQUIRED | FF_SECRET), "", 128,
+        [](const Value& v) { lora_ifac_passphrase = v.as_string(); return true; },
+        []() { return lora_ifac_passphrase; })
+      .on_commit([](Namespace& ns) {
+        validate_ifac_commit(ns, "ESP-NOW");
+      })
+      .end()
+    .register_namespace("Secure Node", PROV_NS_SECURE_NODE)
+      .field_bool("Enabled", PROV_SECURE_NODE_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { secure_node_enabled = v.as_bool(); return true; },
+        []() { return secure_node_enabled; })
+      .end();
+
+#else
   // ----- General namespace -----
   auto general = Provisioner::instance()
     .register_namespace("RNode General Config", PROV_NS_GENERAL)
@@ -1259,6 +1292,7 @@ static void register_provisioning_namespaces() {
   //}
 #endif
 
+#endif // OZD_COMPACT_PROVISIONING
 }
 
 // ---------------------------------------------------------------------------

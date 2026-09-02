@@ -243,7 +243,7 @@ class ESPNowArchitectureTests(unittest.TestCase):
 
 
 class OzdisanAcceptanceTargetTests(unittest.TestCase):
-    def test_target_is_espnow_only_and_recovery_enabled(self):
+    def test_target_is_espnow_ble_peer_and_recovery_enabled(self):
         text = source(PLATFORMIO)
         target = text[text.index("[env:ozdisan-esp32-espnow]"):]
         target = target[:target.index("\n[env:", 1)]
@@ -251,7 +251,9 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("upload_speed = 115200", target)
         self.assertIn("-DBOARD_MODEL=BOARD_OZDISAN_ESP32", target)
         self.assertIn("-DESPNOW_TRANSPORT", target)
-        self.assertIn("-DTCP_SERVER_TRANSPORT", target)
+        self.assertIn("-DBLE_PEER_TRANSPORT", target)
+        self.assertIn("-DNIMBLE_PEER_TRANSPORT", target)
+        self.assertNotIn("-DTCP_SERVER_TRANSPORT", target)
         self.assertIn("-DWIFI_ESPNOW_RECOVERY_DEFAULT=1", target)
         self.assertIn("-DLORA_TRANSPORT", target.split("build_unflags", 1)[1])
 
@@ -260,7 +262,12 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         block = boards[boards.index("#elif BOARD_MODEL == BOARD_OZDISAN_ESP32"):]
         block = block[:block.index("#elif BOARD_MODEL", 1)]
         self.assertIn("#define NO_LORA_HARDWARE true", block)
+        self.assertIn("#define VALIDATE_FIRMWARE false", block)
         self.assertIn("#define HAS_DISPLAY true", block)
+        # NimBLE is used directly on this target. HAS_BLE selects the RNode
+        # BLE-serial/Bluedroid stack instead, which is the thing that does not
+        # fit, so the two must not both be on.
+        self.assertIn("#define HAS_BLE false", block)
         self.assertIn("#define I2C_SDA 5", block)
         self.assertIn("#define I2C_SCL 4", block)
 
@@ -377,3 +384,33 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompactProvisioningTests(unittest.TestCase):
+    """The constrained profile must retain only operational configuration.
+
+    OZD_COMPACT_PROVISIONING exists because the full schema does not fit in the
+    heap this board has left after NimBLE, Wi-Fi and ESP-NOW. Even the reduced
+    device-metrics namespace consumed enough heap to reproduce TASK_WDT resets,
+    so the fixture is observed through its periodic serial diagnostics instead.
+    """
+
+    def profile(self):
+        text = source(os.path.join(ROOT, "Provisioning.cpp"))
+        start = text.index("#if defined(OZD_COMPACT_PROVISIONING)")
+        return text[start:text.index("#else", start)]
+
+    def test_espnow_ifac_and_secure_node_are_retained(self):
+        block = self.profile()
+        self.assertIn("PROV_NS_IFAC_LORA", block)
+        self.assertIn("PROV_NS_SECURE_NODE", block)
+
+    def test_device_metrics_are_omitted(self):
+        block = self.profile()
+        self.assertNotIn("PROV_NS_METRICS", block)
+
+    def test_the_stack_metric_is_not_served_on_a_radioless_target(self):
+        # sample_loop_stack() runs inside `if (radio_online)`, so on a board
+        # with no radio it never runs. OZD omits all of ns108, including the
+        # sentinel that would serialise as 4294967295 bytes. See Backlog item 9.
+        self.assertNotIn("PROV_METRICS_DEV_STACK", self.profile())

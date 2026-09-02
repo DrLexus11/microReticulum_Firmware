@@ -86,6 +86,22 @@ SPIClass SDSPI(HSPI);
 
 #if MCU_VARIANT == MCU_ESP32
   #include <esp_task_wdt.h>
+  #if HAS_BLE == true || defined(NIMBLE_PEER_TRANSPORT)
+    // For esp_bt_controller_mem_release() in setup().
+    #include <esp_bt.h>
+  #endif
+#endif
+
+// Boot-time acceptance probes for constrained images. Disabled unless a target
+// explicitly opts in; OZD keeps them because a few kilobytes decide whether
+// NimBLE and Reticulum can coexist on its no-PSRAM ESP32.
+#if defined(RNS_HEAP_PROBES) && defined(ESP32)
+  #include <esp_heap_caps.h>
+  #define RNS_HEAP_PROBE(tag) printf("[probe] %-22s free=%u largest=%u\n", (tag), \
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT), \
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))
+#else
+  #define RNS_HEAP_PROBE(tag) do {} while (0)
 #endif
 
 // WDT timeout
@@ -733,6 +749,22 @@ void setup() {
     loop_phase_boot(esp_reset_reason() == ESP_RST_TASK_WDT);
   }
 #endif
+#if defined(ESP32) && HAS_BLE == true && HAS_BLUETOOTH == false
+  // Hand back the BR/EDR half of the controller's DRAM before anything can
+  // claim it. Linking Bluedroid reserves that memory whether or not Classic is
+  // ever enabled, and on a 4 MB no-PSRAM ESP32 it is the difference between
+  // RNS starting and RNS throwing bad_alloc during Reticulum init.
+  //
+  // Must run before btStart()/BLEDevice::init(); the release is refused once
+  // the controller is initialised. Safe here because BLE is brought up lazily
+  // from loop(), long after this point, and nothing in this build uses Classic.
+  {
+    const esp_err_t release_result =
+        esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    printf("[probe] classic-bt release     result=%d\n", (int)release_result);
+    RNS_HEAP_PROBE("post-classic-release");
+  }
+#endif
 #ifdef HAS_RNS
   printf("Total SRAM:  %7u bytes\n", RNS::Utilities::Memory::heap_size());
   printf("Free SRAM:   %7u bytes\n", RNS::Utilities::Memory::heap_available());
@@ -1026,6 +1058,7 @@ void setup() {
   #endif // defined(LORA_TRANSPORT)
 
   #if HAS_DISPLAY
+    RNS_HEAP_PROBE("pre-display-init");
     #if HAS_EEPROM
     if (EEPROM.read(eeprom_addr(ADDR_CONF_DSET)) != CONF_OK_BYTE) {
     #elif MCU_VARIANT == MCU_NRF52
@@ -1045,6 +1078,7 @@ void setup() {
     display_unblank();
     disp_ready = display_init();
     update_display();
+    RNS_HEAP_PROBE("post-display-init");
   #endif
 
   #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52 || MCU_VARIANT == MCU_NATIVE
@@ -1079,9 +1113,24 @@ void setup() {
       snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01");
     #endif
 
+    #if defined(NIMBLE_PEER_TRANSPORT)
+      // Bring up the controller and NimBLE host while heap is still broad and
+      // contiguous. The GATT service itself waits for the Reticulum identity
+      // and is created lazily from loop(). Initialising the host there was too
+      // late: Wi-Fi, ESP-NOW, provisioning and RNS had already fragmented the
+      // no-PSRAM OZD heap enough for controller setup to fail.
+      RNS_HEAP_PROBE("pre-nimble-init");
+      if (!NimBLEDevice::init(std::string(bt_devname))) {
+        printf("[blepeer] early NimBLE initialisation failed\n");
+      }
+      RNS_HEAP_PROBE("post-nimble-init");
+    #endif
+
     #if HAS_BLUETOOTH || HAS_BLE == true
+      RNS_HEAP_PROBE("pre-bt-init");
       bt_init();
       bt_init_ran = true;
+      RNS_HEAP_PROBE("post-bt-init");
     #endif
 
     if (console_active) {
@@ -1093,7 +1142,11 @@ void setup() {
     } else {
       #if HAS_WIFI
         wifi_mode = EEPROM.read(eeprom_addr(ADDR_CONF_WIFI));
-        if (wifi_mode == WR_WIFI_STA || wifi_mode == WR_WIFI_AP) { wifi_remote_init(); }
+        if (wifi_mode == WR_WIFI_STA || wifi_mode == WR_WIFI_AP) {
+          RNS_HEAP_PROBE("pre-wifi-init");
+          wifi_remote_init();
+          RNS_HEAP_PROBE("post-wifi-init");
+        }
       #endif
       kiss_indicate_reset();
     }
@@ -1369,14 +1422,17 @@ void setup() {
 #endif
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
       if (wifi_mode != WR_WIFI_OFF) {
+        RNS_HEAP_PROBE("pre-new-espnow");
         espnow_impl = new ESPNowInterface();
         espnow_interface = espnow_impl;
         // ESP-NOW is a one-hop link only. MODE_GATEWAY permits normal RNS
         // announce propagation; Reticulum remains the sole routing layer.
         espnow_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+        RNS_HEAP_PROBE("post-new-espnow");
       }
 #endif
 #if defined(BLE_PEER_TRANSPORT)
+      RNS_HEAP_PROBE("pre-new-blepeer");
       ble_peer_impl = new BLEPeerInterface();
       ble_peer_interface = ble_peer_impl;
       // A peer over BLE joins the mesh as a peer, exactly as one over TCP or
@@ -1389,6 +1445,7 @@ void setup() {
       // no pages, and could deliver no messages, while the link itself looked
       // perfectly healthy.
       ble_peer_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+      RNS_HEAP_PROBE("post-new-blepeer");
 #endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       // Serves attached clients (residents' phones on the SoftAP, or hosts on
@@ -1396,8 +1453,10 @@ void setup() {
       // disaster case and STA the everyday one, and the interface does not care
       // which. The listener itself binds later, from poll(), once WiFi is up.
       if (wifi_mode != WR_WIFI_OFF) {
+        RNS_HEAP_PROBE("pre-new-tcpserver");
         tcp_server_interface = new TCPServerInterface();
         tcp_server_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+        RNS_HEAP_PROBE("post-new-tcpserver");
       }
 #endif
 
@@ -1426,8 +1485,10 @@ void setup() {
       // eeprom_conf_load() runs or a Provisioning SetState arrives.
       // CBA NOTE: All app-default-values must be set *before* calling init_provisioning so that they take effect for fresh installs
       HEAD("Initializing Provisioning subsystem...", RNS::LOG_TRACE);
+      RNS_HEAP_PROBE("pre-provisioning");
       init_provisioning();
       auto& prov = RNS::Provisioning::Provisioner::instance();
+      RNS_HEAP_PROBE("post-provisioning");
 #endif
 
       //reticulum.clear_caches();
@@ -1460,8 +1521,10 @@ void setup() {
 #endif
 #if defined(BLE_PEER_TRANSPORT)
       HEAD("Registering BLE Peer Interface...", RNS::LOG_TRACE);
+      RNS_HEAP_PROBE("pre-reg-ble");
       RNS::Transport::register_interface(ble_peer_interface);
       TRACEF("BLEPeerInterface hash: %s", ble_peer_interface.get_hash().toHex().c_str());
+      RNS_HEAP_PROBE("post-reg-ble");
 #endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       if (wifi_mode != WR_WIFI_OFF && tcp_server_interface) {
@@ -1472,7 +1535,9 @@ void setup() {
 #endif
 
       HEAD("Creating Reticulum instance...", RNS::LOG_TRACE);
+      RNS_HEAP_PROBE("pre-reticulum-ctor");
       reticulum = RNS::Reticulum();
+      RNS_HEAP_PROBE("post-reticulum-ctor");
       // CBA NOTE: `transport_enabled` needs to always be overridden to false when op_mode is not MODE_TNC
 printf("[init] hw_ready: %u\n", hw_ready);
 printf("[init] op_mode: %U\n", op_mode);
@@ -1480,7 +1545,9 @@ printf("[init] op_mode: %U\n", op_mode);
         INFO("Not in TNC mode, transport will be disabled");
         reticulum.transport_enabled(false);
       }
+      RNS_HEAP_PROBE("pre-reticulum-start");
       reticulum.start();
+      RNS_HEAP_PROBE("post-reticulum-start");
 
       // Set loop callback only after the Reticulum instance is started
       // (to avoid looping without a completely initialized instance)
@@ -1618,6 +1685,7 @@ printf("[init] op_mode: %U\n", op_mode);
   }
   catch (const std::bad_alloc&) {
     ERROR("RNS startup failed: bad_alloc - out of memory");
+    RNS_HEAP_PROBE("bad_alloc");
   }
   catch (std::exception& e) {
     ERRORF("RNS startup failed: %s", e.what());
@@ -3698,11 +3766,18 @@ void loop() {
   // Bluetooth has come up, and the transport identity is not loaded until
   // Reticulum has. Waiting for both here avoids ordering assumptions that
   // would fail silently.
+  #if defined(NIMBLE_PEER_TRANSPORT)
+  if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
+      RNS::Transport::identity()) {
+    ble_peer_impl->begin(RNS::Transport::identity().hash());
+  }
+  #else
   if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
       bt_state != BT_STATE_OFF && bt_state != BT_STATE_NA &&
       SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
     ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
   }
+  #endif
   loop_phase(LOOP_PHASE_BLE_PEER);
   if (ble_peer_impl != nullptr) ble_peer_impl->loop();
 #endif

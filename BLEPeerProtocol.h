@@ -114,6 +114,32 @@
 #define BLE_PEER_SCAN_INTERVAL_MS 20000
 #define BLE_PEER_SCAN_SECONDS     4
 
+// A central-role attempt must never stop the Reticulum loop for NimBLE's
+// default 30-second connect timeout. NimBLE connections are asynchronous on
+// the OZD backend, and failed attempts leave a quiet advertising window so a
+// Columba central can connect in the opposite direction instead of both peers
+// continuously colliding as centrals.
+#define BLE_PEER_CONNECT_TIMEOUT_MS 10000
+#define BLE_PEER_CONNECT_RETRY_MS   30000
+#define BLE_PEER_CONNECT_BLACKLIST_MS 120000
+#define BLE_PEER_CONNECT_BLACKLIST_SIZE 3
+
+// Do not dial an advertiser too weak to complete a connection.
+//
+// A central attempt costs BLE_PEER_CONNECT_TIMEOUT_MS of radio time whether or
+// not it succeeds, and this chip has one 2.4 GHz radio shared with Wi-Fi and
+// ESP-NOW. Measured on the Ozdisan fixture: an advertiser at -95 dBm was
+// discovered, dialled, and failed with reason 13 ten seconds later, repeatedly.
+// The RSSI floor avoids spending that radio time and energy on a peer that can
+// be heard but not reached. It is not the fixture's watchdog fix; a controlled
+// A/B later isolated those resets to the compact device-metrics registry.
+//
+// -85 dBm is chosen to be permissive: a phone in the same room reads -40 to
+// -70, and a RAD across a building still connects at -85. It excludes the case
+// this is for, which is an advertiser at the edge of detection that can be
+// heard but not reached.
+#define BLE_PEER_CONNECT_MIN_RSSI (-85)
+
 inline size_t ble_peer_usable_value_length(uint16_t raw_att_mtu) {
 	const int usable = (int)raw_att_mtu - BLE_PEER_ATT_HEADER;
 	const int floor  = BLE_PEER_MIN_MTU - BLE_PEER_ATT_HEADER;

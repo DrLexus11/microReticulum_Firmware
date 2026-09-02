@@ -621,19 +621,24 @@
       // Meshtastic fixture paired it with an external RFM95, but these boards
       // are deliberately used bare: ESP-NOW is their only node-to-node radio.
       #define NO_LORA_HARDWARE true
+      // This is a development/acceptance fixture whose image is rebuilt and
+      // flashed repeatedly. A production RNode's stored firmware hash is useful
+      // attestation; here it only makes every legitimate development build fail
+      // device_init(), fall back to MODE_HOST, disable RNS transport, and show
+      // "FIRMWARE CORRUPT" until it is reprovisioned. Keep EEPROM/device identity
+      // validation, but do not pin this lab board to one application image hash.
+      #undef VALIDATE_FIRMWARE
+      #define VALIDATE_FIRMWARE false
       #define HAS_DISPLAY true
       #define HAS_CONSOLE false
       #define HAS_SD false
       #define HAS_EEPROM true
       #define HAS_WIFI true
-      // ESP32-WROOM-32 has both radios. Classic BT stays off -- Bluedroid's
-      // BR/EDR half is the expensive one in flash, and nothing here uses it.
-      // BLE is on: a Columba client is the only non-mesh way into a board with
-      // no LoRa fitted, so it is what makes an outside-to-inside test possible.
-      // Bluedroid costs ~820 KB, which overflows the 2 MB app slot of
-      // no_ota.csv, hence boards/ozdisan_esp32.csv. The two must move together.
+      // The OZD peer uses NimBLE directly. Do not enable the generic BLE flag:
+      // that selects the RNode BLE-serial/Bluedroid stack, which consumed 85 KB
+      // of heap before Reticulum startup on this no-PSRAM WROOM-32.
       #define HAS_BLUETOOTH false
-      #define HAS_BLE true
+      #define HAS_BLE false
       #define I2C_SDA 5
       #define I2C_SCL 4
 

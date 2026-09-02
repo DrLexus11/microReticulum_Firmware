@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Passive serial log reader for the OZD fixture.
+"""Serial log reader for the OZD fixture.
 
 Holds DTR and RTS high so attaching does not reset the board, and prints both
-plain firmware output and KISS-framed log frames (0x80) with timestamps.
+plain firmware output and KISS-framed log frames (0x80) with timestamps. An
+explicit --reset performs an EN-only reset after opening the port so boot output
+can be captured without pulling GPIO0 into the ROM downloader.
 """
 
 import argparse
@@ -17,12 +19,20 @@ def main():
     ap.add_argument("--port", default="/dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--seconds", type=float, default=0.0, help="0 = run forever")
+    ap.add_argument("--reset", action="store_true", help="reset once and capture boot")
     args = ap.parse_args()
 
     p = serial.Serial(args.port, args.baud, timeout=0.2,
                       dsrdtr=False, rtscts=False)
-    p.dtr = True
-    p.rts = True
+    if args.reset:
+        p.dtr = False  # GPIO0 high
+        p.rts = True   # EN low
+        time.sleep(0.1)
+        p.rts = False  # EN high
+        p.dtr = False
+    else:
+        p.dtr = True
+        p.rts = True
 
     t0 = time.time()
     inframe = False

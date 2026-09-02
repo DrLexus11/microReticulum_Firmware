@@ -459,7 +459,6 @@ RNS::Bytes serve_page(
     else {
       content = "PATH NOT FOUND\n";
     }
-    printf("[page] content bytes=%u\n", (unsigned)content.size());
     packer.packBinary(content.data(), content.size());
   }
 	return RNS::Bytes(packer.data(), packer.size());

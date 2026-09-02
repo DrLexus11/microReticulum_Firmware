@@ -1,7 +1,8 @@
 # Özdisan ESP-NOW Acceptance Fixture
 
-Status: radio-layer hardware acceptance passed on 2026-08-31; the NomadNet
-link/request check remains open as a separate higher-layer issue.
+Status: ESP-NOW radio acceptance, NomadNet pages/subindexes, and the bondless
+BLE peer path all pass. Verified against a scripted client standing in for
+Columba; the phone itself has not been run against this build.
 
 ## Hardware identity
 
@@ -22,9 +23,9 @@ boards no longer have that module, so this target intentionally does not
 compile `LORA_TRANSPORT` and never drives the old radio pins.
 
 The local PlatformIO environment is `ozdisan-esp32-espnow`. It uses board ID
-`BOARD_OZDISAN_ESP32`, declares no LoRa hardware, enables ESP-NOW and the TCP
-server, and gives the 4 MB flash a no-OTA partition layout. The target uses
-`PRODUCT_HMBRW`, `MODEL_FE`, hardware revision 3 for its signed device record.
+`BOARD_OZDISAN_ESP32`, declares no LoRa hardware, enables ESP-NOW and the BLE
+peer transport, and gives the 4 MB flash a no-OTA partition layout. The target
+uses `PRODUCT_HMBRW`, `MODEL_FE`, hardware revision 3 for its signed device record.
 Its device, fallback-AP, DHCP-host and default NomadNet label is `OZD-ARD-01`.
 
 ## Intended boot behavior
@@ -64,17 +65,16 @@ Use the exact serial path discovered after attaching the board:
 ```sh
 pio run -e ozdisan-esp32-espnow -t upload --upload-port /dev/ttyUSBX
 pio run -e ozdisan-esp32-espnow -t provision --upload-port /dev/ttyUSBX
-pio run -e ozdisan-esp32-espnow -t fixhash --upload-port /dev/ttyUSBX
 ```
 
 This target uploads at 115200 baud. Its CP2102 connection proved unreliable at
 460800 through the Steam Deck's shared hub and once disconnected during an app
 partition write; the conservative rate completed and verified the same image.
-Firmware-hash persistence also stages all 32 bytes before one ESP32 EEPROM
-commit. Per-byte commits produced a recoverable torn hash on this fixture when
-a reset preserved 26 bytes of the new digest and six from the previous image.
-The device resets itself after accepting a replacement hash; the uploader does
-not queue a redundant second reset during that new boot.
+This acceptance target intentionally does not pin its signed device record to
+one application-image hash. Otherwise every legitimate development rebuild
+fails `device_init()`, disables TNC transport and displays `FIRMWARE CORRUPT`
+until `fixhash` runs. Production RAD targets retain firmware-image validation;
+OZD still validates its EEPROM device record and retains its node identity.
 
 Do not guess the port when Rev1 is attached at the same time. Match USB VID/PID,
 serial number, and disconnect/reconnect behavior before writing. Provisioning
@@ -142,10 +142,73 @@ intended Rev2/LoRa/Rev1/ESP-NOW topology. An encrypted NomadNet link still
 closed during establishment (`status=4`), however, so an application-level
 page request or LXMF round trip is not claimed as passed. Track that alongside
 the existing direct-RNode link/identity instability rather than weakening the
-radio-layer acceptance above.
+radio-layer acceptance above. This describes the earlier overnight check; the
+later reverse-path acceptance below supersedes its application-layer result.
 
-The fixture also boots more slowly than the four-second post-upload firmware
-hash delay used by the RAD boards. A hash write at that point is lost and the
-next boot reports `hw_ready=0`. Its upload/fixhash path now waits 20 seconds
-before writing, and hardware was restored and verified with `hw_ready=1`, TNC
-mode, and transport enabled.
+The current OZD image was verified after an ordinary flash with `hw_ready=1`,
+TNC mode and RNS transport enabled; no post-flash hash repair is required.
+The compact profile intentionally omits the ns108 device-metrics namespace.
+The reduced ns108 subset still cost enough internal heap to reproduce watchdog
+resets on this no-PSRAM target; the periodic serial heap and reset diagnostics
+remain available while the fixture is attached for testing.
+
+
+## Reverse-path acceptance: outside to inside over BLE
+
+The forward direction — the deck loading NomadNet pages from the OZD board over
+ESP-NOW — passed first. The reverse is the one the product needs: a client with
+no route into the mesh of its own arrives over BLE and is carried inward.
+
+Run on 2026-09-02 with `tools/ble/BLEPeerClientInterface.py` as the client, in a
+Reticulum instance whose only interface is that BLE link, so no result can have
+arrived by another route.
+
+| Stage | Evidence |
+| --- | --- |
+| Service on air | `40:91:51:9B:2D:D2 name='OZD-ARD-01' rssi=-63` advertising `37145b00-…-8f42c5da28e3` |
+| GATT contract | identity `…28e6` read, tx `…28e4` read+notify, rx `…28e5` write+write-no-response |
+| Bondless | `inbound peripheral link … connected (handle=0, unpaired)`; BlueZ reports `Paired: no  Bonded: no` |
+| Identity handshake | `[blepeer] accepted peer identity <31d614cf…> over unpaired GATT` |
+| Reticulum path, 1 hop past the node | Rev 1 `<ba03aa75…>` 2 hops via `<0056bb6a…>` |
+| Reticulum path, across LoRa | Rev 2 `<41fc2ab5…>` 3 hops via `<0056bb6a…>` |
+| Application data | 544-byte NomadNet page fetched from Rev 2, `Verified identity` line present |
+| Reconnect | client reattached and re-handshook 1.6 s after a firmware reflash and reboot |
+
+The hop counts are the load-bearing part. Rev 2 at three hops is
+`BLE → OZD → ESP-NOW → Rev 1 → LoRa → Rev 2`. The deck also holds UDP interfaces
+to both RAD boards, and had the reply come back that way Rev 2 would have read
+four hops. Three means the LoRa hop carried it.
+
+The page fetch returning `Verified identity` also shows the client's identity
+reached Rev 2 intact across BLE, ESP-NOW and LoRa, so `ALLOW_LIST` gating passed
+rather than being bypassed.
+
+### Heap, measured rather than assumed
+
+The board is an original ESP32 with no PSRAM, and heap — not flash — is what
+constrains this image. Flash sits at 54% of the 2.75 MB app slot. Boot probes:
+
+```
+Total SRAM              216288
+post-nimble-init        133616      NimBLE controller + host   19,464 B
+post-wifi-init           83560      Wi-Fi                      50,056 B
+post-new-espnow          71812      ESP-NOW                     9,480 B
+post-provisioning        66380      compact config only         4,656 B
+post-reticulum-start     43684      RNS                        22,544 B
+steady state         51440-55428      largest block 29,684-32,756
+```
+
+Wi-Fi is the largest single consumer, at two and a half times NimBLE. With
+roughly 83 KB free after Wi-Fi and 44 KB after Reticulum has started, a BLE host
+costing what Bluedroid costs does not fit, which is why this target uses NimBLE
+while the RAD boards keep the proven Bluedroid backend.
+
+The ns108 decision was made with a controlled hardware A/B. The reduced metrics
+registry left 58,480 bytes after provisioning and 37,844 after RNS start, then
+repeatedly reset under `TASK_WDT` in loop phase 10 within roughly 60-90 seconds.
+With only ns108 removed, the same board and network ran for 600 seconds on one
+boot. During that run it recovered Rev1 on ESP-NOW channel 9, processed repeated
+NomadNet re-announces, and survived four failed outbound BLE connection attempts.
+Its steady free heap stayed in the range shown above. That makes the metrics
+registry an unacceptable cost for this fixture even though it remains useful on
+the PSRAM-equipped RAD targets.
