@@ -37,7 +37,18 @@ public:
 	}
 
 	BLEPeerInterface() : BLEPeerInterface("BLEPeerInterface") {}
-	virtual ~BLEPeerInterface() { _name = "deleted"; }
+	virtual ~BLEPeerInterface() {
+		// Clear the trampoline's back-pointer before this object goes away.
+		// registerForNotify() takes a plain function pointer, so the notify
+		// callback reaches the instance through a file-scope global set in
+		// begin(). Leaving it set means a notification arriving after this
+		// interface is destroyed dereferences freed memory -- and the callback
+		// runs on the NimBLE host task, so it can fire at any moment, including
+		// during teardown. Only clear it if it still points at us: a
+		// replacement instance may already have claimed it.
+		if (ble_peer_nimble_active == this) ble_peer_nimble_active = nullptr;
+		_name = "deleted";
+	}
 
 	bool begin(const RNS::Bytes& identity_hash) {
 		if (_begin_attempted) return false;
