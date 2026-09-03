@@ -235,5 +235,13 @@ inline bool ble_peer_read_header(const uint8_t* in, size_t length, uint8_t& type
 	// continuation" would drop real traffic over a cosmetic disagreement.
 	if (type == BLE_PEER_TYPE_LONE) return (seq == 0 && total <= 1);
 	if (total == 0 || seq >= total) return false;
+	// A START is by definition fragment zero, and saying so matters. The
+	// reassembler seeds next_seq from START and then completes on a count, so a
+	// START claiming seq=1 of 3 would leave only one further fragment needed and
+	// hand RNS a packet two thirds of its stated length. Everything else is
+	// already ordered strictly -- a CONTINUE or END is refused unless its seq is
+	// exactly the one expected -- so this is the one way a short packet could
+	// still be assembled and delivered.
+	if (type == BLE_PEER_TYPE_START && seq != 0) return false;
 	return true;
 }

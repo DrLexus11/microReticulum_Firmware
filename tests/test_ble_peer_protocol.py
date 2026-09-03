@@ -342,3 +342,33 @@ class DeckClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeaderValidationTests(unittest.TestCase):
+    """A START must be fragment zero.
+
+    The reassembler seeds next_seq from START and then completes on a count, so
+    a START claiming a non-zero seq shortens the packet it will accept and hands
+    RNS a truncated one. Raised in review as "reassembly does not validate
+    sequencing"; ordering of CONTINUE and END is in fact validated strictly,
+    and this was the one remaining way to assemble a short packet.
+    """
+
+    def setUp(self):
+        self.defines = firmware_defines()
+
+    def header_rule(self):
+        with open(HEADER, "r", encoding="utf-8") as handle:
+            return handle.read().split("ble_peer_read_header")[1]
+
+    def test_start_must_be_sequence_zero(self):
+        rule = self.header_rule()
+        self.assertIn("BLE_PEER_TYPE_START && seq != 0", rule)
+
+    def test_zero_total_and_out_of_range_sequence_are_rejected(self):
+        rule = self.header_rule()
+        self.assertIn("total == 0 || seq >= total", rule)
+
+    def test_a_lone_fragment_is_always_sequence_zero(self):
+        rule = self.header_rule()
+        self.assertIn("seq == 0 && total <= 1", rule)
