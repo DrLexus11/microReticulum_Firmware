@@ -90,6 +90,7 @@ public:
 		ble_peer_nimble_active = this;
 		_last_scan = millis();
 		_next_connect_attempt = millis() + BLE_PEER_PERIPHERAL_WINDOW_MS;
+		adopt_stable_high_address();
 		restart_advertising();
 		printf("[blepeer] multi-peer service up, identity <%s>, capacity=%u\n",
 		       identity_hash.toHex().c_str(), (unsigned)BLE_PEER_MAX_CONNECTIONS);
@@ -804,6 +805,49 @@ private:
 		       peer.address.toString().c_str(), (unsigned)peer.client->getMTU(),
 		       (unsigned)ready_count(), (unsigned)BLE_PEER_MAX_CONNECTIONS);
 		return true;
+	}
+
+	// Take a stable BLE address that sorts above any phone, so we never dial one.
+	//
+	// The protocol breaks the connect/wait symmetry by address: lower dials,
+	// higher waits. Columba computes its own side from
+	// BluetoothAdapter.getAddress(), which Android returns to unprivileged apps
+	// as the constant 02:00:00:00:00:00 -- below every real address -- so a phone
+	// always elects itself central. If we also dial, BOTH links exist, and
+	// Columba resolves the collision in resolveDualConnectionAction(), which is
+	// reached only when one address holds a central AND a peripheral role.
+	// Measured on the phone, one second after a completed handshake:
+	//
+	//   Connecting to 40:91:51:9B:2D:D2...
+	//   Deduplication: disconnecting central connection to 40:91:51:9B:2D:D2
+	//
+	// Rev 1 never suffers this: its public address 80:b5:4e:.. sorts above a
+	// phone's private address, so it never dials, only one link is ever made,
+	// dedup returns NONE, and its sessions run for hours. This board's Espressif
+	// public address 40:91:51:.. sorts below, so it dialled and broke its own
+	// inbound link. A static random address -- which the specification requires
+	// to carry its two most significant bits set -- is always above a phone's,
+	// putting this board in exactly Rev 1's position.
+	//
+	// Derived from the factory MAC and NOT randomised per boot. A changing
+	// address is a new device to a client every time: Columba's candidate list
+	// never prunes, and rotating made one board appear as four addresses with
+	// candidates climbing 9 -> 10 -> 11 -> 12 against its cap of seven, so the
+	// ghosts consumed the peer budget.
+	void adopt_stable_high_address() {
+		uint8_t mac[6];
+		if (esp_read_mac(mac, ESP_MAC_BT) != ESP_OK) return;
+		// NimBLE takes the address little-endian; the most significant byte is last.
+		uint8_t rnd[6] = { mac[5], mac[4], mac[3], mac[2], mac[1], mac[0] };
+		rnd[5] |= 0xC0;
+		if (!NimBLEDevice::setOwnAddr(rnd) ||
+		    !NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM)) {
+			printf("[blepeer] could not adopt a high static address; we may dial "
+			       "phones and trip their dual-connection dedup\n");
+			return;
+		}
+		printf("[blepeer] static address %s (sorts above phones, so we wait)\n",
+		       NimBLEDevice::getAddress().toString().c_str());
 	}
 
 	// Address rotation was tried here and removed. It did make Columba fire
