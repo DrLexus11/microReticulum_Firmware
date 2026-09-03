@@ -98,6 +98,42 @@ The second row is the one that matters for this product. In a real outage there
 is no NTP, but every responder carries a phone whose clock is good, and Columba
 is already peered over BLE. The node asks its identified peer.
 
+### Time crosses the mesh, not the internet
+
+Worth being explicit, because "we need NTP on the node" is the obvious wrong
+answer. NTP is an IP protocol whose accuracy model assumes a symmetric,
+low-latency path; a LoRa hop is neither, and a duty-cycle-gated one is not even
+close. Nothing about it survives the trip.
+
+What a node actually needs is a *trusted peer that says what time it is*, and an
+authenticated Reticulum Link already carries that over **any** interface --
+LoRa, ESP-NOW, BLE, UDP, TCP -- without the endpoint knowing which. Transport's
+`/time` request handler is that endpoint, and `tools/set_node_time.py` is the
+client. Accuracy is bounded by the round trip, so the client sends the midpoint
+estimate rather than the instant it sent: tenths of a second over LoRa, against
+requirements (expiry, stamp validation, CoT staleness) measured in minutes.
+
+Measured deck to Rev 1, one hop:
+
+```
+link established rtt=0.241s -- supplying 1788448202094 ms
+node replied: {'result': 'backwards', 'known': True,
+               'unix_ms': 1788448202329, 'source': 'ntp', ...}
+```
+
+Refused, and correctly: our estimate was 235 ms behind the node's own NTP clock
+and the never-backwards rule held. That two independently synchronised clocks
+agree to a quarter of a second across a Reticulum link is the number to keep.
+
+The gate is not the transport, it is trust. Every handler on the management
+destination is `ALLOW_LIST`, and **an empty allow list denies everyone** --
+before the handler runs, so the caller gets no response at all rather than a
+refusal. A node built without a way to populate that list therefore cannot be
+given time by anyone, which is exactly the state the constrained OZD build was
+in. Grant it with `tools/ifac/provision.py --port <dev> admin <identity-hash>`;
+the field is reboot-required, and the setter is applied at boot before Transport
+registers its handlers.
+
 **An RTC cannot originate time.** It only remembers what something else told it.
 It is a cold-start convenience, never the fix, and it is the only part of this
 that would wait for Rev 3.
@@ -196,8 +232,10 @@ that quietly exceeds its regional duty cycle is not shippable in the EU.
 1. **Separate wall-time API plus `/wall_time` persistence and a known flag.**
    Implemented in the library branch without changing `OS::time()`.
 2. **NTP when a station link exists.** Implemented in the firmware branch.
-3. **Time adoption from an allow-listed client.** The authenticated library
-   endpoint is implemented; a Columba caller remains follow-up client work.
+3. **Time adoption from an allow-listed client.** Implemented end to end and
+   verified against Rev 1 over the mesh, with `tools/set_node_time.py` as the
+   client. A Columba-side caller -- so a responder's phone becomes the time
+   source without a laptop -- remains follow-up client work.
 4. **Priority classes on the transmit queue**, then set the long-term duty cycle
    to 0.01f.
 5. **GNSS** only when a node must be correct with no phone and no Wi-Fi. A module
