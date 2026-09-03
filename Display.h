@@ -113,6 +113,15 @@
   #define SCL_OLED 6
   #define SDA_OLED 5
   #define DISP_CUSTOM_ADDR true
+#elif BOARD_MODEL == BOARD_OZDISAN_ESP32
+  // Pinout verified in Meshtastic's ozdisan_oled_rfm95 variant. GPIO16 was
+  // shared with the optional RFM95 MOSI there; this radio-less target owns it
+  // exclusively as the SSD1306 reset line.
+  #define DISP_RST 16
+  #define DISP_ADDR 0x3C
+  #define SCL_OLED 4
+  #define SDA_OLED 5
+  #define DISP_CUSTOM_ADDR false
 #else
   #define DISP_RST -1
   #define DISP_ADDR 0x3C
@@ -367,6 +376,8 @@ bool display_init() {
       Wire.begin(SDA_OLED, SCL_OLED);
     #elif BOARD_MODEL == BOARD_XIAO_S3
       Wire.begin(SDA_OLED, SCL_OLED);
+    #elif BOARD_MODEL == BOARD_OZDISAN_ESP32
+      Wire.begin(SDA_OLED, SCL_OLED);
     #endif
 
     #if HAS_EEPROM
@@ -485,6 +496,9 @@ bool display_init() {
         #elif BOARD_MODEL == BOARD_TECHO
           disp_mode = DISP_MODE_PORTRAIT;
           display.setRotation(3);
+        #elif BOARD_MODEL == BOARD_OZDISAN_ESP32
+          disp_mode = DISP_MODE_LANDSCAPE;
+          display.setRotation(0);
         #else
           disp_mode = DISP_MODE_PORTRAIT;
           display.setRotation(3);

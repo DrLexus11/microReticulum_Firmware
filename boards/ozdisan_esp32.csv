@@ -1,0 +1,31 @@
+# Ozdisan ESP32-WROOM-32 (4 MB): 2.75 MB application, 1.125 MB filesystem.
+#
+# no_ota.csv gives the application 2 MB, which this board outgrew the moment
+# BLE was enabled: Bluedroid costs roughly 820 KB and took the image to 100.6%
+# of the slot. The propagation node and RRC hub builds need several hundred KB
+# more again, so the app partition is sized for all three rather than trimmed
+# to just clear BLE.
+#
+# The filesystem is NOT the same size as no_ota.csv, so unlike boards/rad01_8mb.csv
+# the old partition cannot be written back byte for byte -- LittleFS geometry is
+# fixed at format time (block_count here is 0x120000/4096 = 288, was 480).
+# A full-flash backup alone is therefore NOT enough: it can only be restored at
+# the old geometry. Extract the files below and write them into a freshly built
+# image instead. mklittlefs -u fails on these images; use littlefs-python.
+#
+#   /transport_identity   the node identity. Losing it changes every
+#                         destination hash on the node.
+#   /time_offset
+#   /config/ns*.msgpack   provisioned settings, INCLUDING the remote-management
+#                         allow list. These do NOT live in nvs, despite nvs
+#                         keeping its offset here. Dropping ns1.msgpack empties
+#                         the allow list, and every ALLOW_LIST-gated nomadnet
+#                         subpage then fails as a silent timeout
+#                         (Link.cpp handle_request has no else branch).
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x2C0000,
+spiffs,     data, spiffs,   0x2D0000, 0x120000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

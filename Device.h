@@ -133,12 +133,33 @@ void device_load_firmware_hash() {
 }
 
 void device_save_firmware_hash() {
+#if HAS_EEPROM && MCU_VARIANT == MCU_ESP32
+  // Arduino-ESP32 emulates EEPROM in one flash-backed blob. Calling commit()
+  // through eeprom_update() for every hash byte creates 32 separate flash
+  // transactions and leaves a long window in which a reset can preserve only
+  // a prefix of the new hash. That exact torn-write signature was observed on
+  // the CP2102 Ozdisan fixture: 26 new bytes followed by six bytes from the
+  // previous image. Stage the complete digest in RAM and commit it once.
+  bool changed = false;
+  for (uint8_t i = 0; i < DEV_HASH_LEN; i++) {
+    const int address = dev_fwhash_addr(i);
+    if (EEPROM.read(address) != dev_firmware_hash_target[i]) {
+      EEPROM.write(address, dev_firmware_hash_target[i]);
+      changed = true;
+    }
+  }
+  if (changed && !EEPROM.commit()) {
+    fw_signature_validated = false;
+    return;
+  }
+#else
   for (uint8_t i = 0; i < DEV_HASH_LEN; i++) {
     eeprom_update(dev_fwhash_addr(i), dev_firmware_hash_target[i]);
   }
-  #if !HAS_EEPROM && MCU_VARIANT == MCU_NRF52
+#if !HAS_EEPROM && MCU_VARIANT == MCU_NRF52
     eeprom_flush();
-  #endif
+#endif
+#endif
   if (!fw_signature_validated) hard_reset();
 }
 

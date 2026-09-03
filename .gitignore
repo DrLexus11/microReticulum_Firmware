@@ -15,3 +15,6 @@ eeprom
 state/*
 docker/workspace/*
 !docker/workspace/build
+
+# PlatformIO leaves the Arduino preprocessor output beside the sketch
+RNode_Firmware.ino.cpp

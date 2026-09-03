@@ -373,6 +373,13 @@ extern RNS::Reticulum reticulum;
 		void led_tx_off() { digitalWrite(pin_led_tx, HIGH); }
 		void led_id_on()  { }
 		void led_id_off() { }
+	#elif BOARD_MODEL == BOARD_OZDISAN_ESP32
+		void led_rx_on()  { }
+		void led_rx_off() { }
+		void led_tx_on()  { }
+		void led_tx_off() { }
+		void led_id_on()  { }
+		void led_id_off() { }
 	#elif BOARD_MODEL == BOARD_LORA32_V2_1
 		void led_rx_on()  { digitalWrite(pin_led_rx, HIGH); }
 		void led_rx_off() {	digitalWrite(pin_led_rx, LOW); }
@@ -1820,7 +1827,7 @@ bool eeprom_model_valid() {
 	if (model == MODEL_C8) {
 	#elif BOARD_MODEL == BOARD_HELTEC_TRACKER_V2
 	if (model == MODEL_CB) {
-	#elif BOARD_MODEL == BOARD_RAD01_REV1 || BOARD_MODEL == BOARD_RAD01_REV2
+	#elif BOARD_MODEL == BOARD_RAD01_REV1 || BOARD_MODEL == BOARD_RAD01_REV2 || BOARD_MODEL == BOARD_OZDISAN_ESP32
 	if (model == MODEL_FE) {
   #elif BOARD_MODEL == BOARD_HELTEC_T114
   if (model == MODEL_C6 || model == MODEL_C7) {

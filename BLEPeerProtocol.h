@@ -77,6 +77,13 @@
 #define BLE_PEER_MAX_MTU    517
 #define BLE_PEER_MAX_ATTR   512
 
+// Maximum simultaneous peer links carried by one BLE mesh interface. Columba
+// defaults to seven, and the ESP32 controller supports up to nine. Targets can
+// lower this at build time when their controller or heap budget is smaller.
+#ifndef BLE_PEER_MAX_CONNECTIONS
+#define BLE_PEER_MAX_CONNECTIONS 7
+#endif
+
 // Android BLE links drop after 20-30 seconds of silence, so both reference
 // implementations keepalive at 15. A node that does not will look like it
 // keeps losing peers.
@@ -113,6 +120,83 @@
 // scans on an interval with an idle backoff for the same reason.
 #define BLE_PEER_SCAN_INTERVAL_MS 20000
 #define BLE_PEER_SCAN_SECONDS     4
+
+// A central-role attempt must never stop the Reticulum loop for NimBLE's
+// default 30-second connect timeout. NimBLE connections are asynchronous on
+// the OZD backend, and failed attempts leave a quiet advertising window so a
+// Columba central can connect in the opposite direction instead of both peers
+// continuously colliding as centrals.
+#define BLE_PEER_CONNECT_TIMEOUT_MS 10000
+#define BLE_PEER_CONNECT_RETRY_MS   10000
+#define BLE_PEER_CONNECT_BLACKLIST_MS 10000
+#define BLE_PEER_CONNECT_BLACKLIST_SIZE BLE_PEER_MAX_CONNECTIONS
+
+// Give reciprocal centrals (especially Android) a stable advertising window
+// before this node leaves advertising to initiate its own connection.
+#define BLE_PEER_PERIPHERAL_WINDOW_MS 15000
+#define BLE_PEER_ADVERTISE_SETTLE_MS  500
+
+// Do not dial an advertiser too weak to complete a connection.
+//
+// A central attempt costs BLE_PEER_CONNECT_TIMEOUT_MS of radio time whether or
+// not it succeeds, and this chip has one 2.4 GHz radio shared with Wi-Fi and
+// ESP-NOW. Measured on the Ozdisan fixture: an advertiser at -95 dBm was
+// discovered, dialled, and failed with reason 13 ten seconds later, repeatedly.
+// The RSSI floor avoids spending that radio time and energy on a peer that can
+// be heard but not reached. It is not the fixture's watchdog fix; a controlled
+// A/B later isolated those resets to the compact device-metrics registry.
+//
+// -85 dBm is chosen to be permissive: a phone in the same room reads -40 to
+// -70, and a RAD across a building still connects at -85. It excludes the case
+// this is for, which is an advertiser at the edge of detection that can be
+// heard but not reached.
+#define BLE_PEER_CONNECT_MIN_RSSI (-85)
+
+// How long a connected peer may go silent before we reclaim its slot.
+//
+// A peer that walks out of range does not disconnect; it simply stops. The
+// link layer may take a long time to notice, or never notice while we keep
+// notifying into it, so the slot stays occupied and the node cannot be rejoined
+// until something forces a teardown. Observed in the field: a phone left BLE
+// range and, on returning, could not reconnect -- every attempt failed with
+// GATT_CONN_FAILED_ESTABLISHMENT -- until its interface was restarted by hand.
+//
+// Both ends of this protocol keepalive every BLE_PEER_KEEPALIVE_MS, so a live
+// peer is heard from at least that often. Three missed keepalives is the
+// threshold: long enough that a brief stall does not drop a good link, short
+// enough that a returning node is rejoinable in well under a minute. Getting a
+// person's node back into the mesh quickly is the point of this firmware, and
+// an occupied slot with nothing behind it serves nobody.
+#define BLE_PEER_PEER_TIMEOUT_MS (3 * BLE_PEER_KEEPALIVE_MS)
+
+// How often to present a fresh BLE address while no peer is connected.
+//
+// THIS IS A WORKAROUND FOR A CLIENT BUG, NOT PART OF THE PROTOCOL.
+//
+// Columba's BleScanner keeps a map of every address it has ever seen and fires
+// onDeviceDiscovered only when the address is absent from it:
+//
+//     if (existingDevice == null) { devices[address] = d; onDeviceDiscovered?.invoke(d) }
+//     else { /* update RSSI only, no callback */ }
+//
+// The callback is what reaches the Python driver, and the Python driver is what
+// calls connect(). So a client learns about a given BLE address exactly once,
+// for the lifetime of that map, and restarting the interface does not clear it.
+// A node with a fixed address that was first seen during a moment it could not
+// be connected to is then invisible to that client for ever, no matter how
+// correctly it advertises afterwards -- which is exactly what OZD-ARD-01 did:
+// discoverable at -61 dBm, advertising the right service UUID, and ignored.
+//
+// Presenting a new address while we have no peer makes us a new key in that map
+// on the next scan, so the client re-evaluates us. This is safe here because
+// the protocol already refuses to treat a BLE address as identity: peers are
+// tracked by the 16-byte Reticulum identity, precisely because Android rotates
+// its own address roughly every fifteen minutes.
+//
+// The proper fix belongs in the client, by evicting stale entries or firing the
+// callback on rediscovery. Remove this the day that lands.
+#define BLE_PEER_ADDRESS_ROTATE_MS 45000
+
 
 inline size_t ble_peer_usable_value_length(uint16_t raw_att_mtu) {
 	const int usable = (int)raw_att_mtu - BLE_PEER_ATT_HEADER;
@@ -151,5 +235,13 @@ inline bool ble_peer_read_header(const uint8_t* in, size_t length, uint8_t& type
 	// continuation" would drop real traffic over a cosmetic disagreement.
 	if (type == BLE_PEER_TYPE_LONE) return (seq == 0 && total <= 1);
 	if (total == 0 || seq >= total) return false;
+	// A START is by definition fragment zero, and saying so matters. The
+	// reassembler seeds next_seq from START and then completes on a count, so a
+	// START claiming seq=1 of 3 would leave only one further fragment needed and
+	// hand RNS a packet two thirds of its stated length. Everything else is
+	// already ordered strictly -- a CONTINUE or END is refused unless its seq is
+	// exactly the one expected -- so this is the one way a short packet could
+	// still be assembled and delivered.
+	if (type == BLE_PEER_TYPE_START && seq != 0) return false;
 	return true;
 }

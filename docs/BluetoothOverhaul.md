@@ -3,7 +3,17 @@
 Why the current BLE implementation cannot be paired the way a phone user
 expects, what Meshtastic does differently, and what replacing it involves.
 
-Status: **proposal, nothing implemented.** Written 2026-08-27.
+Status: **superseded for Columba peer transport.** Written 2026-08-27; status
+corrected 2026-09-02.
+
+> This proposal describes an OS-paired, bonded BLE modem. That is not the
+> Columba architecture and must not be used as its acceptance criterion.
+> Columba uses the bondless Reticulum GATT peer service implemented in
+> `BLEPeerInterface.h`: no system pairing, no KISS modem ownership, and no
+> modem-control channel. The phone and RAD remain independent Reticulum peers
+> and exchange only Reticulum data. See `BLEPeerProtocol.md` and PR #14. The
+> pairing work below remains historical design material for a possible modem
+> product only.
 
 ---
 

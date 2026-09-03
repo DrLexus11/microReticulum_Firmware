@@ -38,6 +38,13 @@ uint32_t lxmf_announces_any();
 #if defined(UDP_TRANSPORT)
 #include "UDPInterface.h"
 #endif
+#if defined(ESPNOW_TRANSPORT)
+// ESPNowInterface.h includes Boards.h and performs its own HAS_WIFI/MCU guard.
+// Do not test HAS_WIFI before that include: radio-equipped targets happened to
+// get Boards.h transitively through LoRaInterface.h, while radio-less targets
+// correctly have no such include ordering side effect.
+#include "ESPNowInterface.h"
+#endif
 // Not nested in the UDP guard: the BLE peer interface has nothing to do with
 // UDP, and the portable build has no UDP at all -- so nesting it there silently
 // dropped the include and the class with it.
@@ -79,6 +86,22 @@ SPIClass SDSPI(HSPI);
 
 #if MCU_VARIANT == MCU_ESP32
   #include <esp_task_wdt.h>
+  #if HAS_BLE == true || defined(NIMBLE_PEER_TRANSPORT)
+    // For esp_bt_controller_mem_release() in setup().
+    #include <esp_bt.h>
+  #endif
+#endif
+
+// Boot-time acceptance probes for constrained images. Disabled unless a target
+// explicitly opts in; OZD keeps them because a few kilobytes decide whether
+// NimBLE and Reticulum can coexist on its no-PSRAM ESP32.
+#if defined(RNS_HEAP_PROBES) && defined(ESP32)
+  #include <esp_heap_caps.h>
+  #define RNS_HEAP_PROBE(tag) printf("[probe] %-22s free=%u largest=%u\n", (tag), \
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT), \
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))
+#else
+  #define RNS_HEAP_PROBE(tag) do {} while (0)
 #endif
 
 // WDT timeout
@@ -279,6 +302,41 @@ RTC_NOINIT_ATTR uint8_t  loop_phase_at_reset;
 RNS::Interface lora_interface(RNS::Type::NONE);
 #if defined(UDP_TRANSPORT)
 RNS::Interface udp_interface(RNS::Type::NONE);
+#endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+RNS::Interface espnow_interface(RNS::Type::NONE);
+ESPNowInterface* espnow_impl = nullptr;
+bool espnow_started()                  { return espnow_impl ? espnow_impl->started() : false; }
+uint32_t espnow_channel()              { return espnow_impl ? espnow_impl->channel() : 0; }
+uint32_t espnow_peer_count()           { return espnow_impl ? espnow_impl->peer_count() : 0; }
+uint32_t espnow_packets_in()           { return espnow_impl ? espnow_impl->packets_in() : 0; }
+uint32_t espnow_packets_out()          { return espnow_impl ? espnow_impl->packets_out() : 0; }
+uint32_t espnow_discoveries_in()       { return espnow_impl ? espnow_impl->discoveries_in() : 0; }
+uint32_t espnow_rx_dropped()           { return espnow_impl ? espnow_impl->rx_dropped() : 0; }
+uint32_t espnow_tx_dropped()           { return espnow_impl ? espnow_impl->tx_dropped() : 0; }
+uint32_t espnow_send_failures()        { return espnow_impl ? espnow_impl->send_failures() : 0; }
+uint32_t espnow_reassembly_timeouts()  { return espnow_impl ? espnow_impl->reassembly_timeouts() : 0; }
+uint32_t espnow_last_peer_phy_hash()   { return espnow_impl ? espnow_impl->last_peer_phy_hash() : 0; }
+uint32_t espnow_recovery_state()       { return espnow_impl ? (uint32_t)espnow_impl->recovery_state() : 0; }
+const char* espnow_recovery_state_name() { return espnow_impl ? espnow_impl->recovery_state_name() : "disabled"; }
+bool espnow_recovery_active()          { return espnow_impl ? espnow_impl->recovery_active() : false; }
+bool espnow_recovery_pinned()          { return espnow_impl ? espnow_impl->recovery_pinned() : false; }
+bool espnow_recovery_failed()          { return espnow_impl ? espnow_impl->recovery_failed() : false; }
+uint32_t espnow_recovery_channel()     { return espnow_impl ? espnow_impl->recovery_channel() : 0; }
+uint32_t espnow_recovery_pinned_since(){ return espnow_impl ? espnow_impl->recovery_pinned_since() : 0; }
+uint32_t espnow_recovery_scans()       { return espnow_impl ? espnow_impl->recovery_scans() : 0; }
+uint32_t espnow_recovery_successes()   { return espnow_impl ? espnow_impl->recovery_successes() : 0; }
+uint32_t espnow_recovery_failures()    { return espnow_impl ? espnow_impl->recovery_failures() : 0; }
+uint32_t espnow_recovery_proof_failures() { return espnow_impl ? espnow_impl->recovery_proof_failures() : 0; }
+uint32_t espnow_recovery_channel_errors() { return espnow_impl ? espnow_impl->recovery_channel_errors() : 0; }
+uint32_t espnow_accepted_packets_in()  { return espnow_impl ? espnow_impl->accepted_packets_in() : 0; }
+uint32_t espnow_accepted_from_selected() { return espnow_impl ? espnow_impl->accepted_from_selected() : 0; }
+const char* espnow_recovery_peer_mac() { return espnow_impl ? espnow_impl->recovery_peer_mac() : ""; }
+bool espnow_request_recovery_scan(uint32_t budget_ms, uint8_t rendezvous_channel) {
+  return espnow_impl ? espnow_impl->request_recovery_scan(budget_ms, rendezvous_channel) : false;
+}
+void espnow_reset_recovery() { if (espnow_impl) espnow_impl->reset_recovery(); }
+void espnow_before_wifi_reset() { if (espnow_impl) espnow_impl->stop(); }
 #endif
 #if defined(BLE_PEER_TRANSPORT)
 // Accessors for Provisioning.cpp, which cannot see this translation unit's
@@ -691,6 +749,22 @@ void setup() {
     loop_phase_boot(esp_reset_reason() == ESP_RST_TASK_WDT);
   }
 #endif
+#if defined(ESP32) && HAS_BLE == true && HAS_BLUETOOTH == false
+  // Hand back the BR/EDR half of the controller's DRAM before anything can
+  // claim it. Linking Bluedroid reserves that memory whether or not Classic is
+  // ever enabled, and on a 4 MB no-PSRAM ESP32 it is the difference between
+  // RNS starting and RNS throwing bad_alloc during Reticulum init.
+  //
+  // Must run before btStart()/BLEDevice::init(); the release is refused once
+  // the controller is initialised. Safe here because BLE is brought up lazily
+  // from loop(), long after this point, and nothing in this build uses Classic.
+  {
+    const esp_err_t release_result =
+        esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    printf("[probe] classic-bt release     result=%d\n", (int)release_result);
+    RNS_HEAP_PROBE("post-classic-release");
+  }
+#endif
 #ifdef HAS_RNS
   printf("Total SRAM:  %7u bytes\n", RNS::Utilities::Memory::heap_size());
   printf("Free SRAM:   %7u bytes\n", RNS::Utilities::Memory::heap_available());
@@ -817,7 +891,7 @@ void setup() {
     boot_seq();
   #endif
 
-  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2 && BOARD_MODEL != BOARD_RAD01_REV1 && BOARD_MODEL != BOARD_RAD01_REV2
+  #if BOARD_MODEL != BOARD_RAK4631 && BOARD_MODEL != BOARD_RAK3401 && BOARD_MODEL != BOARD_HELTEC_T114 && BOARD_MODEL != BOARD_TECHO && BOARD_MODEL != BOARD_T3S3 && BOARD_MODEL != BOARD_TBEAM_S_V1 && BOARD_MODEL != BOARD_HELTEC32_V4 && BOARD_MODEL != BOARD_HELTEC_TRACKER_V2 && BOARD_MODEL != BOARD_RAD01_REV1 && BOARD_MODEL != BOARD_RAD01_REV2 && BOARD_MODEL != BOARD_OZDISAN_ESP32
     // Some boards need to wait until the hardware UART is set up before booting
     // the full firmware. In the case of the RAK4631, RAK3401, and Heltec T114,
     // the line below will wait until a serial connection is actually established
@@ -984,6 +1058,7 @@ void setup() {
   #endif // defined(LORA_TRANSPORT)
 
   #if HAS_DISPLAY
+    RNS_HEAP_PROBE("pre-display-init");
     #if HAS_EEPROM
     if (EEPROM.read(eeprom_addr(ADDR_CONF_DSET)) != CONF_OK_BYTE) {
     #elif MCU_VARIANT == MCU_NRF52
@@ -1003,6 +1078,7 @@ void setup() {
     display_unblank();
     disp_ready = display_init();
     update_display();
+    RNS_HEAP_PROBE("post-display-init");
   #endif
 
   #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52 || MCU_VARIANT == MCU_NATIVE
@@ -1023,9 +1099,38 @@ void setup() {
       }
     #endif
 
+    // The radio-less Ozdisan fixture is an autonomous ESP-NOW node. On erased
+    // EEPROM, start STA mode without credentials: this intentionally reaches
+    // the bounded scan-before-SoftAP path and never associates to the lab WiFi.
+    // A provisioned non-0xFF choice is always preserved.
+    #if BOARD_MODEL == BOARD_OZDISAN_ESP32 && HAS_EEPROM
+      if (EEPROM.read(eeprom_addr(ADDR_CONF_WIFI)) == 0xFF) {
+        eeprom_update(eeprom_addr(ADDR_CONF_WIFI), WR_WIFI_STA);
+      }
+      // This fixture has no Bluetooth stack to derive bt_devname from, but the
+      // same buffer also names its fallback AP and DHCP host. Give lab boards
+      // a stable, unmistakable identity instead of leaving that name empty.
+      snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01");
+    #endif
+
+    #if defined(NIMBLE_PEER_TRANSPORT)
+      // Bring up the controller and NimBLE host while heap is still broad and
+      // contiguous. The GATT service itself waits for the Reticulum identity
+      // and is created lazily from loop(). Initialising the host there was too
+      // late: Wi-Fi, ESP-NOW, provisioning and RNS had already fragmented the
+      // no-PSRAM OZD heap enough for controller setup to fail.
+      RNS_HEAP_PROBE("pre-nimble-init");
+      if (!NimBLEDevice::init(std::string(bt_devname))) {
+        printf("[blepeer] early NimBLE initialisation failed\n");
+      }
+      RNS_HEAP_PROBE("post-nimble-init");
+    #endif
+
     #if HAS_BLUETOOTH || HAS_BLE == true
+      RNS_HEAP_PROBE("pre-bt-init");
       bt_init();
       bt_init_ran = true;
+      RNS_HEAP_PROBE("post-bt-init");
     #endif
 
     if (console_active) {
@@ -1037,7 +1142,11 @@ void setup() {
     } else {
       #if HAS_WIFI
         wifi_mode = EEPROM.read(eeprom_addr(ADDR_CONF_WIFI));
-        if (wifi_mode == WR_WIFI_STA || wifi_mode == WR_WIFI_AP) { wifi_remote_init(); }
+        if (wifi_mode == WR_WIFI_STA || wifi_mode == WR_WIFI_AP) {
+          RNS_HEAP_PROBE("pre-wifi-init");
+          wifi_remote_init();
+          RNS_HEAP_PROBE("post-wifi-init");
+        }
       #endif
       kiss_indicate_reset();
     }
@@ -1311,7 +1420,19 @@ void setup() {
         udp_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
       }
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      if (wifi_mode != WR_WIFI_OFF) {
+        RNS_HEAP_PROBE("pre-new-espnow");
+        espnow_impl = new ESPNowInterface();
+        espnow_interface = espnow_impl;
+        // ESP-NOW is a one-hop link only. MODE_GATEWAY permits normal RNS
+        // announce propagation; Reticulum remains the sole routing layer.
+        espnow_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+        RNS_HEAP_PROBE("post-new-espnow");
+      }
+#endif
 #if defined(BLE_PEER_TRANSPORT)
+      RNS_HEAP_PROBE("pre-new-blepeer");
       ble_peer_impl = new BLEPeerInterface();
       ble_peer_interface = ble_peer_impl;
       // A peer over BLE joins the mesh as a peer, exactly as one over TCP or
@@ -1324,6 +1445,7 @@ void setup() {
       // no pages, and could deliver no messages, while the link itself looked
       // perfectly healthy.
       ble_peer_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+      RNS_HEAP_PROBE("post-new-blepeer");
 #endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       // Serves attached clients (residents' phones on the SoftAP, or hosts on
@@ -1331,8 +1453,10 @@ void setup() {
       // disaster case and STA the everyday one, and the interface does not care
       // which. The listener itself binds later, from poll(), once WiFi is up.
       if (wifi_mode != WR_WIFI_OFF) {
+        RNS_HEAP_PROBE("pre-new-tcpserver");
         tcp_server_interface = new TCPServerInterface();
         tcp_server_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+        RNS_HEAP_PROBE("post-new-tcpserver");
       }
 #endif
 
@@ -1345,7 +1469,11 @@ void setup() {
 
 #ifdef URTN_STATS_PAGES
       // Provisioning default
+#if BOARD_MODEL == BOARD_OZDISAN_ESP32
+      snprintf(nomadnet_name, sizeof(nomadnet_name), "OZD-ARD-01");
+#else
       snprintf(nomadnet_name, sizeof(nomadnet_name), "microReticulum Node [%s]", device_uid_str);
+#endif
 #endif
 
 #ifdef HAS_PROVISIONING
@@ -1357,8 +1485,10 @@ void setup() {
       // eeprom_conf_load() runs or a Provisioning SetState arrives.
       // CBA NOTE: All app-default-values must be set *before* calling init_provisioning so that they take effect for fresh installs
       HEAD("Initializing Provisioning subsystem...", RNS::LOG_TRACE);
+      RNS_HEAP_PROBE("pre-provisioning");
       init_provisioning();
       auto& prov = RNS::Provisioning::Provisioner::instance();
+      RNS_HEAP_PROBE("post-provisioning");
 #endif
 
       //reticulum.clear_caches();
@@ -1382,10 +1512,19 @@ void setup() {
         TRACEF("UDPInterface hash: %s", udp_interface.get_hash().toHex().c_str());
       }
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      if (wifi_mode != WR_WIFI_OFF && espnow_interface) {
+        HEAD("Registering ESP-NOW Interface...", RNS::LOG_TRACE);
+        RNS::Transport::register_interface(espnow_interface);
+        TRACEF("ESPNowInterface hash: %s", espnow_interface.get_hash().toHex().c_str());
+      }
+#endif
 #if defined(BLE_PEER_TRANSPORT)
       HEAD("Registering BLE Peer Interface...", RNS::LOG_TRACE);
+      RNS_HEAP_PROBE("pre-reg-ble");
       RNS::Transport::register_interface(ble_peer_interface);
       TRACEF("BLEPeerInterface hash: %s", ble_peer_interface.get_hash().toHex().c_str());
+      RNS_HEAP_PROBE("post-reg-ble");
 #endif
 #if HAS_WIFI && defined(TCP_SERVER_TRANSPORT)
       if (wifi_mode != WR_WIFI_OFF && tcp_server_interface) {
@@ -1396,7 +1535,9 @@ void setup() {
 #endif
 
       HEAD("Creating Reticulum instance...", RNS::LOG_TRACE);
+      RNS_HEAP_PROBE("pre-reticulum-ctor");
       reticulum = RNS::Reticulum();
+      RNS_HEAP_PROBE("post-reticulum-ctor");
       // CBA NOTE: `transport_enabled` needs to always be overridden to false when op_mode is not MODE_TNC
 printf("[init] hw_ready: %u\n", hw_ready);
 printf("[init] op_mode: %U\n", op_mode);
@@ -1404,7 +1545,9 @@ printf("[init] op_mode: %U\n", op_mode);
         INFO("Not in TNC mode, transport will be disabled");
         reticulum.transport_enabled(false);
       }
+      RNS_HEAP_PROBE("pre-reticulum-start");
       reticulum.start();
+      RNS_HEAP_PROBE("post-reticulum-start");
 
       // Set loop callback only after the Reticulum instance is started
       // (to avoid looping without a completely initialized instance)
@@ -1484,9 +1627,21 @@ printf("[init] op_mode: %U\n", op_mode);
 #ifdef NOMADNET_PAGES_ALLOW_ALL
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#endif
 #else
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#endif
 #endif
 #ifdef HAS_BME
         if (BME680::bme_installed) {
@@ -1536,6 +1691,7 @@ printf("[init] op_mode: %U\n", op_mode);
   }
   catch (const std::bad_alloc&) {
     ERROR("RNS startup failed: bad_alloc - out of memory");
+    RNS_HEAP_PROBE("bad_alloc");
   }
   catch (std::exception& e) {
     ERRORF("RNS startup failed: %s", e.what());
@@ -1812,6 +1968,12 @@ void ISR_VECT receive_callback(int packet_size) {
 }
 
 bool startRadio() {
+#if defined(NO_LORA_HARDWARE)
+  // This is a deliberate ESP-NOW-only node, not a failed modem probe. Host
+  // commands must not dereference the uninstantiated LoRa driver.
+  radio_online = false;
+  return false;
+#else
   update_radio_lock();
   if (!radio_online && !console_active) {
     if (!radio_locked && hw_ready) {
@@ -1891,6 +2053,7 @@ bool startRadio() {
     kiss_indicate_radiostate();
     return true;
   }
+#endif
 }
 
 void stopRadio() {
@@ -2974,7 +3137,12 @@ void validate_status() {
         if (eeprom_checksum_valid()) {
 #endif
           eeprom_ok = true;
-          if (modem_installed) {
+#if defined(NO_LORA_HARDWARE)
+          const bool required_hardware_present = true;
+#else
+          const bool required_hardware_present = modem_installed;
+#endif
+          if (required_hardware_present) {
             #if PLATFORM == PLATFORM_ESP32 || PLATFORM == PLATFORM_NRF52 || PLATFORM == PLATFORM_NATIVE
               if (device_init()) {
                 hw_ready = true;
@@ -2996,13 +3164,22 @@ void validate_status() {
             #endif
           }
           
-          if (hw_ready && eeprom_have_conf()) {
+#if defined(NO_LORA_HARDWARE)
+          const bool node_config_ready = true;
+#else
+          const bool node_config_ready = eeprom_have_conf();
+#endif
+          if (hw_ready && node_config_ready) {
+#if !defined(NO_LORA_HARDWARE)
             eeprom_conf_load();
+#endif
             op_mode = prov_op_mode;
             // A TNC-mode board is autonomous and brings its own radio up. In
             // host mode the attached host owns the radio and starts it with
             // CMD_RADIO_STATE, as upstream RNode expects.
-            if (op_mode == MODE_TNC) { startRadio(); }
+            #if !defined(NO_LORA_HARDWARE)
+              if (op_mode == MODE_TNC) { startRadio(); }
+            #endif
           }
         } else {
           hw_ready = false;
@@ -3127,6 +3304,9 @@ static void nomadnet_announce_watch() {
   static uint32_t announce_jitter = 0;
   static bool armed = false;
   static bool first_done = false;
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  static bool recovery_attach_announced = false;
+#endif
   if (!nomadnet_enabled || !nomadnet_destination) return;
   // Jitter is rolled when arming as well as after each announce: the very
   // first announce is the one most likely to collide fleet-wide, because a
@@ -3136,6 +3316,19 @@ static void nomadnet_announce_watch() {
     announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
     return;
   }
+  // The startup announce can precede an orphan's channel sweep, so it is sent
+  // where no peer can hear it. Treat the first proven ESP-NOW attachment after
+  // boot as the first scheduled announce: publish immediately on the selected
+  // channel, then continue the normal bounded re-mesh burst. Later re-pins use
+  // that cadence instead of spending another rate-limit allowance.
+  bool recovery_attach = false;
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  const uint32_t recovery_successes = espnow_recovery_successes();
+  if (!recovery_attach_announced && recovery_successes > 0) {
+    recovery_attach = espnow_recovery_pinned();
+    if (recovery_attach) recovery_attach_announced = true;
+  }
+#endif
   // The startup announce in setup() is NOT sufficient. It fires at ~t+4s, about
   // a second before DHCP completes and the UDP socket is rebound to a real
   // address (see the rebind in Remote.h), so on a fast boot it is emitted into a
@@ -3153,7 +3346,7 @@ static void nomadnet_announce_watch() {
   else if (burst_sent < NOMADNET_REMESH_BURST_COUNT) due = NOMADNET_REMESH_BURST_MS;
   else                                              due = NOMADNET_ANNOUNCE_INTERVAL_MS;
   due += announce_jitter;
-  if (millis() - last_announce < due) return;
+  if (!recovery_attach && millis() - last_announce < due) return;
   last_announce = millis();
   announce_jitter = (uint32_t)random(NOMADNET_ANNOUNCE_JITTER_MS);
   // Decide the label BEFORE incrementing: the counter describes announces
@@ -3164,7 +3357,8 @@ static void nomadnet_announce_watch() {
   if (first_done && burst_sent < NOMADNET_REMESH_BURST_COUNT) burst_sent++;
   first_done = true;
   printf("[announce] re-announcing NomadNet site \"%s\" (%s)\n", nomadnet_name,
-         in_burst ? "re-mesh burst" : "steady");
+         recovery_attach ? "ESP-NOW attach" :
+         (in_burst ? "re-mesh burst" : "steady"));
   nomadnet_destination.announce(nomadnet_name);
 }
 #endif
@@ -3491,6 +3685,7 @@ static void heap_watch() {
   #endif
   // Is the modem ever actually keyed? packets_sent only counts queueing, so a
   // CSMA stall looks identical to a working transmitter from the RNS side.
+  #if defined(LORA_TRANSPORT)
   {
     extern volatile uint32_t tx_calls;
     #if MODEM == SX1262
@@ -3523,6 +3718,9 @@ static void heap_watch() {
              (int)current_rssi, (int)noise_floor, (int)radio_online);
     #endif
   }
+  #else
+    printf("[lora] not fitted (ESP-NOW-only target)\n");
+  #endif
   printf("[heap] free %u / %u bytes (%u%%), min-free %u, uptime %lus\n",
          (unsigned)avail, (unsigned)total,
          (unsigned)(total ? (avail * 100 / total) : 0),
@@ -3574,11 +3772,18 @@ void loop() {
   // Bluetooth has come up, and the transport identity is not loaded until
   // Reticulum has. Waiting for both here avoids ordering assumptions that
   // would fail silently.
+  #if defined(NIMBLE_PEER_TRANSPORT)
+  if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
+      RNS::Transport::identity()) {
+    ble_peer_impl->begin(RNS::Transport::identity().hash());
+  }
+  #else
   if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
       bt_state != BT_STATE_OFF && bt_state != BT_STATE_NA &&
       SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
     ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
   }
+  #endif
   loop_phase(LOOP_PHASE_BLE_PEER);
   if (ble_peer_impl != nullptr) ble_peer_impl->loop();
 #endif

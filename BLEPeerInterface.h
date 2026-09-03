@@ -30,17 +30,30 @@
 
 #include "Boards.h"
 
-#if HAS_BLE == true && MCU_VARIANT == MCU_ESP32
+#if (HAS_BLE == true || defined(NIMBLE_PEER_TRANSPORT)) && MCU_VARIANT == MCU_ESP32
 
 #include <microReticulum.h>
+
+#include "BLEPeerProtocol.h"
+
+#if defined(NIMBLE_PEER_TRANSPORT)
+
+#include <NimBLEDevice.h>
+
+// The constrained OZD backend has materially different connection ownership:
+// one shared GATT service carries several simultaneous Reticulum peers. It is
+// kept in its own file so that its state machine cannot perturb the Bluedroid
+// backend below, which is the one the RAD boards were proven on.
+#include "BLEPeerNimBLEInterface.h"
+
+#else
+
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEClient.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLE2902.h>
-
-#include "BLEPeerProtocol.h"
 
 class BLEPeerInterface;
 
@@ -700,5 +713,7 @@ inline void ble_peer_notify_trampoline(BLERemoteCharacteristic* characteristic,
 	(void)characteristic; (void)is_notify;
 	if (ble_peer_active != nullptr) ble_peer_active->client_data(data, length);
 }
+
+#endif // NIMBLE_PEER_TRANSPORT
 
 #endif // HAS_BLE && MCU_ESP32

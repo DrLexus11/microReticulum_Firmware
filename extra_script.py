@@ -1,12 +1,13 @@
 import time
 import hashlib
+import os
+import shlex
 import shutil
 import platform as platformlib
 
 from firmware_image import (
     esp_image_sha256,
     firmware_hash_kiss_frame,
-    firmware_reset_kiss_frame,
 )
 
 #
@@ -50,6 +51,42 @@ def get_target():
         arch_name = "unknown"
 
     return os_name + "-" + arch_name
+
+
+def find_rnodeconf():
+    """Locate rnodeconf even when PlatformIO does not inherit its venv PATH."""
+    discovered = shutil.which("rnodeconf")
+    if discovered:
+        return discovered
+
+    # The project's documented local RNS installation uses this dedicated
+    # virtualenv. PlatformIO runs from its own venv, so the executable is not
+    # normally on PATH even though it is installed and usable.
+    local_venv = os.path.expanduser(
+        "~/.local/share/rnode-rns-venv/bin/rnodeconf"
+    )
+    if os.path.isfile(local_venv) and os.access(local_venv, os.X_OK):
+        return local_venv
+    return None
+
+
+def run_rnodeconf(env, arguments):
+    executable = find_rnodeconf()
+    if executable is None:
+        raise RuntimeError(
+            "rnodeconf is required but was not found on PATH or in "
+            "~/.local/share/rnode-rns-venv/bin"
+        )
+    command = " ".join(
+        shlex.quote(str(part)) for part in [executable, *arguments]
+    )
+    result = env.Execute(command)
+    if result != 0:
+        # env.Execute only prints the child failure; without raising, SCons
+        # reports the custom target as SUCCESS (observed during first Ozdisan
+        # provisioning when the shell returned 127).
+        raise RuntimeError(f"rnodeconf failed with exit status {result}")
+    return result
 
 #
 # Custom targets
@@ -163,26 +200,32 @@ def firmware_hash_write_notice(hex_hash, env):
           % (env.subst("$PIOENV"), port_path))
     print("")
 
-def device_set_firmware_hash(firmware_hash, env, reboot_after=False):
+def device_set_firmware_hash(firmware_hash, env):
     import serial
 
     port_path = env.subst("$UPLOAD_PORT")
+    variant = env.GetProjectOption("custom_variant")
     frame = firmware_hash_kiss_frame(firmware_hash)
     print("Writing firmware hash directly over KISS...")
     with serial.Serial(port_path, 115200, timeout=0.1) as port:
         # Opening native USB can reset an ESP32-S3. Drain startup output and
-        # wait until setup() has reached the serial command loop.
-        ready_at = time.monotonic() + 4.0
+        # wait until setup() has reached the serial command loop. The original
+        # ESP32 Özdisan fixture takes materially longer while loading its
+        # on-device RNS state; a four-second write is silently discarded and
+        # the next boot then fails firmware validation with hw_ready=0.
+        boot_wait = 20.0 if variant == "ozdisan_esp32_espnow" else 4.0
+        ready_at = time.monotonic() + boot_wait
         while time.monotonic() < ready_at:
             port.read(4096)
         port.write(frame)
         port.flush()
+        # A running image that needs a new target hash is currently invalid.
+        # device_save_firmware_hash() commits it and calls hard_reset() itself.
+        # Sending another reset a second later leaves that command buffered
+        # during the new boot and produces a confusing second reboot once the
+        # serial loop starts. A valid image receiving the same hash needs no
+        # reboot, so the host must not reset in either case.
         time.sleep(1)
-        if reboot_after:
-            print("Rebooting device so device_init() validates the new hash...")
-            port.write(firmware_reset_kiss_frame())
-            port.flush()
-            time.sleep(0.2)
 
 def target_fixhash(target, source, env):
     """Write the built firmware's hash to a board that is already running.
@@ -206,8 +249,8 @@ def target_fixhash(target, source, env):
     print("      sources changed since the flash, re-flash rather than running this,")
     print("      or the stored hash will not match the running image and hw_ready")
     print("      will stay 0 for a different reason.")
-    device_set_firmware_hash(calc_hash, env, reboot_after=True)
-    print("Hash written and reboot requested; device_init() will re-validate it.")
+    device_set_firmware_hash(calc_hash, env)
+    print("Hash written; an invalid running image resets itself after commit.")
 
 def device_provision(env):
     # Device provision
@@ -235,8 +278,8 @@ def device_provision(env):
             env.Execute("rnodeconf --product 15 --model 17 --hwrev 1 --rom " + env.subst("$UPLOAD_PORT"))
         case "heltec_t114" | "heltec_t114_local":
             env.Execute("rnodeconf --product c2 --model c7 --hwrev 1 --rom " + env.subst("$UPLOAD_PORT"))
-        case "impr_rad01_rev1" | "impr_rad01_rev2":
-            # RAD-01 is provisioned as PRODUCT_HMBRW / MODEL_FE. App uploads
+        case "impr_rad01_rev1" | "impr_rad01_rev2" | "ozdisan_esp32_espnow":
+            # Local boards are provisioned as PRODUCT_HMBRW / MODEL_FE. App uploads
             # preserve its signed EEPROM identity, so do not rewrite it here.
             #
             # Deliberately NOT auto-provisioning when the EEPROM looks blank:
@@ -246,11 +289,11 @@ def device_provision(env):
             # answer. A query that failed and read as "blank" would overwrite a
             # real signed identity, which is unrecoverable. Provisioning is a
             # once-per-board manufacturing step; run `-t provision` explicitly.
-            print("Preserving existing RAD-01 EEPROM provisioning")
+            print("Preserving existing local-board EEPROM provisioning")
             print("  (a NEW board must be provisioned once first:")
             print("     pio run -e <env> -t provision --upload-port <port>")
-            print("   without it the board boots with hw_ready=0 and the radio")
-            print("   never starts, even though this upload reports success)")
+            print("   without it the board boots with hw_ready=0, even though")
+            print("   this upload reports success)")
         case _:
             print(f"Unknown board variant {variant}, can not provision device!")
 
@@ -279,6 +322,7 @@ def firmware_hash(source, env):
             "heltec_tracker_v2_local",
             "impr_rad01_rev1",
             "impr_rad01_rev2",
+            "ozdisan_esp32_espnow",
         ):
             try:
                 calc_hash = esp_image_sha256(firmware_data)
@@ -286,12 +330,7 @@ def firmware_hash(source, env):
                 print(f"Unable to calculate firmware hash: {error}")
                 return
             print("firmware_hash:", calc_hash.hex())
-            variant = env.GetProjectOption("custom_variant")
-            device_set_firmware_hash(
-                calc_hash,
-                env,
-                reboot_after=variant in ("impr_rad01_rev1", "impr_rad01_rev2"),
-            )
+            device_set_firmware_hash(calc_hash, env)
         else:
             calc_hash = hashlib.sha256(firmware_data[0:-32]).digest()
             part_hash = firmware_data[-32:]
@@ -382,7 +421,7 @@ if env.IsCleanTarget():
         full_clean(env)
 
 def target_provision(target, source, env):
-    """Write the RAD-01 device identity into a blank EEPROM. Run ONCE per board.
+    """Write a local-board device identity into a blank EEPROM. Run ONCE per board.
 
     Separate from `upload` on purpose. The identity is signed and locked
     (ADDR_INFO_LOCK), and rewriting it on every flash would destroy it -- so the
@@ -393,8 +432,13 @@ def target_provision(target, source, env):
     """
     variant = env.GetProjectOption("custom_variant")
     # PRODUCT_HMBRW (0xF0) / MODEL_FE (0xFE), see Boards.h. hwrev tracks the
-    # board revision so the identity distinguishes Rev 1 from Rev 2 hardware.
-    hwrev = {"impr_rad01_rev1": 1, "impr_rad01_rev2": 2}.get(variant)
+    # hardware revision distinguishes the two RAD revisions and the radio-less
+    # Ozdisan acceptance fixture.
+    hwrev = {
+        "impr_rad01_rev1": 1,
+        "impr_rad01_rev2": 2,
+        "ozdisan_esp32_espnow": 3,
+    }.get(variant)
     if hwrev is None:
         print(f"No provisioning profile for variant {variant}")
         return
@@ -404,9 +448,12 @@ def target_provision(target, source, env):
         return
     print(f"--- Provisioning {variant} as PRODUCT_HMBRW/MODEL_FE hwrev {hwrev} ---")
     print("This writes a signed device identity and is normally done once.")
-    env.Execute(
-        f"rnodeconf --product f0 --model fe --hwrev {hwrev} --rom {port}"
-    )
+    run_rnodeconf(env, [
+        "--product", "f0",
+        "--model", "fe",
+        "--hwrev", str(hwrev),
+        "--rom", port,
+    ])
 
 # Add custom targets
 if (platform == "espressif32"):
@@ -452,12 +499,16 @@ if platform == "espressif32":
         description="Write the built firmware's hash to an already-running board"
     )
 
-if env.GetProjectOption("custom_variant") in ("impr_rad01_rev1", "impr_rad01_rev2"):
+if env.GetProjectOption("custom_variant") in (
+    "impr_rad01_rev1",
+    "impr_rad01_rev2",
+    "ozdisan_esp32_espnow",
+):
     env.AddCustomTarget(
         name="provision",
         dependencies=None,
         actions=[target_provision],
-        title="Provision RAD-01",
+        title="Provision local board",
         description="Write device identity to a blank EEPROM (once per board)"
     )
 

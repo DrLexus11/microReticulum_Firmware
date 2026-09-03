@@ -171,15 +171,15 @@ extern uint32_t lora_bitrate;
 extern uint8_t radio_preset_current();
 extern bool radio_preset_apply(uint8_t idx);
 extern uint8_t implicit_l;
-#if MCU_VARIANT == MCU_ESP32
-extern uint32_t loop_stack_free_min;
-#endif
 extern int noise_floor;
 extern int current_rssi;
 extern int last_rssi;
 extern uint8_t last_snr_raw;
 extern float st_airtime_limit;
 extern float lt_airtime_limit;
+#endif
+#if MCU_VARIANT == MCU_ESP32
+extern uint32_t loop_stack_free_min;
 #endif
 #if defined(UDP_TRANSPORT)
 // udp_interface is only declared in RNode_Firmware.ino under UDP_TRANSPORT,
@@ -205,6 +205,33 @@ extern uint8_t wifi_ap_client_count;
 #endif
 #if defined(TCP_SERVER_TRANSPORT)
 extern RNS::Interface tcp_server_interface;
+#endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+extern RNS::Interface espnow_interface;
+bool espnow_started();
+uint32_t espnow_channel();
+uint32_t espnow_peer_count();
+uint32_t espnow_packets_in();
+uint32_t espnow_packets_out();
+uint32_t espnow_discoveries_in();
+uint32_t espnow_rx_dropped();
+uint32_t espnow_tx_dropped();
+uint32_t espnow_send_failures();
+uint32_t espnow_reassembly_timeouts();
+uint32_t espnow_last_peer_phy_hash();
+uint32_t espnow_recovery_state();
+uint32_t espnow_recovery_channel();
+uint32_t espnow_recovery_scans();
+uint32_t espnow_recovery_successes();
+uint32_t espnow_recovery_failures();
+uint32_t espnow_recovery_proof_failures();
+uint32_t espnow_recovery_channel_errors();
+uint32_t espnow_accepted_packets_in();
+uint32_t espnow_accepted_from_selected();
+const char* espnow_recovery_peer_mac();
+extern uint8_t wifi_espnow_recovery_mode;
+extern uint32_t wifi_espnow_scan_budget_ms;
+extern uint8_t wifi_espnow_rendezvous_channel;
 #endif
 #if HAS_WIFI
 extern void wifi_remote_apply_kiss_policy();
@@ -297,6 +324,14 @@ static void apply_all_ifac_configuration() {
                            lora_ifac_enabled || secure_node_enabled,
                            lora_ifac_netname, lora_ifac_passphrase, 8, "LoRa");
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  // ESP-NOW is another radio/backbone interface, so it deliberately shares
+  // LoRa's eight-byte IFAC and secure-node policy instead of creating an
+  // independently configurable open path into the mesh.
+  apply_ifac_configuration(espnow_interface,
+                           lora_ifac_enabled || secure_node_enabled,
+                           lora_ifac_netname, lora_ifac_passphrase, 8, "ESP-NOW");
+#endif
 #if defined(TCP_SERVER_TRANSPORT)
   apply_ifac_configuration(tcp_server_interface,
                            tcp_ifac_enabled || secure_node_enabled,
@@ -357,6 +392,39 @@ static void validate_ifac_commit(RNS::Provisioning::Namespace& ns,
 static void register_provisioning_namespaces() {
   using namespace RNS::Provisioning;
 
+#if defined(OZD_COMPACT_PROVISIONING)
+  // The no-PSRAM OZD fixture needs persisted backbone access control, but the
+  // complete firmware + microReticulum schema consumes the heap required by
+  // NimBLE, Wi-Fi, ESP-NOW and RNS. Keep the stable namespace/field IDs so the
+  // existing /config/ns109.msgpack and ns112.msgpack files remain compatible.
+  // Unknown fields in an older, larger namespace file are intentionally
+  // ignored by Provisioning's forward-compatible loader.
+  Provisioner::instance()
+    .register_namespace("ESP-NOW Access Control", PROV_NS_IFAC_LORA)
+      .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { lora_ifac_enabled = v.as_bool(); return true; },
+        []() { return lora_ifac_enabled; })
+      .field_string("Network Name", PROV_IFAC_LORA_NETNAME,
+        FF_REBOOT_REQUIRED, "", 64,
+        [](const Value& v) { lora_ifac_netname = v.as_string(); return true; },
+        []() { return lora_ifac_netname; })
+      .field_string("Passphrase", PROV_IFAC_LORA_PASSPHRASE,
+        (fflags_t)(FF_REBOOT_REQUIRED | FF_SECRET), "", 128,
+        [](const Value& v) { lora_ifac_passphrase = v.as_string(); return true; },
+        []() { return lora_ifac_passphrase; })
+      .on_commit([](Namespace& ns) {
+        validate_ifac_commit(ns, "ESP-NOW");
+      })
+      .end()
+    .register_namespace("Secure Node", PROV_NS_SECURE_NODE)
+      .field_bool("Enabled", PROV_SECURE_NODE_ENABLED, FF_REBOOT_REQUIRED,
+        false,
+        [](const Value& v) { secure_node_enabled = v.as_bool(); return true; },
+        []() { return secure_node_enabled; })
+      .end();
+
+#else
   // ----- General namespace -----
   auto general = Provisioner::instance()
     .register_namespace("RNode General Config", PROV_NS_GENERAL)
@@ -721,15 +789,23 @@ static void register_provisioning_namespaces() {
       );
   }
 #endif
-
   general
     .end();   // close "General"
 
-#if defined(LORA_TRANSPORT)
-  // ----- LoRa access-control namespace -----
+#if defined(LORA_TRANSPORT) || (HAS_WIFI == true && defined(ESPNOW_TRANSPORT))
+  // ----- Backbone radio access-control namespace -----
   // Changes are deliberately reboot-required. This prevents the two ends of
   // a live radio path from changing key state midway through a Provisioning
-  // exchange and stranding the response.
+  // exchange and stranding the response. ESP-NOW-only nodes retain the same
+  // namespace and fields so they can join an IFAC-protected RAD fleet without
+  // carrying a LoRa modem themselves.
+#if defined(LORA_TRANSPORT)
+  static const char* const backbone_access_name = "LoRa Access Control";
+  static const char* const backbone_access_label = "LoRa";
+#else
+  static const char* const backbone_access_name = "ESP-NOW Access Control";
+  static const char* const backbone_access_label = "ESP-NOW";
+#endif
   Provisioner::instance()
 #if defined(LXMF_PROPAGATION_NODE)
     .register_namespace("LXMF Peering", PROV_NS_LXMF)
@@ -750,7 +826,7 @@ static void register_provisioning_namespaces() {
       .end()
 #endif // LXMF_PROPAGATION_NODE
 
-    .register_namespace("LoRa Access Control", PROV_NS_IFAC_LORA)
+    .register_namespace(backbone_access_name, PROV_NS_IFAC_LORA)
       .field_bool("Enabled", PROV_IFAC_LORA_ENABLED, FF_REBOOT_REQUIRED,
         false,
         [](const Value& v) { lora_ifac_enabled = v.as_bool(); return true; },
@@ -764,7 +840,7 @@ static void register_provisioning_namespaces() {
         [](const Value& v) { lora_ifac_passphrase = v.as_string(); return true; },
         []() { return lora_ifac_passphrase; })
       .on_commit([](Namespace& ns) {
-        validate_ifac_commit(ns, "LoRa");
+        validate_ifac_commit(ns, backbone_access_label);
       })
       .end();
 #endif
@@ -985,6 +1061,34 @@ static void register_provisioning_namespaces() {
         .end();
   }
 #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  if (espnow_interface) {
+    metrics_ifaces
+      .register_namespace(espnow_interface.name().c_str(), PROV_NS_IFACE_ESPNOW)
+        .metric_int("Started", PROV_METRICS_ESPNOW_UP, []() { return (fint_t)espnow_started(); })
+        .metric_int("WiFi Channel", PROV_METRICS_ESPNOW_CHANNEL, []() { return (fint_t)espnow_channel(); })
+        .metric_int("Recent Peers", PROV_METRICS_ESPNOW_PEERS, []() { return (fint_t)espnow_peer_count(); })
+        .metric_int("Packets In", PROV_METRICS_ESPNOW_IN, []() { return (fint_t)espnow_packets_in(); })
+        .metric_int("Packets Out", PROV_METRICS_ESPNOW_OUT, []() { return (fint_t)espnow_packets_out(); })
+        .metric_int("Discoveries In", PROV_METRICS_ESPNOW_DISCOVERIES, []() { return (fint_t)espnow_discoveries_in(); })
+        .metric_int("RX Dropped", PROV_METRICS_ESPNOW_RXDROP, []() { return (fint_t)espnow_rx_dropped(); })
+        .metric_int("TX Dropped", PROV_METRICS_ESPNOW_TXDROP, []() { return (fint_t)espnow_tx_dropped(); })
+        .metric_int("Send Failures", PROV_METRICS_ESPNOW_SENDFAIL, []() { return (fint_t)espnow_send_failures(); })
+        .metric_int("Reassembly Timeouts", PROV_METRICS_ESPNOW_REASS_TO, []() { return (fint_t)espnow_reassembly_timeouts(); })
+        .metric_int("Last Peer PHY Hash", PROV_METRICS_ESPNOW_PHYHASH, []() { return (fint_t)espnow_last_peer_phy_hash(); })
+        .metric_int("Recovery State", PROV_METRICS_ESPNOW_REC_STATE, []() { return (fint_t)espnow_recovery_state(); })
+        .metric_int("Recovery Scans", PROV_METRICS_ESPNOW_REC_SCANS, []() { return (fint_t)espnow_recovery_scans(); })
+        .metric_int("Recovery Successes", PROV_METRICS_ESPNOW_REC_OK, []() { return (fint_t)espnow_recovery_successes(); })
+        .metric_int("Recovery Failures", PROV_METRICS_ESPNOW_REC_FAIL, []() { return (fint_t)espnow_recovery_failures(); })
+        .metric_int("Recovery Proof Failures", PROV_METRICS_ESPNOW_PROOFFAIL, []() { return (fint_t)espnow_recovery_proof_failures(); })
+        .metric_int("Recovery Channel Errors", PROV_METRICS_ESPNOW_CHANERR, []() { return (fint_t)espnow_recovery_channel_errors(); })
+        .metric_int("IFAC-Accepted Packets", PROV_METRICS_ESPNOW_ACCEPTED, []() { return (fint_t)espnow_accepted_packets_in(); })
+        .metric_int("Accepted From Selected", PROV_METRICS_ESPNOW_SEL_ACCEPT, []() { return (fint_t)espnow_accepted_from_selected(); })
+        .metric_string("Recovery Peer", PROV_METRICS_ESPNOW_REC_PEER, []() { return std::string(espnow_recovery_peer_mac()); })
+        .metric_int("Recovery Channel", PROV_METRICS_ESPNOW_REC_CHAN, []() { return (fint_t)espnow_recovery_channel(); })
+        .end();
+  }
+#endif
   metrics_ifaces.end(); // close "Interfaces"
 
   metrics.end();        // close "Metrics"
@@ -1152,6 +1256,28 @@ static void register_provisioning_namespaces() {
           (fint_t)(wifi_ap_max_defer_ms / 1000), (fint_t)60, (fint_t)86400,
           [](const Value& v) { wifi_ap_max_defer_ms = (uint32_t)v.as_int() * 1000UL; return true; },
           []() { return (fint_t)(wifi_ap_max_defer_ms / 1000); })
+#if defined(ESPNOW_TRANSPORT)
+        // Production RAD builds keep recovery opt-in until their transition
+        // matrix has passed. A dedicated acceptance target may override the
+        // compile-time default. Mode changes are reboot-required so a
+        // provisioning response cannot disappear when the radio leaves its
+        // WiFi channel.
+        .field_enum("ESP-NOW Recovery", PROV_NET_ESPNOW_RECOVERY,
+          FF_REBOOT_REQUIRED, (fint_t)wifi_espnow_recovery_mode,
+          {0, 1}, {"off", "scan-before-softap"},
+          [](const Value& v) { wifi_espnow_recovery_mode = (uint8_t)v.as_int(); return true; },
+          []() { return (fint_t)wifi_espnow_recovery_mode; })
+        .field_int("ESP-NOW Scan Budget (s)", PROV_NET_ESPNOW_SCAN_S,
+          FF_LIVE_APPLY, (fint_t)(wifi_espnow_scan_budget_ms / 1000),
+          (fint_t)5, (fint_t)60,
+          [](const Value& v) { wifi_espnow_scan_budget_ms = (uint32_t)v.as_int() * 1000UL; return true; },
+          []() { return (fint_t)(wifi_espnow_scan_budget_ms / 1000); })
+        .field_int("ESP-NOW Rendezvous Channel", PROV_NET_ESPNOW_CHANNEL,
+          FF_REBOOT_REQUIRED, (fint_t)wifi_espnow_rendezvous_channel,
+          (fint_t)1, (fint_t)13,
+          [](const Value& v) { wifi_espnow_rendezvous_channel = (uint8_t)v.as_int(); return true; },
+          []() { return (fint_t)wifi_espnow_rendezvous_channel; })
+#endif
         // Read-only state. Without these an operator cannot tell whether a node
         // is on the building network or serving its own, which is the first
         // question to ask about a node that has gone quiet.
@@ -1166,6 +1292,7 @@ static void register_provisioning_namespaces() {
   //}
 #endif
 
+#endif // OZD_COMPACT_PROVISIONING
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,6 +1355,7 @@ void kiss_indicate_provision_response(const RNS::Bytes& payload) {
 // commit hook runs and the values are persisted exactly as an operator-issued
 // change would be.
 void provisioning_sync_radio_from_runtime() {
+#if defined(LORA_TRANSPORT)
   auto& prov = RNS::Provisioning::Provisioner::instance();
   if (!prov.started()) return;
   prov.field(PROV_NS_RADIO, PROV_RADIO_FREQ, RNS::Provisioning::Value((int)lora_freq));
@@ -1236,6 +1364,7 @@ void provisioning_sync_radio_from_runtime() {
   prov.field(PROV_NS_RADIO, PROV_RADIO_CR, RNS::Provisioning::Value((int)lora_cr));
   prov.field(PROV_NS_RADIO, PROV_RADIO_TXP, RNS::Provisioning::Value((int)lora_txp));
   prov.commit(PROV_NS_RADIO);
+#endif
 }
 
 #endif // HAS_PROVISIONING

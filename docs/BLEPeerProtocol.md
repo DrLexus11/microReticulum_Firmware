@@ -12,7 +12,10 @@ peer rather than a client.
 Implementation: [`BLEPeerInterface.h`](../BLEPeerInterface.h), wire constants in
 [`BLEPeerProtocol.h`](../BLEPeerProtocol.h), pinned by
 [`tests/test_ble_peer_protocol.py`](../tests/test_ble_peer_protocol.py).
-Built only where `-DBLE_PEER_TRANSPORT` is set (`impr-rad01-rev1-portable`).
+Built only where `-DBLE_PEER_TRANSPORT` is set. Rev1/Rev2 use the proven
+Bluedroid peer backend; `ozdisan-esp32-espnow` uses NimBLE to fit BLE, Wi-Fi,
+ESP-NOW and Reticulum in an original ESP32 with no PSRAM. Neither backend asks
+the operating system to pair or bond.
 
 ## Wire format
 
@@ -63,10 +66,11 @@ waits as a peripheral. Advertising alone is therefore not enough — two
 peripheral-only nodes sit advertising at each other forever — so this node also
 scans and initiates when it holds the lower address.
 
-Addresses rotate. Android may present a vendor OUI (lower than an Espressif
-`80:…`) or a randomised static address (always `0xC0`+, hence higher), so which
-side initiates varies between attempts. Peers are tracked by Reticulum identity
-rather than address for exactly this reason.
+Addresses rotate, so connection failures suppress only the failed over-the-air
+address for a bounded interval. A scan burst is allowed to finish and the
+strongest eligible peer is selected; dialing the first advertisement forever
+lets one unreachable RAD starve a nearby phone. Peers are tracked by Reticulum
+identity rather than address after the handshake.
 
 ## Constraints this code exists to satisfy
 
@@ -79,17 +83,27 @@ complete — no messages, no pages — while announces still flow.
 explicitly blocks announce broadcasts on AP-mode interfaces ("Blocking announce
 broadcast … due to AP mode"). A peer is not an edge client.
 
-**BLE callbacks have a small fixed stack.** Scan results and GATT writes run on
-`BTC_TASK`. Doing real work there trips `Stack canary watchpoint triggered
-(BTC_TASK)` and reboots the node — `printf` and `std::string` temporaries are
-enough on their own, and calling into Reticulum's parse/decrypt/route path is
-far past the limit. Scan results record-and-return; inbound packets go on a
-bounded queue that the main loop drains.
+**BLE callbacks have a small fixed stack.** Bluedroid callbacks run on
+`BTC_TASK`; NimBLE likewise invokes callbacks on its host task. Doing real work
+there can reboot or deadlock the node. Scan results record-and-return, connection
+completion is deferred, and inbound packets go on a bounded queue that the main
+loop drains.
 
-**Advertising must be restarted.** The controller stops advertising on connect.
-Nothing else in a peer build restarts it, so without an explicit restart on
-disconnect the node is discoverable exactly once per boot: the first connection
-works and no later one ever does.
+**Connection state is per peer.** Identity, fragment sequence and reassembly
+buffers cannot be shared between links. The NimBLE backend keeps a bounded slot
+for each connection and carries all ready peers as one multi-access Reticulum
+medium. Outbound packets are sent to every ready slot, while inbound packets
+from every slot enter the same interface. Its capacity defaults to seven to
+match Columba and can be lowered at build time with
+`BLE_PEER_MAX_CONNECTIONS`. The established Bluedroid RAD backend is still
+single-peer and remains isolated from this state-machine change.
+
+**Advertising must remain available below capacity.** A legacy advertisement is
+consumed when a connection is accepted. The NimBLE backend re-arms it after each
+connect and disconnect and periodically verifies that it remains active, even
+while other peers are connected. It stops only once every configured slot is in
+use. Otherwise the first peer would make the node disappear from all later
+peers.
 
 ## Diagnosing it
 

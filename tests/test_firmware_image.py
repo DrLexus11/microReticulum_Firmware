@@ -1,4 +1,5 @@
 import hashlib
+import os
 import unittest
 
 from firmware_image import (
@@ -6,6 +7,10 @@ from firmware_image import (
     firmware_hash_kiss_frame,
     firmware_reset_kiss_frame,
 )
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEVICE = os.path.join(ROOT, "Device.h")
 
 
 def make_image(payload: bytes, *, hash_appended: bool) -> bytes:
@@ -57,6 +62,21 @@ class FirmwareHashKissFrameTests(unittest.TestCase):
 
     def test_reset_frame_matches_rnode_protocol(self):
         self.assertEqual(firmware_reset_kiss_frame(), bytes([0xC0, 0x55, 0xF8, 0xC0]))
+
+
+class FirmwareHashPersistenceTests(unittest.TestCase):
+    def test_esp32_stages_complete_hash_before_single_commit(self):
+        with open(DEVICE, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        save = source[source.index("void device_save_firmware_hash()"):
+                      source.index("void device_validate_partitions()")]
+        esp32 = save[save.index("#if HAS_EEPROM && MCU_VARIANT == MCU_ESP32"):
+                     save.index("#else")]
+        self.assertIn("EEPROM.write(address, dev_firmware_hash_target[i])", esp32)
+        self.assertEqual(1, esp32.count("EEPROM.commit()"))
+        self.assertNotIn(
+            "eeprom_update(dev_fwhash_addr(i), dev_firmware_hash_target[i])",
+            esp32)
 
 
 if __name__ == "__main__":
