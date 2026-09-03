@@ -40,6 +40,11 @@
 #define ESPNOW_CAP_LORA              0x01
 #define ESPNOW_CAP_TRANSPORT         0x02
 #define ESPNOW_CAP_IFAC_PROOF        0x04
+// "I can reach the mesh without going back out through ESP-NOW." An orphan
+// that is itself parented over ESP-NOW is not a way out for anybody else, and
+// a node that adopts one as its parent adds a hop that leads nowhere better.
+// This is RPL's rank, reduced to the one bit that matters here.
+#define ESPNOW_CAP_UPSTREAM          0x08
 
 // Active recovery uses a nonce so a scanner accepts only replies to its
 // current channel probe. The reply carries the normal advisory discovery plus

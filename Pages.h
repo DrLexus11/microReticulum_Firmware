@@ -93,6 +93,8 @@ const char* espnow_recovery_peer_mac();
 extern uint8_t wifi_espnow_recovery_mode;
 extern uint32_t wifi_espnow_scan_budget_ms;
 extern uint8_t wifi_espnow_rendezvous_channel;
+bool espnow_peer_has_upstream();
+bool espnow_local_has_upstream();
 #endif
 extern RNS::Destination nomadnet_destination;
 
@@ -539,6 +541,9 @@ RNS::Bytes serve_page(
       content << "Scan budget : " << std::to_string(wifi_espnow_scan_budget_ms / 1000) << " s\n";
       content << "Rendezvous  : channel " << std::to_string(wifi_espnow_rendezvous_channel) << "\n";
       content << "Selected    : " << espnow_recovery_peer_mac() << "\n";
+      content << "Parent upstream: " << (espnow_peer_has_upstream() ? "yes" : "no") << "\n";
+      content << "We are upstream: " << (espnow_local_has_upstream() ? "yes" : "no") << "\n";
+      content << "Relaying    : " << (RNS::Reticulum::transport_enabled() ? "yes" : "no") << "\n";
       content << "Pinned chan : " << std::to_string(espnow_recovery_channel()) << "\n";
       content << "Scans       : " << std::to_string(espnow_recovery_scans()) << "\n";
       content << "Succeeded   : " << std::to_string(espnow_recovery_successes()) << "\n";
@@ -555,7 +560,8 @@ RNS::Bytes serve_page(
       content << "TX drops    : " << std::to_string(espnow_tx_dropped()) << "\n";
       content << "Send failures: " << std::to_string(espnow_send_failures()) << "\n";
       content << "Reassembly timeouts: " << std::to_string(espnow_reassembly_timeouts()) << "\n\n";
-      content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n";
+      content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n\n";
+      content << "A node attaches to a peer that can reach the mesh, and adopts one that cannot only after the scan budget expires with nothing better. A node with no way out of its own stops relaying while it has a parent, because every announce it repeats reaches the hub one hop longer than the copy the hub already heard, and it starts again the moment the parent is lost.\n";
     }
 #endif
 #ifdef HAS_BME

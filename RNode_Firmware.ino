@@ -333,6 +333,8 @@ uint32_t espnow_recovery_channel_errors() { return espnow_impl ? espnow_impl->re
 uint32_t espnow_accepted_packets_in()  { return espnow_impl ? espnow_impl->accepted_packets_in() : 0; }
 uint32_t espnow_accepted_from_selected() { return espnow_impl ? espnow_impl->accepted_from_selected() : 0; }
 const char* espnow_recovery_peer_mac() { return espnow_impl ? espnow_impl->recovery_peer_mac() : ""; }
+bool espnow_peer_has_upstream()        { return espnow_impl ? espnow_impl->recovery_peer_has_upstream() : false; }
+bool espnow_local_has_upstream()       { return espnow_impl ? espnow_impl->has_upstream() : false; }
 bool espnow_request_recovery_scan(uint32_t budget_ms, uint8_t rendezvous_channel) {
   return espnow_impl ? espnow_impl->request_recovery_scan(budget_ms, rendezvous_channel) : false;
 }

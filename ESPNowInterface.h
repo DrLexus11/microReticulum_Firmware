@@ -172,6 +172,10 @@ public:
 		    (uint32_t)(now - _recovery_peer_last_seen) > ESPNOW_PEER_TIMEOUT_MS) {
 			_recovery_state = RECOVERY_FAILED;
 			_recovery_failures++;
+			_recovery_peer_has_upstream = false;
+			// The hub is gone. Whatever this node can repeat for its
+			// neighbours now matters more than the duplicate traffic it costs.
+			apply_relay_policy("parent lost");
 			return;
 		}
 
@@ -222,6 +226,8 @@ public:
 		       _recovery_state == RECOVERY_PINNED;
 	}
 	bool recovery_pinned() const { return _recovery_state == RECOVERY_PINNED; }
+	bool recovery_peer_has_upstream() const { return _recovery_peer_has_upstream; }
+	bool has_upstream() const { return local_has_upstream(); }
 	bool recovery_failed() const { return _recovery_state == RECOVERY_FAILED; }
 	uint8_t recovery_channel() const { return _recovery_selected_channel; }
 	uint32_t recovery_pinned_since() const { return _recovery_pinned_since; }
@@ -511,6 +517,34 @@ private:
 		}
 
 		touch_peer(mac, &discovery);
+
+		// Prefer a peer that can actually reach the mesh. Taking the first
+		// valid reply meant two orphans in range of each other were as likely
+		// to adopt each other as the hub, which costs a hop that leads nowhere
+		// and makes every route through them longer than it needs to be.
+		// Reticulum learns paths from announces by hop count alone and keeps
+		// whichever copy arrives first, so it will not correct that later --
+		// the topology has to be honest to begin with.
+		if ((discovery.capabilities & ESPNOW_CAP_UPSTREAM) != 0) {
+			pin_recovery_peer(mac, discovery, "proven");
+			return;
+		}
+
+		// An orphan is still better than nothing, but only once the budget is
+		// spent and nothing better has answered. Remember the first one.
+		if (!_recovery_fallback_valid) {
+			memcpy(_recovery_fallback_mac, mac, 6);
+			_recovery_fallback_discovery = discovery;
+			_recovery_fallback_channel = _channel;
+			_recovery_fallback_valid = true;
+			printf("[espnow] peer %02x:%02x:%02x:%02x:%02x:%02x has no upstream; "
+			       "holding it as fallback and continuing the scan\n",
+			       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+		}
+	}
+
+	void pin_recovery_peer(const uint8_t* mac, const ESPNowDiscovery& discovery,
+	                       const char* how) {
 		memcpy(_recovery_peer_mac, mac, 6);
 		snprintf(_recovery_peer_text, sizeof(_recovery_peer_text),
 		         "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -520,10 +554,15 @@ private:
 		_recovery_pinned_since = millis();
 		_recovery_state = RECOVERY_PINNED;
 		_recovery_successes++;
+		_recovery_peer_has_upstream =
+		    (discovery.capabilities & ESPNOW_CAP_UPSTREAM) != 0;
 		_last_peer_phy_hash = discovery.phy_hash;
 		_next_discovery_at = millis();
-		printf("[espnow] recovery peer %s proven on channel %u\n",
-		       _recovery_peer_text, (unsigned)_channel);
+		_recovery_fallback_valid = false;
+		printf("[espnow] recovery peer %s %s on channel %u (upstream=%u)\n",
+		       _recovery_peer_text, how, (unsigned)_channel,
+		       (unsigned)_recovery_peer_has_upstream);
+		apply_relay_policy("attached to a parent");
 	}
 
 	Peer* touch_peer(const uint8_t* mac, const ESPNowDiscovery* discovery) {
@@ -753,6 +792,7 @@ private:
 
 		_recovery_state = RECOVERY_SCANNING;
 		_recovery_scan_deadline = now + _recovery_budget_ms;
+		_recovery_fallback_valid = false;
 		_recovery_next_hop = now;
 		_scan_channel = 0;
 		_scan_first_hop = true;
@@ -765,6 +805,16 @@ private:
 
 	void service_recovery_scan(uint32_t now) {
 		if (time_reached(now, _recovery_scan_deadline)) {
+			if (_recovery_fallback_valid) {
+				// Nothing with a way out answered in the whole budget. An
+				// orphan neighbour is still a mesh, and being reachable badly
+				// beats not being reachable.
+				_channel = _recovery_fallback_channel;
+				pin_recovery_peer(_recovery_fallback_mac,
+				                  _recovery_fallback_discovery,
+				                  "adopted as last resort");
+				return;
+			}
 			_recovery_state = RECOVERY_FAILED;
 			_recovery_failures++;
 			printf("[espnow] recovery scan found no proven peer\n");
@@ -820,6 +870,37 @@ private:
 		begin_send(SEND_DATA, wire, ESPNOW_HEADER_SIZE + payload_length, now);
 	}
 
+	// Can this node reach the rest of the mesh without going back out through
+	// ESP-NOW? A LoRa radio always can. Otherwise the only way out is
+	// infrastructure Wi-Fi, which the deliberately unconfigured fixtures never
+	// have -- so they never claim to be a way out for anyone else.
+	bool local_has_upstream() const {
+#if defined(LORA_TRANSPORT)
+		return true;
+#else
+		return WiFi.status() == WL_CONNECTED;
+#endif
+	}
+
+	// A node whose only route to the mesh is its own ESP-NOW parent must not
+	// repeat for anybody: every announce it relays arrives at the hub as one
+	// hop longer than the copy the hub already heard directly, and Reticulum
+	// keeps whichever copy lands first. That is how a board one hop from the
+	// hub ended up recorded three hops away, through a sibling.
+	//
+	// The moment the parent is gone this reverses -- a node that can still
+	// hear its neighbours is the only thing keeping them reachable, and the
+	// duplicate traffic stops mattering. Nodes with a way out of their own
+	// are never touched by this.
+	void apply_relay_policy(const char* reason) {
+		if (local_has_upstream()) return;
+		const bool relay = (_recovery_state != RECOVERY_PINNED);
+		if (relay == RNS::Reticulum::transport_enabled()) return;
+		RNS::Reticulum::transport_enabled(relay);
+		printf("[espnow] relaying %s: %s\n",
+		       relay ? "enabled" : "disabled", reason);
+	}
+
 	ESPNowDiscovery local_discovery() const {
 		ESPNowDiscovery discovery = {};
 #if defined(LORA_TRANSPORT)
@@ -836,6 +917,7 @@ private:
 		discovery.capabilities |= ESPNOW_CAP_LORA;
 #endif
 		if (RNS::Reticulum::transport_enabled()) discovery.capabilities |= ESPNOW_CAP_TRANSPORT;
+		if (local_has_upstream()) discovery.capabilities |= ESPNOW_CAP_UPSTREAM;
 		if (_ifac_key.size() > 0) discovery.capabilities |= ESPNOW_CAP_IFAC_PROOF;
 		discovery.wifi_channel = _channel;
 		return discovery;
@@ -989,6 +1071,13 @@ private:
 	bool _recovery_reply_pending = false;
 	uint8_t _recovery_peer_mac[6] = {0};
 	char _recovery_peer_text[18] = {0};
+	bool _recovery_peer_has_upstream = false;
+	// Best orphan seen during the current scan, adopted only if the budget
+	// expires without anything better answering.
+	bool _recovery_fallback_valid = false;
+	uint8_t _recovery_fallback_mac[6] = {0};
+	uint8_t _recovery_fallback_channel = 0;
+	ESPNowDiscovery _recovery_fallback_discovery = {};
 
 	Peer _peers[MAX_PEERS];
 	Reassembly _reassembly[REASSEMBLY_SLOTS];

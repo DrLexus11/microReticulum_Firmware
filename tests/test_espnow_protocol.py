@@ -325,6 +325,61 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("Ns::GeneralConfig::Id", compact)
         self.assertIn("NomadNet Name", compact)
 
+    def test_parent_selection_prefers_a_peer_that_can_reach_the_mesh(self):
+        # Taking the first valid reply meant two orphans in range of each other
+        # were as likely to adopt each other as the hub. Reticulum learns paths
+        # by hop count and keeps whichever announce copy lands first, so it
+        # never corrects that -- the topology has to be honest to begin with.
+        protocol = source("ESPNowProtocol.h")
+        iface = source(INTERFACE)
+        self.assertIn("#define ESPNOW_CAP_UPSTREAM          0x08", protocol)
+        self.assertIn("local_has_upstream()) discovery.capabilities |= "
+                      "ESPNOW_CAP_UPSTREAM", iface)
+
+        reply = iface[iface.index("void handle_recovery_reply("):]
+        reply = reply[:reply.index("void pin_recovery_peer(")]
+        prefer = reply.index("discovery.capabilities & ESPNOW_CAP_UPSTREAM")
+        pin = reply.index('pin_recovery_peer(mac, discovery, "proven")', prefer)
+        fallback = reply.index("_recovery_fallback_valid = true", pin)
+        self.assertLess(prefer, pin)
+        self.assertLess(pin, fallback)
+
+    def test_an_orphan_peer_is_adopted_only_after_the_budget_expires(self):
+        iface = source(INTERFACE)
+        scan = iface[iface.index("void service_recovery_scan("):]
+        scan = scan[:scan.index("void send_current_fragment(")]
+        deadline = scan.index("time_reached(now, _recovery_scan_deadline)")
+        adopt = scan.index("_recovery_fallback_valid", deadline)
+        failed = scan.index("_recovery_state = RECOVERY_FAILED", adopt)
+        self.assertLess(deadline, adopt)
+        self.assertLess(adopt, failed)
+        # A fresh scan must not inherit a candidate from the previous one.
+        start = iface[iface.index("_recovery_scan_deadline = now + _recovery_budget_ms"):]
+        self.assertIn("_recovery_fallback_valid = false",
+                      start[:start.index("_recovery_scans++")])
+
+    def test_a_node_with_no_way_out_stops_relaying_while_it_has_a_parent(self):
+        # Every announce such a node repeats reaches the hub one hop longer
+        # than the copy the hub already heard directly. The moment the parent
+        # is lost this reverses and it is the only thing keeping neighbours
+        # reachable, so the policy is applied on both transitions.
+        iface = source(INTERFACE)
+        policy = iface[iface.index("void apply_relay_policy("):]
+        policy = policy[:policy.index("ESPNowDiscovery local_discovery()")]
+        self.assertIn("if (local_has_upstream()) return;", policy)
+        self.assertIn("const bool relay = (_recovery_state != RECOVERY_PINNED);",
+                      policy)
+        self.assertIn("RNS::Reticulum::transport_enabled(relay)", policy)
+        self.assertIn('apply_relay_policy("attached to a parent")', iface)
+        self.assertIn('apply_relay_policy("parent lost")', iface)
+
+    def test_upstream_claim_requires_a_route_that_is_not_esp_now(self):
+        iface = source(INTERFACE)
+        fn = iface[iface.index("bool local_has_upstream() const {"):]
+        fn = fn[:fn.index("\n\t}") + 3]
+        self.assertIn("#if defined(LORA_TRANSPORT)", fn)
+        self.assertIn("WiFi.status() == WL_CONNECTED", fn)
+
     def test_unconfigured_pinned_fixture_does_not_retry_blank_station(self):
         remote = source(REMOTE)
         pinned = remote[remote.index("if (espnow_recovery_pinned())"):
