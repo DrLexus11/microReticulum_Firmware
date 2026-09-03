@@ -6,6 +6,11 @@ GP-02 GNSS module buys us beyond TAK.
 
 Status: **analysis, nothing implemented.** Written 2026-08-28.
 
+Its two firmware prerequisites -- adopting wall time, and enforcing the duty
+cycle without silencing what matters -- are drafted separately in
+[`WallTimeAndDutyCycle.md`](WallTimeAndDutyCycle.md). Both are worth building
+whether or not TAK ever is.
+
 ---
 
 ## 1. What TAK actually requires

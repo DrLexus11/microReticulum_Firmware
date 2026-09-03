@@ -288,6 +288,10 @@ machine needs longer fleet-level timing tests.
 
 ### 8. Wall-time adoption and propagation expiry
 
+Design drafted in [`WallTimeAndDutyCycle.md`](WallTimeAndDutyCycle.md), together
+with duty-cycle enforcement -- the two firmware gaps that block TAK, and that
+each pay for themselves without it. Neither needs a board revision.
+
 Adopt trustworthy wall time from an authenticated client request, then implement
 message expiry. A Rev3 battery-backed RTC will improve cold-start behaviour, but
 firmware time adoption can be designed and tested on Rev1/Rev2 first.
