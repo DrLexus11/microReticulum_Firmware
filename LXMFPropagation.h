@@ -171,7 +171,8 @@ inline RNS::Bytes lxmf_pn_app_data() {
 	MsgPack::Packer packer;
 	packer.serialize(MsgPack::arr_size_t(7));
 	packer.serialize(false);                                    // 0: legacy PN support
-	packer.serialize((uint64_t)RNS::Utilities::OS::time());     // 1: node timebase
+	packer.serialize(RNS::Utilities::OS::wall_time_known()
+		? (uint64_t)RNS::Utilities::OS::wall_time() : 0ULL);      // 1: UTC, or unknown
 	packer.serialize(true);                                     // 2: we are a propagation node
 	packer.serialize((uint32_t)LXMF_PN_TRANSFER_LIMIT_KB);      // 3: per-transfer limit (KB)
 	packer.serialize((uint32_t)LXMF_PN_SYNC_LIMIT_KB);          // 4: per-sync limit (KB)
@@ -478,7 +479,11 @@ inline bool lxmf_store_put(const RNS::Bytes& blob) {
 		return false;
 	}
 
-	uint32_t received = (uint32_t)RNS::Utilities::OS::time();
+	// Keep a monotonic fallback for filename uniqueness/capacity ordering. It
+	// must not be used for expiry until UTC is known.
+	uint32_t received = RNS::Utilities::OS::wall_time_known()
+		? (uint32_t)RNS::Utilities::OS::wall_time()
+		: (uint32_t)RNS::Utilities::OS::monotonic_time();
 	std::string path = lxmf_entry_path(transient_id, received, from_peer);
 	if (RNS::Utilities::OS::write_file(path.c_str(), blob) != blob.size()) {
 		printf("[lxmf] FAILED to write %s\n", path.c_str());

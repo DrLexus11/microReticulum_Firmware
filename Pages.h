@@ -33,6 +33,7 @@
 #include <MsgPack.h>
 
 #include <string>
+#include <time.h>
 
 extern RNS::Interface lora_interface;
 #if defined(TCP_SERVER_TRANSPORT)
@@ -94,6 +95,18 @@ extern uint32_t wifi_espnow_scan_budget_ms;
 extern uint8_t wifi_espnow_rendezvous_channel;
 #endif
 extern RNS::Destination nomadnet_destination;
+
+inline std::string wall_time_iso8601() {
+  if (!RNS::Utilities::OS::wall_time_known()) return "unknown";
+  const time_t seconds = (time_t)(RNS::Utilities::OS::wall_time_millis() / 1000ULL);
+  struct tm utc{};
+  if (gmtime_r(&seconds, &utc) == nullptr) return "invalid";
+  char text[24];
+  snprintf(text, sizeof(text), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+           utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+           utc.tm_hour, utc.tm_min, utc.tm_sec);
+  return text;
+}
 
 void add_interface_details(RNS::Bytes& content, const RNS::Interface& interface) {
   content << "    \"mode\": \"";
@@ -189,6 +202,7 @@ RNS::Bytes serve_page(
       content << ">> Device\n";
       content << "`!`[• General`:/page/device.mu`c=general]`\n";
       content << "`!`[• Interface`:/page/device.mu`c=interfaces]`\n";
+      content << "`!`[• Time Status`:/page/time.mu]`\n";
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
       content << "`!`[• ESP-NOW Recovery`:/page/espnow.mu]`\n";
 #endif
@@ -205,6 +219,25 @@ RNS::Bytes serve_page(
 #endif
       if (remote_identity) content << "\n🛡️ Verified identity: " << remote_identity.hash().toHex() << "\n";
       else content << "\n⚠️ Unknown identity. Identity must be provided for access to this site.\n";
+    }
+    else if (path == "/page/time.mu") {
+      using OS = RNS::Utilities::OS;
+      const bool known = OS::wall_time_known();
+      const uint64_t monotonic_ms = OS::monotonic_time_millis();
+      const uint64_t adopted_ms = OS::wall_time_adopted_at();
+      const uint64_t sync_age_ms = known && monotonic_ms >= adopted_ms
+          ? monotonic_ms - adopted_ms : 0;
+      content = "> Wall Time\n\n";
+      content << "Status      : " << (known ? "known" : "unknown") << "\n";
+      content << "UTC         : " << wall_time_iso8601() << "\n";
+      content << "Unix ms     : " << std::to_string(OS::wall_time_millis()) << "\n";
+      content << "Source      : " << OS::wall_time_source_name(OS::wall_time_source()) << "\n";
+      content << "Last source : " << OS::wall_time_source_name(OS::wall_time_last_live_source()) << "\n";
+      content << "Sync age    : " << std::to_string(sync_age_ms / 1000ULL) << " s\n";
+      content << "Last advance: " << std::to_string(OS::wall_time_last_correction()) << " ms\n\n";
+      content << ">> Clock-domain check\n";
+      content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";
+      content << "Reload this page: both clocks must advance normally. Adopting UTC must not reset links or make monotonic time jump.\n";
     }
     else if (path == "/page/stack.mu") {
   	  if (category == "heap") {

@@ -294,14 +294,16 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
 
     def test_fixture_has_stable_device_and_nomadnet_name(self):
         firmware = source(FIRMWARE)
-        self.assertGreaterEqual(
-            firmware.count(
-                'snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01")'),
-            1)
-        self.assertGreaterEqual(
-            firmware.count(
-                'snprintf(nomadnet_name, sizeof(nomadnet_name), "OZD-ARD-01")'),
-            1)
+        platformio = source(PLATFORMIO)
+        self.assertIn('#define OZD_DEVICE_NAME "OZD-ARD-01"', firmware)
+        self.assertIn(
+            'snprintf(bt_devname, sizeof(bt_devname), OZD_DEVICE_NAME)',
+            firmware)
+        self.assertIn(
+            'snprintf(nomadnet_name, sizeof(nomadnet_name), OZD_DEVICE_NAME)',
+            firmware)
+        second = platformio[platformio.index('[env:ozdisan-esp32-espnow-02]'):]
+        self.assertIn('-DOZD_DEVICE_NAME=\'"OZD-ARD-02"\'', second)
 
     def test_unconfigured_pinned_fixture_does_not_retry_blank_station(self):
         remote = source(REMOTE)

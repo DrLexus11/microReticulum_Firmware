@@ -387,10 +387,10 @@ is affordable on an S3; the reason to defer it is that a one-byte divergence
 from Python would silently reject real messages, so it wants a cross-checked
 test vector before it goes in.
 
-**The announce timebase is uptime, not wall time.** The board has no RTC. Nothing
-observed depends on it -- clients accept the announce and sync correctly -- but
-peer sync would, and it should be fixed by adopting time from a client request
-before peering is ever implemented.
+**The announce timebase is UTC when known, otherwise zero.** The board has no
+RTC, so a restored sample is only a lower bound until station NTP or an
+allow-listed client supplies current UTC. Peer sync keeps the unknown value
+explicit instead of treating uptime as an epoch.
 
 **No duty-cycle accounting for sync traffic.** Syncing over LoRa is expensive and
 `RADIO_DUTY_CYCLE_LONGTERM` is still `0.0` for lab use. A LoRa-reachable

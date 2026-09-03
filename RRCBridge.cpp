@@ -186,7 +186,7 @@ void roster_save() {
         return;
     }
     roster_dirty = false;
-    roster_saved_ms = RNS::Utilities::OS::ltime();
+    roster_saved_ms = RNS::Utilities::OS::monotonic_time_millis();
 }
 
 void roster_load() {
@@ -413,7 +413,8 @@ void queue_backfill(Room& room, Member& member) {
         if (entry.used) continue;
         entry = Pending{};
         entry.room = (uint8_t)(&room - rooms.data());
-        entry.timestamp = (double)RNS::Utilities::OS::time();
+        entry.timestamp = RNS::Utilities::OS::wall_time_known()
+            ? RNS::Utilities::OS::wall_time() : 0.0;
         entry.text = digest;
         entry.fields = selection_fields(room, selection);
         entry.recipients[0] = member.hash;
@@ -445,7 +446,7 @@ void rrc_bridge_begin(const RNS::Identity& identity) {
     hub_delivery = RNS::Destination(identity, RNS::Type::Destination::IN,
                                     RNS::Type::Destination::SINGLE,
                                     LXMF_APP_NAME, LXMF_DELIVERY_ASPECT);
-    next_announce_ms = RNS::Utilities::OS::ltime() + RRC_BRIDGE_FIRST_ANNOUNCE_MS;
+    next_announce_ms = RNS::Utilities::OS::monotonic_time_millis() + RRC_BRIDGE_FIRST_ANNOUNCE_MS;
 
     parse_rooms();
 
@@ -545,7 +546,8 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
 
     *pending = Pending{};
     pending->room = (uint8_t)index;
-    pending->timestamp = (double)RNS::Utilities::OS::time();
+    pending->timestamp = RNS::Utilities::OS::wall_time_known()
+        ? RNS::Utilities::OS::wall_time() : 0.0;
 
     // Name the room in the body as well as the title. A client that shows only
     // the message line -- which is the common case -- otherwise gives a reader
@@ -594,15 +596,15 @@ void rrc_bridge_publish(const std::string& room, const std::string& nickname,
 void rrc_bridge_loop() {
     if (!running) return;
 
-    if (hub_delivery && RNS::Utilities::OS::ltime() >= next_announce_ms) {
+    if (hub_delivery && RNS::Utilities::OS::monotonic_time_millis() >= next_announce_ms) {
         hub_delivery.announce(delivery_app_data());
-        next_announce_ms = RNS::Utilities::OS::ltime() + RRC_BRIDGE_ANNOUNCE_MS;
+        next_announce_ms = RNS::Utilities::OS::monotonic_time_millis() + RRC_BRIDGE_ANNOUNCE_MS;
         printf("[rrc] announced bridge delivery address <%s>\n",
                hub_delivery_hash.toHex().c_str());
     }
 
     if (roster_dirty &&
-        RNS::Utilities::OS::ltime() - roster_saved_ms >= RRC_BRIDGE_ROSTER_SAVE_MS) {
+        RNS::Utilities::OS::monotonic_time_millis() - roster_saved_ms >= RRC_BRIDGE_ROSTER_SAVE_MS) {
         roster_save();
     }
 

@@ -68,6 +68,7 @@ uint32_t lxmf_announces_any();
 #include <Arduino.h>
 #include <SPI.h>
 #include "Utilities.h"
+#include "WallTime.h"
 #include "DeviceUID.h"
 #include "Platform.h"
 #include "WebSocketConsole.h"
@@ -1636,6 +1637,7 @@ printf("[init] op_mode: %U\n", op_mode);
 #ifdef NOMADNET_PAGES_ALLOW_ALL
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+        nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #endif
@@ -1645,6 +1647,7 @@ printf("[init] op_mode: %U\n", op_mode);
 #else
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+        nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
 #endif
@@ -3936,6 +3939,7 @@ void loop() {
 
   #if HAS_WIFI
     if (wifi_initialized) update_wifi();
+    wall_time_update();
   #endif
 
   #if HAS_INPUT

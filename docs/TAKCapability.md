@@ -4,7 +4,8 @@ Whether ATAK/WinTAK situational awareness can run on this mesh, what it would
 cost in airtime, how mobility interacts with Reticulum's routing, and what the
 GP-02 GNSS module buys us beyond TAK.
 
-Status: **analysis, nothing implemented.** Written 2026-08-28.
+Status: **TAK remains analysis; its wall-time prerequisite is implemented on
+`feature/wall-time`.** Updated 2026-09-03.
 
 Its two firmware prerequisites -- adopting wall time, and enforcing the duty
 cycle without silencing what matters -- are drafted separately in
@@ -99,12 +100,13 @@ before someone discovers it in an exercise.
 
 The node has **no real-time clock**, and it has cost us repeatedly:
 
-- the LXMF propagation announce advertises **uptime** as its timebase, not wall
-  time (`docs/Messaging.md` known gaps);
+- the LXMF propagation announce previously advertised **uptime** as its
+  timebase; the wall-time branch now advertises UTC when known and zero when
+  unknown;
 - message **expiry cannot be implemented** at all, because ageing needs a clock
   -- Python expires at 30 days and we only evict on capacity;
-- RRC hub timestamps are sent as **0**, because uptime must not masquerade as
-  Unix time (`docs/RRCRequirements.md` §6).
+- RRC hub timestamps previously stayed **0**; the wall-time branch uses Unix
+  milliseconds after synchronization and preserves zero while unknown.
 
 A GNSS fix carries UTC. Wiring the module solves a problem we have deferred three
 times, independent of whether TAK is ever built. **That alone probably justifies
