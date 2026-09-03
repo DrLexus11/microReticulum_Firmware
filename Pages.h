@@ -45,6 +45,20 @@ extern RNS::Interface tcp_server_interface;
 #endif
 extern uint32_t lora_phy_hash();
 extern const char* radio_preset_name();
+#if defined(BLE_PEER_TRANSPORT)
+bool ble_peer_started();
+uint32_t ble_peer_mtu();
+uint32_t ble_peer_identity_writes();
+uint32_t ble_peer_keepalives();
+uint32_t ble_peer_packets_in();
+uint32_t ble_peer_packets_out();
+uint32_t ble_peer_dropped();
+uint32_t ble_peer_last_in();
+uint32_t ble_peer_last_out();
+uint32_t ble_peer_frag_start();
+uint32_t ble_peer_frag_lone();
+#endif
+
 #if HAS_WIFI && defined(UDP_TRANSPORT)
 extern RNS::Interface udp_interface;
 extern IPAddress wr_device_ip;
@@ -177,6 +191,9 @@ RNS::Bytes serve_page(
       content << "`!`[• Interface`:/page/device.mu`c=interfaces]`\n";
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
       content << "`!`[• ESP-NOW Recovery`:/page/espnow.mu]`\n";
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+      content << "`!`[• BLE Peers`:/page/ble.mu]`\n";
 #endif
 #if defined(RRC_HUB)
       content << "`!`[• RRC Hub`:/page/device.mu`c=rrc]`\n";
@@ -402,6 +419,37 @@ RNS::Bytes serve_page(
         content = "CATEGORY NOT FOUND\n";
       }
     }
+#if defined(BLE_PEER_TRANSPORT)
+    // Served over the mesh rather than the console, because a BLE peer link is
+    // exactly the situation where the console is unavailable: on a deployed
+    // node the serial output goes to whichever KISS host is attached, and on
+    // this fixture attaching to serial at all used to reset the board. The
+    // counters below are what distinguished a link that never formed from one
+    // that formed and was torn down, which took a day to tell apart by hand.
+    else if (path == "/page/ble.mu") {
+      content = "> BLE Peers\n\n";
+      content << "Service     : " << (ble_peer_started() ? "up" : "down") << "\n";
+      content << "Negotiated MTU: " << std::to_string(ble_peer_mtu()) << "\n";
+      content << "Identity writes: " << std::to_string(ble_peer_identity_writes()) << "\n";
+      content << "Keepalives  : " << std::to_string(ble_peer_keepalives()) << "\n\n";
+
+      content << ">> Traffic\n";
+      content << "Packets in  : " << std::to_string(ble_peer_packets_in()) << "\n";
+      content << "Packets out : " << std::to_string(ble_peer_packets_out()) << "\n";
+      content << "Dropped     : " << std::to_string(ble_peer_dropped()) << "\n";
+      content << "Last in     : " << std::to_string(ble_peer_last_in()) << " B\n";
+      content << "Last out    : " << std::to_string(ble_peer_last_out()) << " B\n\n";
+
+      // A single-fragment packet must go out as START, never LONE: the client
+      // declares LONE and never emits it, and its reassembler drops types it
+      // does not recognise, so emitting LONE makes the whole outbound direction
+      // vanish while inbound keeps working. A non-zero LONE count here means
+      // that regression is back. See BLEPeerProtocol.h.
+      content << ">> Fragments\n";
+      content << "START       : " << std::to_string(ble_peer_frag_start()) << "\n";
+      content << "LONE (must be 0): " << std::to_string(ble_peer_frag_lone()) << "\n";
+    }
+#endif
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
     else if (path == "/page/espnow.mu") {
       char local_phy[16];
