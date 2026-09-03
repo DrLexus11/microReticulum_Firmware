@@ -151,6 +151,70 @@ either measures the link, ranks candidates by distance to a root, or elects who
 may repeat. One bit buys the third of those, which is the one this topology
 needs; the others stay available if the shape of the network changes.
 
+## Reliability and latency: what was measured
+
+Bench measurements, 2026-09-03, deck to node, six or more Reticulum link
+setups plus one page fetch each:
+
+| Target | Path | Link setup (median) | Page fetch (median) | Failures |
+| --- | --- | ---: | ---: | ---: |
+| Rev 1 | deck -> UDP | **0.37 s** | 0.83 s | **0 / 10** |
+| OZD-02 | deck -> UDP -> ESP-NOW | **1.45 s** | 3.4 s | **3 / 6 and worse** |
+
+Two separate problems sit behind those numbers.
+
+### Wi-Fi power save, and why we cannot simply turn it off
+
+ICMP to Rev 1 measures min 2.7 ms, avg 53 ms, **max 183 ms**. That distribution
+is not a network; it is a station sleeping between DTIM beacons and answering on
+the next wake. A Reticulum link handshake is several round trips and pays the
+toll on each, which is most of the 0.37 s setup seen on a quiet LAN.
+
+For ESP-NOW it is worse than latency. ESP-NOW has no buffering for a sleeping
+peer: a unicast frame is retried by the 802.11 MAC until the peer wakes, but a
+**broadcast that lands while the radio is down is simply gone**.
+
+The obvious fix is not available. Wi-Fi and Bluetooth share one 2.4 GHz radio
+on the ESP32 and their coexistence scheduler is built on the modem-sleep slices,
+so ESP-IDF does not warn -- it aborts at Wi-Fi init:
+
+```
+E wifi: Error! Should enable WiFi modem sleep when both WiFi and Bluetooth
+        are enabled!!!!!!
+abort() was called
+```
+
+Verified the hard way: both Rev 1 and the OZD fixture went into a boot loop.
+`WIFI_NO_POWER_SAVE` in `Remote.h` therefore compiles in only for a node with
+no Bluetooth, which today is none of ours. **Choosing between BLE and a
+low-latency ESP-NOW mesh on one ESP32 is a product decision, not a tuning
+flag.** A hub that dropped Bluetooth would get both lower latency and fewer
+lost ESP-NOW frames; the cost is the BLE peer transport on that board.
+
+### The downstream direction is unacknowledged
+
+A node pinned to a parent unicasts to it, so upstream traffic is ACKed and
+retried in hardware. The hub is not pinned to anything and has several peers,
+so **everything it sends downstream is broadcast** -- unacknowledged, one
+attempt, and the strictly sequential reassembler discards a whole packet when
+any fragment of it is lost. Announces from a leaf therefore arrive reliably
+while the hub's replies do not, which is exactly the observed shape: paths stay
+fresh and links fail to establish.
+
+Naive per-peer unicast fan-out was tried and **made it worse** (6/8 failures
+against 3/6). The sender is strictly one frame in flight, serviced once per
+firmware loop, so addressing peers in turn multiplies head-of-line blocking:
+one slow or absent peer stalls the queue for every other. It was reverted. Any
+future attempt needs the send path to stop being serial first, or to skip peers
+that are failing, rather than simply addressing more of them.
+
+Not yet isolated: OZD-02 performs markedly worse than OZD-01 on the same
+channel, at the same hop count, from the same parent -- and neither the relay
+policy (tested by neutralising it) nor the fan-out explains it. OZD-02 is the
+unit attached by USB to the machine running the tests, which is a well-known
+2.4 GHz desense arrangement, so the RF environment is the first thing to rule
+out before more code is written.
+
 ## Security
 
 ESP-NOW encryption is disabled because broadcast ESP-NOW cannot use per-peer
