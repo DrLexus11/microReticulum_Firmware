@@ -294,18 +294,36 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("const bool node_config_ready = true", firmware)
         self.assertIn('[lora] not fitted (ESP-NOW-only target)', firmware)
 
-    def test_fixture_has_stable_device_and_nomadnet_name(self):
+    def test_fixture_names_itself_from_its_uid_not_from_a_build_flag(self):
+        # A per-unit -D means a per-unit build environment and a per-unit
+        # binary. Deriving the name means one image serves every board and each
+        # still names itself uniquely, with no provisioning step needed just to
+        # stop two units colliding.
         firmware = source(FIRMWARE)
         platformio = source(PLATFORMIO)
-        self.assertIn('#define OZD_DEVICE_NAME "OZD-ARD-01"', firmware)
         self.assertIn(
-            'snprintf(bt_devname, sizeof(bt_devname), OZD_DEVICE_NAME)',
+            'snprintf(bt_devname, sizeof(bt_devname), "OZD-%02X%02X%02X",',
             firmware)
         self.assertIn(
-            'snprintf(nomadnet_name, sizeof(nomadnet_name), OZD_DEVICE_NAME)',
+            'snprintf(nomadnet_name, sizeof(nomadnet_name), "%s", bt_devname)',
             firmware)
-        second = platformio[platformio.index('[env:ozdisan-esp32-espnow-02]'):]
-        self.assertIn('-DOZD_DEVICE_NAME=\'"OZD-ARD-02"\'', second)
+        self.assertNotIn("OZD_DEVICE_NAME", firmware)
+        self.assertNotIn("OZD_DEVICE_NAME", platformio)
+        self.assertNotIn("ozdisan-esp32-espnow-02", platformio)
+
+    def test_constrained_fixture_can_still_be_granted_remote_management(self):
+        # This build skips the library's builtin namespaces, which is where the
+        # remote-management allow list normally lives. Without it the allow list
+        # is empty, every handler on that destination is ALLOW_LIST, and the
+        # node cannot be trusted by anyone -- including a peer offering it UTC.
+        provisioning = source("Provisioning.cpp")
+        compact = provisioning[provisioning.index("#if defined(OZD_COMPACT_PROVISIONING)"):
+                               provisioning.index("#else", provisioning.index(
+                                   "#if defined(OZD_COMPACT_PROVISIONING)"))]
+        self.assertIn("RemoteManagementAllowed", compact)
+        self.assertIn("RemoteManagementEnabled", compact)
+        self.assertIn("Ns::GeneralConfig::Id", compact)
+        self.assertIn("NomadNet Name", compact)
 
     def test_unconfigured_pinned_fixture_does_not_retry_blank_station(self):
         remote = source(REMOTE)

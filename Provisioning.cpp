@@ -14,6 +14,11 @@
 
 #include "Provisioning.h"
 
+// Namespace and field ids owned by the library. Registering the allow-list
+// field under these keeps /config/ns1.msgpack interchangeable with the
+// builtin namespace this build compiles out.
+#include <microReticulum/Provisioning/Ids.h>
+
 // For MCU_VARIANT / MCU_ESP32 and the HAS_* / WIFI_AP_* feature macros used to
 // guard optional fields below. These otherwise arrive only through an
 // incidental include chain, and a guard that depends on one is a guard waiting
@@ -422,6 +427,47 @@ static void register_provisioning_namespaces() {
         false,
         [](const Value& v) { secure_node_enabled = v.as_bool(); return true; },
         []() { return secure_node_enabled; })
+      .end()
+    // This build also defines RNS_PROVISIONING_SKIP_BUILTINS, which removes the
+    // library's General Config namespace -- and with it the only way to put an
+    // identity on the remote-management allow list. Every handler on that
+    // destination is ALLOW_LIST, and an empty list denies everyone, so /status,
+    // /path and /time were unauthorisable by construction. That is why this
+    // node could not be handed UTC by a peer that had it: not a missing
+    // mechanism, an absent way to trust anyone. Re-register just that field,
+    // under the library's own namespace and field ids so the persisted
+    // /config/ns1.msgpack stays valid if the full builtins ever come back.
+    .register_namespace("General Config", (nid_t)RNS::Provisioning::Ns::GeneralConfig::Id)
+      .field_bool("Remote Management Enabled",
+        (fid_t)RNS::Provisioning::Ns::GeneralConfig::Field::RemoteManagementEnabled,
+        FF_REBOOT_REQUIRED, true,
+        [](const Value& v) { RNS::Reticulum::remote_management_enabled(v.as_bool()); return true; },
+        []() { return RNS::Reticulum::remote_management_enabled(); })
+      .field_bytes_list("Remote Management Allowed",
+        (fid_t)RNS::Provisioning::Ns::GeneralConfig::Field::RemoteManagementAllowed,
+        FF_REBOOT_REQUIRED,
+        std::vector<RNS::Bytes>(),
+        16,   // one 16-byte destination hash per entry
+        32,   // cap, matching the builtin
+        [](const Value& v) {
+          const auto& list = v.as_bytes_list();
+          RNS::Transport::remote_management_allowed(
+            std::set<RNS::Bytes>(list.begin(), list.end()));
+          return true;
+        },
+        []() {
+          const std::set<RNS::Bytes>& s = RNS::Transport::remote_management_allowed();
+          return std::vector<RNS::Bytes>(s.begin(), s.end());
+        })
+      .end()
+    // The node's name used to be a build flag, which meant a build environment
+    // per unit. It is derived from the device UID now; this lets an operator
+    // replace that with something they chose, without a bespoke binary.
+    .register_namespace("RNode General Config", PROV_NS_GENERAL)
+      .field_string("NomadNet Name", PROV_GENERAL_NOMADNET_NAME,
+        FF_REBOOT_REQUIRED, nomadnet_name, sizeof(nomadnet_name)-1,
+        [](const Value& v) { strncpy(nomadnet_name, v.as_string().c_str(), sizeof(nomadnet_name)); return true; },
+        []() { return nomadnet_name; })
       .end();
 
 #else

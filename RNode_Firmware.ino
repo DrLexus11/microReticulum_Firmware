@@ -1111,16 +1111,20 @@ void setup() {
       // This fixture has no Bluetooth stack to derive bt_devname from, but the
       // same buffer also names its fallback AP and DHCP host. Give lab boards
       // a stable, unmistakable identity instead of leaving that name empty.
-      // bt_devname is 11 bytes: ten characters and a NUL. A longer name is
-      // truncated silently, and two boards whose names collide after
-      // truncation are indistinguishable to a BLE client and in our own logs,
-      // so keep every unit's name within ten characters.
-      #if !defined(OZD_DEVICE_NAME)
-      #define OZD_DEVICE_NAME "OZD-ARD-01"
-      #endif
-      static_assert(sizeof(OZD_DEVICE_NAME) <= sizeof(bt_devname),
-                    "OZD_DEVICE_NAME does not fit bt_devname; keep it to ten characters");
-      snprintf(bt_devname, sizeof(bt_devname), OZD_DEVICE_NAME);
+      //
+      // Derive it from the device UID rather than a build flag. A per-unit -D
+      // means a per-unit build environment and a per-unit binary: two boards
+      // of the same model then need two builds, which does not survive past a
+      // bench. This way one image serves every unit and each still names
+      // itself uniquely, with no provisioning step needed to avoid a clash.
+      //
+      // bt_devname is 11 bytes -- ten characters and a NUL -- and a name that
+      // truncates makes two boards indistinguishable both to a BLE client and
+      // in our own logs. "OZD-" plus three UID bytes is exactly ten.
+      static_assert(sizeof(bt_devname) >= 11,
+                    "bt_devname must hold OZD-xxxxxx and its NUL");
+      snprintf(bt_devname, sizeof(bt_devname), "OZD-%02X%02X%02X",
+               device_uid[3], device_uid[4], device_uid[5]);
     #endif
 
     #if defined(NIMBLE_PEER_TRANSPORT)
@@ -1480,7 +1484,9 @@ void setup() {
 #ifdef URTN_STATS_PAGES
       // Provisioning default
 #if BOARD_MODEL == BOARD_OZDISAN_ESP32
-      snprintf(nomadnet_name, sizeof(nomadnet_name), OZD_DEVICE_NAME);
+      // Same derived identity, and Provisioning's "NomadNet Name" field can
+      // still replace it with something a human chose.
+      snprintf(nomadnet_name, sizeof(nomadnet_name), "%s", bt_devname);
 #else
       snprintf(nomadnet_name, sizeof(nomadnet_name), "microReticulum Node [%s]", device_uid_str);
 #endif
