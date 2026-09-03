@@ -212,3 +212,93 @@ NomadNet re-announces, and survived four failed outbound BLE connection attempts
 Its steady free heap stayed in the range shown above. That makes the metrics
 registry an unacceptable cost for this fixture even though it remains useful on
 the PSRAM-equipped RAD targets.
+
+### Multi-peer BLE capacity
+
+The OZD NimBLE backend is a bounded multi-access interface rather than a
+single-client modem. It defaults to the same seven-peer capacity as Columba,
+with both the firmware slot count and NimBLE controller count set by build
+flags. Each connection owns its identity and fragment reassembly state;
+outbound Reticulum frames fan out to every ready peer. Advertising is re-armed
+after every accepted connection and remains active until all slots are used.
+
+Raising the controller capacity from its library default of three to seven
+costs about 5 KB of free heap on this board. The resulting image measured
+37,440 bytes free after Reticulum start and about 48,800 bytes at 60 seconds,
+with a largest block around 31,700 bytes. A 90-second hardware run recovered
+Rev1 over ESP-NOW and did not reset. This is an initial safety check, not yet an
+overnight multi-client soak.
+
+A bondless deck client has also connected while the node continued advertising,
+read the 16-byte identity, subscribed, completed its identity write and received
+Reticulum traffic. The current real-phone check is narrower: Columba advertises
+a valid, readable service, but OZD's outbound central attempt to the observed
+Android advertiser times out with NimBLE reason 13. The always-available OZD
+peripheral path is therefore retained for Columba to initiate; phone-side logs
+are still needed to determine why that discovery has not produced an inbound
+connection in the current test.
+
+
+## Columba acceptance: the reverse path, end to end
+
+Run 2026-09-03 with the real Columba client (debug variant `columbatest`,
+package `network.columba.app.debug`), production Columba stopped, only the
+Bluetooth LE peer interface enabled.
+
+```
+08:09:19.287  Discovered new device: C0:91:51:9B:2D:D2 (OZD-ARD-01) RSSI: -70
+08:09:19.601  Peer connected (central=false, peripheral=true, dedupe=NONE, MTU=20)
+08:09:20.413  Peer connected (central=true,  peripheral=true,
+                              dedupe=CLOSING_PERIPHERAL, MTU=509)
+08:09:20.429  Deduplication complete: peripheral connection closed
+08:09:23      BLEPeerInterface[OZD-ARD-01]=online
+08:12:06      RX: 231 bytes from OZD-ARD-01     (link held ~3 min and counting)
+```
+
+Traffic over the link: 3592 B out, 4313 B in. Announces arrived for two mesh
+destinations, `cd1da3a1545c217a` and `ed03deced0c93e38` -- the second is two
+hops away via `60ba52911ee1ddbefc646a67dc969894`, Rev 1's transport identity, so
+it originated beyond Rev 1. That is the whole chain carrying live Reticulum:
+
+```
+mesh -> Rev 1 -> ESP-NOW -> OZD-ARD-01 -> BLE -> phone
+```
+
+### Why it works now
+
+The board takes a stable static random address derived from its factory MAC
+(`c0:91:51:9b:2d:d2`), which sorts above any phone address, so it declines to
+dial and waits. Previously its Espressif public address `40:91:51:..` sorted
+below a phone's, so both sides dialled at once; Columba saw one address holding
+a central and a peripheral role and closed one of them. Yesterday it closed the
+only usable link. Note the collision still occurs -- the trace above shows both
+roles -- but with the board waiting, the surviving link is the 509-byte central
+one rather than the 20-byte peripheral one, because `preferredBleRole()` selects
+on MTU. See `docs/Backlog.md` items 12 and 13.
+
+
+## Measurement hazard: attaching to serial used to reset the board
+
+Watching the log rebooted the thing being watched, and it was not obvious.
+
+`serial.Serial(port, ...)` opens the port immediately, and pyserial asserts DTR
+and RTS by default while doing so. The kernel then lowers them again on close
+unless `HUPCL` is cleared. Either edge is a reset pulse on EN for this board's
+CP2102 auto-reset circuit, so both attaching and detaching restarted the node.
+
+**It is visible on the OLED**, which blanks for about a second around every
+attach. If the display flickers when a log command runs, that is a reboot, not a
+redraw.
+
+What it cost, before it was understood: consecutive captures kept showing a
+freshly booted board; uptime appeared to fall between samples; and a capture that
+happened to catch the quiet window before the first log line looked exactly like
+a hung node. Each of those was read as a firmware fault at least once.
+
+`tools/ozd_serial_log.py` now sets the line states before `open()` and clears
+`HUPCL` on its own descriptor. Verified by attaching three times in succession
+and reading uptime 60 s, 120 s, 180 s, where the same sequence previously reset
+the board each time.
+
+The same hazard applies to any tool that opens these ports. `provnoreset.py` was
+written for this reason; prefer it, or this viewer, over a bare `serial.Serial`.

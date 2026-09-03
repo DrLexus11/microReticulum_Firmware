@@ -89,15 +89,21 @@ there can reboot or deadlock the node. Scan results record-and-return, connectio
 completion is deferred, and inbound packets go on a bounded queue that the main
 loop drains.
 
-**One inbound link owns the interface.** Identity and fragment reassembly are
-connection state. They are reset when that link disconnects; a concurrent
-second inbound connection is rejected rather than allowing its handshake to be
-parsed as data for the first peer.
+**Connection state is per peer.** Identity, fragment sequence and reassembly
+buffers cannot be shared between links. The NimBLE backend keeps a bounded slot
+for each connection and carries all ready peers as one multi-access Reticulum
+medium. Outbound packets are sent to every ready slot, while inbound packets
+from every slot enter the same interface. Its capacity defaults to seven to
+match Columba and can be lowered at build time with
+`BLE_PEER_MAX_CONNECTIONS`. The established Bluedroid RAD backend is still
+single-peer and remains isolated from this state-machine change.
 
-**Advertising must be restarted.** The controller stops advertising on connect.
-Nothing else in a peer build restarts it, so without an explicit restart on
-disconnect the node is discoverable exactly once per boot: the first connection
-works and no later one ever does.
+**Advertising must remain available below capacity.** A legacy advertisement is
+consumed when a connection is accepted. The NimBLE backend re-arms it after each
+connect and disconnect and periodically verifies that it remains active, even
+while other peers are connected. It stops only once every configured slot is in
+use. Otherwise the first peer would make the node disappear from all later
+peers.
 
 ## Diagnosing it
 
