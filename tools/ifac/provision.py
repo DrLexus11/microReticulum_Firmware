@@ -230,6 +230,54 @@ def secure_node_enabled(client):
         FIELD_SECURE_NODE_ENABLED, False))
 
 
+def cmd_admin(client, args):
+    """Add or replace the remote-management allow list, and nothing else.
+
+    A node with an empty allow list refuses /status, /path and /time before the
+    handler runs, so it answers nothing at all -- which is why a node with no
+    clock could not simply be handed one. This grants that trust without
+    touching secure-node posture or any IFAC, so it is safe to run on a node
+    that is already deployed.
+    """
+    administrators = [parse_administrator(value) for value in args.identity]
+    schema = client.request(OP_GET_SCHEMA, {1: [NS_GENERAL]})
+    by_id = {entry[0]: entry for entry in schema
+             if isinstance(entry, list) and entry}
+    general = by_id.get(NS_GENERAL)
+    if general is None:
+        raise RuntimeError("firmware advertises no General Config namespace")
+    fields = {entry.get(1): entry for entry in general[3]
+              if isinstance(entry, dict)}
+    if FIELD_REMOTE_MANAGEMENT_ALLOWED not in fields:
+        raise RuntimeError(
+            "this firmware exposes no remote-management allow list; it cannot "
+            "be granted trust over the mesh")
+
+    changes = {NS_GENERAL: {FIELD_REMOTE_MANAGEMENT_ALLOWED: administrators}}
+    if FIELD_REMOTE_MANAGEMENT_ENABLED in fields:
+        changes[NS_GENERAL][FIELD_REMOTE_MANAGEMENT_ENABLED] = True
+
+    response = client.request(OP_SET_STATE, {3: changes, 5: True})
+    errors = response.get(3, []) if isinstance(response, dict) else []
+    if errors:
+        client.request(OP_DISCARD, [NS_GENERAL])
+        raise RuntimeError("SetState field errors: %r" % (errors,))
+    client.request(OP_COMMIT, {1: [NS_GENERAL], 5: True})
+
+    # Read back rather than trusting the commit: the allow list is the only
+    # thing standing between this node and anyone claiming to know the time.
+    state = client.request(OP_GET_STATE, {1: [NS_GENERAL]})
+    stored = state.get(1, {}).get(NS_GENERAL, {}).get(
+        FIELD_REMOTE_MANAGEMENT_ALLOWED, [])
+    stored = [bytes(entry) for entry in stored]
+    for administrator in administrators:
+        if administrator not in stored:
+            raise RuntimeError("allow list did not verify for %s"
+                               % administrator.hex())
+        print("allowed: %s" % administrator.hex())
+    print("committed and verified -- reboot for it to take effect")
+
+
 def parse_administrator(value):
     try:
         decoded = bytes.fromhex(value)
@@ -408,6 +456,12 @@ def main():
     mode = sub.add_parser("mode", help="stage and commit host or autonomous TNC mode")
     mode.add_argument("value", choices=("host", "tnc"))
     sub.add_parser("reboot", help="reboot after peers have all been committed")
+    admin = sub.add_parser(
+        "admin",
+        help="set the remote-management allow list, without changing posture")
+    admin.add_argument("identity", nargs="+",
+                       help="16-byte identity hash(es) permitted to manage this "
+                            "node -- including supplying it UTC via /time")
     args = parser.parse_args()
 
     client = KissProvisioner(args.port, boot_wait=args.boot_wait)
@@ -439,6 +493,8 @@ def main():
         elif args.action == "reboot":
             client.reboot()
             print("reboot requested")
+        elif args.action == "admin":
+            cmd_admin(client, args)
         elif args.action == "secure":
             interfaces = available_ifac_schemas(client)
             networks = {}
