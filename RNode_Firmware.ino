@@ -1110,7 +1110,16 @@ void setup() {
       // This fixture has no Bluetooth stack to derive bt_devname from, but the
       // same buffer also names its fallback AP and DHCP host. Give lab boards
       // a stable, unmistakable identity instead of leaving that name empty.
-      snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01");
+      // bt_devname is 11 bytes: ten characters and a NUL. A longer name is
+      // truncated silently, and two boards whose names collide after
+      // truncation are indistinguishable to a BLE client and in our own logs,
+      // so keep every unit's name within ten characters.
+      #if !defined(OZD_DEVICE_NAME)
+      #define OZD_DEVICE_NAME "OZD-ARD-01"
+      #endif
+      static_assert(sizeof(OZD_DEVICE_NAME) <= sizeof(bt_devname),
+                    "OZD_DEVICE_NAME does not fit bt_devname; keep it to ten characters");
+      snprintf(bt_devname, sizeof(bt_devname), OZD_DEVICE_NAME);
     #endif
 
     #if defined(NIMBLE_PEER_TRANSPORT)
@@ -1470,7 +1479,7 @@ void setup() {
 #ifdef URTN_STATS_PAGES
       // Provisioning default
 #if BOARD_MODEL == BOARD_OZDISAN_ESP32
-      snprintf(nomadnet_name, sizeof(nomadnet_name), "OZD-ARD-01");
+      snprintf(nomadnet_name, sizeof(nomadnet_name), OZD_DEVICE_NAME);
 #else
       snprintf(nomadnet_name, sizeof(nomadnet_name), "microReticulum Node [%s]", device_uid_str);
 #endif
