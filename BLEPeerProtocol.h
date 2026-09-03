@@ -152,6 +152,23 @@
 // heard but not reached.
 #define BLE_PEER_CONNECT_MIN_RSSI (-85)
 
+// How long a connected peer may go silent before we reclaim its slot.
+//
+// A peer that walks out of range does not disconnect; it simply stops. The
+// link layer may take a long time to notice, or never notice while we keep
+// notifying into it, so the slot stays occupied and the node cannot be rejoined
+// until something forces a teardown. Observed in the field: a phone left BLE
+// range and, on returning, could not reconnect -- every attempt failed with
+// GATT_CONN_FAILED_ESTABLISHMENT -- until its interface was restarted by hand.
+//
+// Both ends of this protocol keepalive every BLE_PEER_KEEPALIVE_MS, so a live
+// peer is heard from at least that often. Three missed keepalives is the
+// threshold: long enough that a brief stall does not drop a good link, short
+// enough that a returning node is rejoinable in well under a minute. Getting a
+// person's node back into the mesh quickly is the point of this firmware, and
+// an occupied slot with nothing behind it serves nobody.
+#define BLE_PEER_PEER_TIMEOUT_MS (3 * BLE_PEER_KEEPALIVE_MS)
+
 // How often to present a fresh BLE address while no peer is connected.
 //
 // THIS IS A WORKAROUND FOR A CLIENT BUG, NOT PART OF THE PROTOCOL.

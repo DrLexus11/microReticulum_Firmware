@@ -329,3 +329,37 @@ gap is that Columba exposes no generic Resource primitive.
 
 Deferred deliberately. This branch is scoped to the BLE peer interface and
 complete meshing over ESP-NOW.
+
+### 19. A peer that walks out of range used to hold its slot for ever -- fixed
+
+Reported from the field: the phone left BLE range, and on returning could not
+reconnect. Every attempt failed, and only restarting the interface on the phone
+recovered it.
+
+The phone side was behaving. Its logs show the recovery loop running correctly,
+re-offering the board every 30 s and dialling it, and each attempt failing with
+`GATT_CONN_FAILED_ESTABLISHMENT` (HCI 0x3e) at -84 dBm.
+
+The board was not. `PeerState` carried no last-seen timestamp and nothing
+reclaimed a slot, so a peer that stops without disconnecting -- which is what
+walking out of range is -- stayed connected for ever. The board went on
+notifying into it (`notify handle=0 len=1 ok=1` every 15 s, indefinitely), and a
+peripheral holding a stale ACL to that central is a well-known cause of 0x3e on
+a fresh connect.
+
+Fixed by stamping `last_inbound` on connect and on every inbound frame --
+keepalives included, which is what makes it a liveness signal -- and reclaiming
+any slot silent for `BLE_PEER_PEER_TIMEOUT_MS`, three missed keepalives.
+
+Verified on hardware with a client that connects, completes GATT setup and then
+says nothing:
+
+```
+[blepeer] 14:d4:24:d1:dd:2e silent for 45022ms; reclaiming its slot
+[blepeer] inbound link 14:d4:24:d1:dd:2e disconnected, reason=0
+```
+
+Three keepalives is deliberate: long enough that a brief stall does not drop a
+good link, short enough that a returning node rejoins in well under a minute.
+Getting a person's node back into the mesh quickly is the point, and a slot with
+nothing behind it serves nobody.

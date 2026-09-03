@@ -146,6 +146,8 @@ public:
 		}
 		scan_tick();
 
+		reap_silent_peers();
+
 		const bool connected = ready_count() > 0;
 		if (connected && (millis() - _last_keepalive) >= BLE_PEER_KEEPALIVE_MS) {
 			_last_keepalive = millis();
@@ -348,6 +350,8 @@ private:
 		volatile bool setup_pending = false;
 		volatile bool fail_pending = false;
 		volatile bool disconnect_pending = false;
+		// millis() of the last thing heard FROM this peer; 0 while unused.
+		uint32_t last_inbound = 0;
 		volatile bool identity_pending = false;
 		volatile int reason = 0;
 	};
@@ -365,6 +369,7 @@ private:
 		peer.connect_pending = false;
 		peer.setup_pending = false;
 		peer.fail_pending = false;
+		peer.last_inbound = millis();
 		peer.disconnect_pending = false;
 		peer.identity_pending = false;
 		peer.reason = 0;
@@ -460,6 +465,8 @@ private:
 
 	void ingest(PeerState& peer, const uint8_t* data, size_t length) {
 		if (length == 0) return;
+		// Keepalives land here too, which is what makes this a liveness signal.
+		peer.last_inbound = millis();
 		if (length == BLE_PEER_KEEPALIVE_SIZE &&
 		    data[0] == BLE_PEER_KEEPALIVE_BYTE) {
 			_keepalives_in++;
@@ -585,6 +592,22 @@ private:
 			    !peer.disconnect_pending && peer.identity == subject.identity) return true;
 		}
 		return false;
+	}
+
+	// Drop peers that have gone silent. See BLE_PEER_PEER_TIMEOUT_MS for why an
+	// unreclaimed slot stops a returning node from rejoining at all.
+	void reap_silent_peers() {
+		const uint32_t now = millis();
+		for (PeerState& peer : _peers) {
+			if (peer.role == ROLE_NONE || peer.disconnect_pending) continue;
+			if (peer.last_inbound == 0) continue;
+			if ((now - peer.last_inbound) < BLE_PEER_PEER_TIMEOUT_MS) continue;
+			printf("[blepeer] %s silent for %ums; reclaiming its slot\n",
+			       peer.address.toString().c_str(),
+			       (unsigned)(now - peer.last_inbound));
+			peer.disconnect_pending = true;
+			disconnect_peer(peer);
+		}
 	}
 
 	void disconnect_peer(PeerState& peer) {
