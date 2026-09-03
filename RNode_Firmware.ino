@@ -1630,11 +1630,17 @@ printf("[init] op_mode: %U\n", op_mode);
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #endif
+#if defined(BLE_PEER_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+#endif
 #else
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+        nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
 #endif
 #endif
 #ifdef HAS_BME
