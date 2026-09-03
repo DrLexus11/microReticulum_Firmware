@@ -1,6 +1,7 @@
 """Architecture checks for the wall-time/monotonic clock separation."""
 
 import os
+import re
 import unittest
 
 
@@ -41,12 +42,35 @@ class WallTimeArchitectureTests(unittest.TestCase):
         firmware = source("RNode_Firmware.ino")
         pages = source("Pages.h")
         display = source("Display.h")
-        self.assertGreaterEqual(firmware.count('"/page/time.mu"'), 2)
+        # Read-only and public: a peer must be able to ask whether our clock is
+        # trustworthy before it believes anything we timestamped. Registering it
+        # once, outside the NOMADNET_PAGES_ALLOW_ALL split, is what keeps it
+        # reachable on production builds instead of silently timing out.
+        self.assertEqual(firmware.count('"/page/time.mu"'), 1)
+        self.assertIn(
+            'register_request_handler("/page/time.mu", serve_page, '
+            'RNS::Type::Destination::ALLOW_ALL)', firmware)
+        self.assertNotIn(
+            'register_request_handler("/page/time.mu", serve_page, '
+            'RNS::Type::Destination::ALLOW_LIST', firmware)
         self.assertIn("Monotonic ms:", pages)
         self.assertIn("Last source :", pages)
         self.assertIn("BOARD_MODEL == BOARD_OZDISAN_ESP32", display)
         self.assertIn('snprintf(clock_text, sizeof(clock_text), "TIME --")', display)
         self.assertIn('"UP %02llu:%02llu"', display)
+
+    def test_every_environment_pins_the_same_library_revision(self):
+        # The wall-time API lives in microReticulum, and Pages.h, LXMF* and
+        # RRCBridge.cpp now call it unconditionally. Bumping only the
+        # environments under test leaves every other board pinned to a library
+        # without those symbols, where the failure is a wall of "is not a member
+        # of RNS::Utilities::OS" rather than anything that names the real cause.
+        pins = re.findall(r"microReticulum\.git#([0-9a-fA-F]+)",
+                          source("platformio.ini"))
+        self.assertTrue(pins, "no pinned microReticulum revisions found")
+        self.assertEqual(sorted(set(pins)), sorted({pins[0]}),
+                         "platformio.ini pins more than one microReticulum "
+                         "revision: %s" % sorted(set(pins)))
 
 
 if __name__ == "__main__":

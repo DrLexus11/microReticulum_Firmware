@@ -1628,6 +1628,14 @@ printf("[init] op_mode: %U\n", op_mode);
         lxmf_propagation_destination.set_link_established_callback(lxmf_link_established);
         lxmf_store_load();
 #endif
+        // Whether this node's clock can be trusted is not device telemetry --
+        // it is what any peer needs before it believes a timestamp we stamped,
+        // and what tells an operator which node to go fix. The page is
+        // read-only and carries no configuration, keys or identity, so it stays
+        // public even on production builds. Setting the clock is the privileged
+        // half, and that lives behind the allow list on Transport's /time.
+        nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+
         // These pages expose device telemetry (heap, flash, interfaces, transport
         // metrics). Gated to the remote-management allow list by default; a peer
         // that has not identified is refused before serve_page is ever called,
@@ -1637,7 +1645,6 @@ printf("[init] op_mode: %U\n", op_mode);
 #ifdef NOMADNET_PAGES_ALLOW_ALL
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
-        nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #endif
@@ -1647,7 +1654,6 @@ printf("[init] op_mode: %U\n", op_mode);
 #else
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-        nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
 #endif
