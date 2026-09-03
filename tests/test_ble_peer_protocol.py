@@ -22,6 +22,9 @@ import unittest
 HEADER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "BLEPeerProtocol.h")
 INTERFACE = os.path.join(os.path.dirname(HEADER), "BLEPeerInterface.h")
+NIMBLE_INTERFACE = os.path.join(os.path.dirname(HEADER),
+                                "BLEPeerNimBLEInterface.h")
+PLATFORMIO = os.path.join(os.path.dirname(HEADER), "platformio.ini")
 REFERENCE = os.environ.get("BLE_REFERENCE", "")
 
 # The Kotlin client, checked out beside this repo. Overridable, and skipped
@@ -49,6 +52,11 @@ def firmware_defines():
 
 def interface_source():
     with open(INTERFACE, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def nimble_interface_source():
+    with open(NIMBLE_INTERFACE, "r", encoding="utf-8") as handle:
         return handle.read()
 
 
@@ -213,6 +221,43 @@ class AgainstColumbaClientTests(unittest.TestCase):
     def test_att_header_overhead_matches(self):
         """Both sides must subtract the same 3 bytes, or fragments overrun."""
         self.assertEqual(self.kotlin_const("ATT_HEADER_SIZE"), 3)
+
+    def test_peer_capacity_matches_columba(self):
+        self.assertEqual(self.kotlin_const("MAX_CONNECTIONS"),
+                         self.d["BLE_PEER_MAX_CONNECTIONS"])
+
+
+class NimBLEMultiPeerTests(unittest.TestCase):
+    """Pin the state that makes one GATT service a safe multi-access link."""
+
+    def setUp(self):
+        self.source = nimble_interface_source()
+
+    def test_every_peer_has_separate_identity_and_reassembly_state(self):
+        state = self.source[self.source.index("struct PeerState"):
+                            self.source.index("void prepare_peer")]
+        for member in ("RNS::Bytes identity", "RNS::Bytes inbound",
+                       "uint16_t expected", "uint16_t next_seq"):
+            self.assertIn(member, state)
+        self.assertIn("std::array<PeerState, BLE_PEER_MAX_CONNECTIONS> _peers",
+                      self.source)
+
+    def test_advertising_continues_until_capacity(self):
+        self.assertIn("_advertise_pending = true", self.source)
+        self.assertIn("if (!has_capacity())", self.source)
+        self.assertIn("advertising->isAdvertising()", self.source)
+
+    def test_server_notifications_fan_out_to_subscribed_peers(self):
+        self.assertIn("_tx->notify(data, length, peer.server_handle)",
+                      self.source)
+
+    def test_ozd_expands_nimble_controller_to_seven_connections(self):
+        with open(PLATFORMIO, "r", encoding="utf-8") as handle:
+            platform = handle.read()
+        target = platform[platform.index("[env:ozdisan-esp32-espnow]"):]
+        target = target[:target.index("\n[env:", 1)]
+        self.assertIn("-DBLE_PEER_MAX_CONNECTIONS=7", target)
+        self.assertIn("-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=7", target)
 
 
 class DeckClientTests(unittest.TestCase):
