@@ -466,7 +466,7 @@ RNS::Bytes serve_page(
       content << "WiFi channel: " << std::to_string(espnow_channel()) << "\n";
       content << "Peers recent: " << std::to_string(espnow_peer_count()) << "\n";
       content << "Local PHY   : " << local_phy << "\n";
-      content << "Last peer PHY: " << peer_phy << "`\n\n";
+      content << "Last peer PHY: " << peer_phy << "\n\n";
       content << ">> Recovery policy\n";
       content << "Mode        : " << (wifi_espnow_recovery_mode == 1 ? "scan-before-softap" : "off") << "\n";
       content << "Scan budget : " << std::to_string(wifi_espnow_scan_budget_ms / 1000) << " s\n";
@@ -477,7 +477,7 @@ RNS::Bytes serve_page(
       content << "Succeeded   : " << std::to_string(espnow_recovery_successes()) << "\n";
       content << "Failed      : " << std::to_string(espnow_recovery_failures()) << "\n";
       content << "Proof fails : " << std::to_string(espnow_recovery_proof_failures()) << "\n";
-      content << "Channel errors: " << std::to_string(espnow_recovery_channel_errors()) << "`\n\n";
+      content << "Channel errors: " << std::to_string(espnow_recovery_channel_errors()) << "\n\n";
       content << ">> Traffic and health\n";
       content << "Packets in  : " << std::to_string(espnow_packets_in()) << "\n";
       content << "Packets out : " << std::to_string(espnow_packets_out()) << "\n";
@@ -487,7 +487,7 @@ RNS::Bytes serve_page(
       content << "RX drops    : " << std::to_string(espnow_rx_dropped()) << "\n";
       content << "TX drops    : " << std::to_string(espnow_tx_dropped()) << "\n";
       content << "Send failures: " << std::to_string(espnow_send_failures()) << "\n";
-      content << "Reassembly timeouts: " << std::to_string(espnow_reassembly_timeouts()) << "`\n\n";
+      content << "Reassembly timeouts: " << std::to_string(espnow_reassembly_timeouts()) << "\n\n";
       content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n";
     }
 #endif
