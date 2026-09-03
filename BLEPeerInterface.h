@@ -13,16 +13,18 @@
 //
 // The protocol breaks the symmetry by address: `shouldConnect = localMac <
 // peerMac`, so the lower address initiates and the higher one waits as a
-// peripheral. Advertising alone is therefore not enough. Android commonly
-// presents a rotating private address, so either side can be lower on a given
-// attempt and the over-the-air address cannot be treated as peer identity. A
-// peripheral-only first attempt did deadlock: our service was on air at -43
-// dBm, the client transmitted "51 bytes to 0 peer(s)", and neither side made a
-// connection attempt.
+// peripheral. Advertising alone is therefore not enough. Android uses
+// randomised *static* addresses, which the specification requires to have the
+// top two bits set, so a phone's address always begins 0xC0-0xFF; an Espressif
+// public address begins 0x80. The phone is always the higher of the pair and
+// always waits -- and a peripheral-only node waits too, so the two sit
+// advertising at each other indefinitely. That deadlock is exactly what a
+// peripheral-only first attempt produced: our service on air at -43 dBm, the
+// client transmitting "51 bytes to 0 peer(s)", and not one connection attempt
+// from either side.
 //
 // So this node also scans, applies the same comparison, and connects when its
-// address is lower. Reticulum's 16-byte transport identity takes over after
-// the GATT connection is established.
+// address is the lower one -- which against a phone is essentially always.
 
 #pragma once
 
@@ -31,18 +33,27 @@
 #if (HAS_BLE == true || defined(NIMBLE_PEER_TRANSPORT)) && MCU_VARIANT == MCU_ESP32
 
 #include <microReticulum.h>
+
+#include "BLEPeerProtocol.h"
+
 #if defined(NIMBLE_PEER_TRANSPORT)
+
 #include <NimBLEDevice.h>
+
+// The constrained OZD backend has materially different connection ownership:
+// one shared GATT service carries several simultaneous Reticulum peers. It is
+// kept in its own file so that its state machine cannot perturb the Bluedroid
+// backend below, which is the one the RAD boards were proven on.
+#include "BLEPeerNimBLEInterface.h"
+
 #else
+
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEClient.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLE2902.h>
-#endif
-
-#include "BLEPeerProtocol.h"
 
 class BLEPeerInterface;
 
@@ -55,12 +66,7 @@ inline void ble_peer_notify_trampoline(BLERemoteCharacteristic* characteristic,
 
 class BLEPeerInterface : public RNS::InterfaceImpl,
                          public BLECharacteristicCallbacks,
-                         public BLEAdvertisedDeviceCallbacks
-#if defined(NIMBLE_PEER_TRANSPORT)
-                       , public NimBLEClientCallbacks,
-                         public NimBLEServerCallbacks
-#endif
-                         {
+                         public BLEAdvertisedDeviceCallbacks {
 
 public:
 	BLEPeerInterface(const char* name) : RNS::InterfaceImpl(name) {
@@ -85,26 +91,6 @@ public:
 	BLEPeerInterface() : BLEPeerInterface("BLEPeerInterface") {}
 	virtual ~BLEPeerInterface() { _name = "deleted"; }
 
-#if defined(NIMBLE_PEER_TRANSPORT)
-	// OZD has no PSRAM, and the legacy Bluedroid host beside Wi-Fi and ESP-NOW
-	// leaves too little contiguous heap for Reticulum. Start NimBLE directly;
-	// the other ESP32 targets continue to attach to their BLESerial server.
-	bool begin(const RNS::Bytes& identity_hash) {
-		if (_begin_attempted) return false;
-		_begin_attempted = true;
-		extern char bt_devname[11];
-		if (!NimBLEDevice::isInitialized() &&
-		    !NimBLEDevice::init(std::string(bt_devname))) {
-			printf("[blepeer] NimBLE initialisation failed\n");
-			return false;
-		}
-		NimBLEDevice::setMTU(BLE_PEER_MAX_ATTR);
-		BLEServer* server = NimBLEDevice::createServer();
-		if (server != nullptr) server->setCallbacks(this, false);
-		return begin(server, identity_hash);
-	}
-#endif
-
 	// Attach to an already-initialised BLE server. The identity hash is
 	// published verbatim on the identity characteristic: peers track each other
 	// by Reticulum identity because Android rotates its BLE MAC about every
@@ -124,42 +110,25 @@ public:
 		// throughput; accepting both costs nothing.
 		_rx = _service->createCharacteristic(
 			BLE_PEER_RX_UUID,
-#if defined(NIMBLE_PEER_TRANSPORT)
-			NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-#else
 			BLECharacteristic::PROPERTY_WRITE |
 			BLECharacteristic::PROPERTY_WRITE_NR);
-#endif
 		_rx->setCallbacks(this);
 
 		// Us -> peer.
 		_tx = _service->createCharacteristic(
 			BLE_PEER_TX_UUID,
-#if defined(NIMBLE_PEER_TRANSPORT)
-			NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-#else
 			BLECharacteristic::PROPERTY_READ |
 			BLECharacteristic::PROPERTY_NOTIFY);
-#endif
 		// The CCCD needs its own write permission or a client cannot subscribe,
 		// and a client that cannot subscribe has no reason to talk to us. That
 		// exact omission cost a day on the other BLE service in this firmware.
-#if !defined(NIMBLE_PEER_TRANSPORT)
 		_tx->addDescriptor(new BLE2902());
-#endif
 
 		_identity = _service->createCharacteristic(
-			BLE_PEER_IDENTITY_UUID,
-#if defined(NIMBLE_PEER_TRANSPORT)
-			NIMBLE_PROPERTY::READ);
-#else
-			BLECharacteristic::PROPERTY_READ);
-#endif
+			BLE_PEER_IDENTITY_UUID, BLECharacteristic::PROPERTY_READ);
 		_identity->setValue((uint8_t*)identity_hash.data(), identity_hash.size());
 
-#if !defined(NIMBLE_PEER_TRANSPORT)
 		_service->start();
-#endif
 
 		// Advertise the service UUID itself, and do it by replacing the
 		// advertisement rather than calling addServiceUUID().
@@ -175,12 +144,7 @@ public:
 		// app, not by reading a name off a system scan list. The name moves to
 		// the scan response, where an active scanner still gets it.
 		BLEAdvertisementData advertisement;
-		advertisement.setFlags(
-#if defined(NIMBLE_PEER_TRANSPORT)
-			BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-#else
-			ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
-#endif
+		advertisement.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
 		advertisement.setCompleteServices(BLEUUID(BLE_PEER_SERVICE_UUID));
 
 		BLEAdvertisementData scan_response;
@@ -190,11 +154,7 @@ public:
 		BLEAdvertising* advertising = BLEDevice::getAdvertising();
 		advertising->setAdvertisementData(advertisement);
 		advertising->setScanResponseData(scan_response);
-#if defined(NIMBLE_PEER_TRANSPORT)
-		advertising->enableScanResponse(true);
-#else
 		advertising->setScanResponse(true);
-#endif
 		advertising->start();
 
 		_identity_hash = identity_hash;
@@ -229,54 +189,15 @@ public:
 		// than in the callback because connecting from inside a scan result is
 		// how this library deadlocks.
 		report_rejected();
-		report_identity_handshake();
 		drain_inbound();
-#if defined(NIMBLE_PEER_TRANSPORT)
-		process_client_events();
-#endif
-
-		// A peripheral connection (normally Columba) owns this transport until
-		// it leaves. Starting a NimBLE scan while that server link is live can
-		// block the Arduino loop in the host/controller call; on OZD this was
-		// reproduced as a task-WDT reset exactly when an un-handshaken BlueZ
-		// connection overlapped the next 20-second scan tick.
-		bool server_connected = has_server_link();
-		bool advertising_rearmed = false;
-		if (!server_connected && _advertise_pending) {
-			// A disconnect can land just as the central-role scan becomes due.
-			// Stop that scan and give peripheral advertising a full interval of
-			// exclusive ownership, otherwise advertising->start() may be rejected
-			// and the device remains invisible until the 30-second safety rearm.
-			BLEScan* scan = BLEDevice::getScan();
-			if (scan != nullptr) scan->stop();
-			_advertise_pending = false;
-			_last_scan = millis();
-			restart_advertising();
-			advertising_rearmed = true;
-		}
-		if (server_connected) {
-			_candidate_valid = false;
+		consider_candidate();
+		if (_connect_pending) {
 			_connect_pending = false;
-#if defined(NIMBLE_PEER_TRANSPORT)
-			// Columba may connect inbound while our own central attempt is still
-			// pending. Prefer the already-established link and cancel the dial so
-			// the two controllers do not remain in a central/central collision.
-			if (_client_connecting && _client != nullptr) {
-				_client->cancelConnect();
-				_client_connecting = false;
-			}
-#endif
-		} else if (!advertising_rearmed) {
-			consider_candidate();
-			if (_connect_pending) {
-				_connect_pending = false;
-				connect_to_peer();
-			}
-			scan_tick();
+			connect_to_peer();
 		}
+		scan_tick();
 
-		server_connected = has_server_link();
-		const bool connected = server_connected || _client_connected;
+		const bool connected = (_server->getConnectedCount() > 0) || _client_connected;
 		if (connected && !_was_connected) {
 			// Nothing is pushed on connect. Our identity already sits on the
 			// identity characteristic for the peer to read.
@@ -299,7 +220,7 @@ public:
 			notify_raw(&beat, BLE_PEER_KEEPALIVE_SIZE);
 		}
 
-		if (!connected && _was_connected && !advertising_rearmed) {
+		if (!connected && _was_connected) {
 			// Do not carry a half-finished packet across peers.
 			_inbound.clear();
 			_expected = 0;
@@ -322,18 +243,8 @@ public:
 	}
 
 	// --- inbound: peer writes a fragment to the RX characteristic ------------
-#if defined(NIMBLE_PEER_TRANSPORT)
-	void onWrite(BLECharacteristic* characteristic, NimBLEConnInfo& conn_info) override {
-#else
 	void onWrite(BLECharacteristic* characteristic) override {
-#endif
 		if (!_started || characteristic != _rx) return;
-#if defined(NIMBLE_PEER_TRANSPORT)
-		// This fixture exposes one Reticulum interface, so one inbound GATT link
-		// owns its reassembly and identity state. A duplicate link is disconnected
-		// by the main loop and must not overwrite the active peer's handshake.
-		if (conn_info.getConnHandle() != _server_conn_handle) return;
-#endif
 		std::string value = characteristic->getValue();
 		if (value.empty()) return;
 		ingest((const uint8_t*)value.data(), value.length());
@@ -362,7 +273,6 @@ public:
 		if (length == BLE_PEER_IDENTITY_SIZE && _peer_identity.size() == 0) {
 			_peer_identity = RNS::Bytes(data, length);
 			_identity_writes++;
-			_identity_log_pending = true;
 			return;
 		}
 
@@ -468,13 +378,6 @@ public:
 		_reject_valid = false;
 	}
 
-	void report_identity_handshake() {
-		if (!_identity_log_pending) return;
-		_identity_log_pending = false;
-		printf("[blepeer] accepted peer identity <%s> over unpaired GATT\n",
-		       _peer_identity.toHex().c_str());
-	}
-
 	// Reassembly runs in a BLE callback -- BTC_TASK for a server write, the
 	// client task for a notification -- and neither has the stack for
 	// Reticulum's inbound path, which parses, decrypts and routes. Calling
@@ -530,52 +433,19 @@ public:
 
 	// A scan result carrying our service UUID. Decide by address whether we are
 	// the side that connects, exactly as the reference does.
-#if defined(NIMBLE_PEER_TRANSPORT)
-	void onResult(const BLEAdvertisedDevice* advertised_device) override {
-		if (advertised_device == nullptr) return;
-		const BLEAdvertisedDevice& device = *advertised_device;
-#else
 	void onResult(BLEAdvertisedDevice device) override {
-#endif
 		// Runs on BTC_TASK, whose stack is small and fixed. Do as close to
 		// nothing as possible: record the candidate and return. An earlier
 		// version compared addresses and printf'd here, and the combination of
 		// std::string temporaries and printf overflowed the task stack --
 		// "Stack canary watchpoint triggered (BTC_TASK)" -- rebooting the node
 		// about ten seconds after every peer appeared.
-		if (!_started || _client_connected || _connect_pending
-#if defined(NIMBLE_PEER_TRANSPORT)
-		    || _client_connecting
-#endif
-		   ) return;
+		if (!_started || _client_connected || _connect_pending) return;
+		if (_candidate_valid) return;
 		if (!device.isAdvertisingService(_service_uuid)) return;
 
-#if defined(NIMBLE_PEER_TRANSPORT)
-		const BLEAddress& address = device.getAddress();
-		if (address_blacklisted(address)) return;
-		const bool initiates = (uint64_t)BLEDevice::getAddress() < (uint64_t)address;
-		const int8_t rssi = device.getRSSI();
-		// Too weak to reach. Discovering a peer and being able to connect to it
-		// are different things, and dialling one we cannot reach costs ten
-		// seconds of a radio that Wi-Fi and ESP-NOW are also using. See
-		// BLE_PEER_CONNECT_MIN_RSSI.
-		if (rssi < BLE_PEER_CONNECT_MIN_RSSI) return;
-		// Let the whole burst run. Prefer any peer for which the deterministic
-		// MAC rule makes us central, then the strongest signal within that role.
-		// Connecting to the first packet seen made one unreachable advertiser
-		// permanently starve every other Columba/RAD peer in the room.
-		if (_candidate_valid &&
-		    (_candidate_initiates || !initiates) &&
-		    (_candidate_initiates != initiates || _candidate_rssi >= rssi)) return;
-#else
-		if (_candidate_valid) return;
-#endif
 		_candidate       = device.getAddress();
 		_candidate_type  = device.getAddressType();
-#if defined(NIMBLE_PEER_TRANSPORT)
-		_candidate_rssi = rssi;
-		_candidate_initiates = initiates;
-#endif
 		_candidate_valid = true;
 	}
 
@@ -583,16 +453,8 @@ public:
 	// stack to spare for string handling and logging.
 	void consider_candidate() {
 		if (!_candidate_valid) return;
-#if defined(NIMBLE_PEER_TRANSPORT)
-		BLEScan* scan = BLEDevice::getScan();
-		if (scan != nullptr && scan->isScanning()) return;
-#endif
 		_candidate_valid = false;
-		if (_client_connected || _connect_pending
-#if defined(NIMBLE_PEER_TRANSPORT)
-		    || _client_connecting || !retry_due()
-#endif
-		   ) return;
+		if (_client_connected || _connect_pending) return;
 
 		const std::string peer = _candidate.toString();
 		if (!should_connect(peer)) {
@@ -609,13 +471,8 @@ public:
 		_connect_address = _candidate;
 		_connect_type    = _candidate_type;
 		_connect_pending = true;
-		printf("[blepeer] discovered %s (rssi=%d), we hold the lower address; will connect\n",
-		       peer.c_str(),
-#if defined(NIMBLE_PEER_TRANSPORT)
-		       (int)_candidate_rssi);
-#else
-		       0);
-#endif
+		printf("[blepeer] discovered %s, we hold the lower address; will connect\n",
+		       peer.c_str());
 	}
 
 	// Called from the notify trampoline for the client role. Same reassembly as
@@ -629,56 +486,6 @@ public:
 		_expected = 0;
 		printf("[blepeer] client link closed\n");
 	}
-
-#if defined(NIMBLE_PEER_TRANSPORT)
-	void onConnect(NimBLEClient*) override {
-		_client_connecting = false;
-		_client_setup_pending = true;
-	}
-	void onConnectFail(NimBLEClient*, int reason) override {
-		_client_connecting = false;
-		_client_fail_reason = reason;
-		_client_fail_pending = true;
-	}
-	void onDisconnect(NimBLEClient*, int reason) override {
-		_client_connecting = false;
-		_client_disconnect_reason = reason;
-		_client_disconnect_pending = true;
-	}
-	void onConnect(NimBLEServer*, NimBLEConnInfo& conn_info) override {
-		const uint16_t handle = conn_info.getConnHandle();
-		if (_server_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
-			_server_conn_handle = handle;
-			_server_peer_address = conn_info.getAddress();
-			_peer_identity.clear();
-			_inbound.clear();
-			_expected = 0;
-			_server_connect_pending = true;
-		} else if (_server_conn_handle != handle) {
-			_duplicate_server_handle = handle;
-			_duplicate_server_address = conn_info.getAddress();
-			_duplicate_server_pending = true;
-		}
-	}
-	void onDisconnect(NimBLEServer*, NimBLEConnInfo& conn_info, int reason) override {
-		const uint16_t handle = conn_info.getConnHandle();
-		if (handle != _server_conn_handle) {
-			if (handle == _duplicate_server_handle) _duplicate_server_pending = false;
-			return;
-		}
-		_server_disconnect_address = conn_info.getAddress();
-		_server_disconnect_reason = reason;
-		_server_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-		_peer_identity.clear();
-		_inbound.clear();
-		_expected = 0;
-		_server_disconnect_pending = true;
-		// NimBLE invokes this on its host task. Re-entering the advertiser from
-		// that callback risks a host lock inversion, so let the Arduino loop do
-		// the actual restart.
-		_advertise_pending = true;
-	}
-#endif
 
 protected:
 	virtual void handle_incoming(const RNS::Bytes& data) override {
@@ -711,7 +518,7 @@ protected:
 			// client, and the server then reports zero connections. Gating on
 			// the server alone silently refused every outbound packet whenever
 			// we were the side that initiated.
-			const bool server_link = has_server_link();
+			const bool server_link = (_server != nullptr && _server->getConnectedCount() > 0);
 			if (!_started || (!server_link && !_client_connected)) {
 				return false;
 			}
@@ -760,13 +567,8 @@ private:
 			const uint16_t mtu = _client->getMTU();
 			return (mtu >= BLE_PEER_MIN_MTU) ? mtu : (uint16_t)BLE_PEER_MIN_MTU;
 		}
-		if (!has_server_link()) return BLE_PEER_MIN_MTU;
-		uint16_t mtu = BLE_PEER_MIN_MTU;
-#if defined(NIMBLE_PEER_TRANSPORT)
-		mtu = _server->getPeerMTU(_server_conn_handle);
-#else
-		mtu = _server->getPeerMTU(_server->getConnId());
-#endif
+		if (_server == nullptr || _server->getConnectedCount() <= 0) return BLE_PEER_MIN_MTU;
+		const uint16_t mtu = _server->getPeerMTU(_server->getConnId());
 		return (mtu >= BLE_PEER_MIN_MTU) ? mtu : (uint16_t)BLE_PEER_MIN_MTU;
 	}
 
@@ -782,263 +584,78 @@ private:
 		}
 		if (_tx == nullptr) return;
 		_tx->setValue((uint8_t*)data, length);
-#if defined(NIMBLE_PEER_TRANSPORT)
-		_tx->notify();
-#else
 		_tx->notify(true);
-#endif
 	}
 
 	// Periodic short scans. Continuous scanning starves a board that is also
 	// running a LoRa radio and a Reticulum stack, and the reference itself
 	// scans in bursts with an idle backoff.
 	void scan_tick() {
-		if (_client_connected
-#if defined(NIMBLE_PEER_TRANSPORT)
-		    || _client_connecting || !retry_due()
-#endif
-		   ) return;
+		if (_client_connected) return;
 		const uint32_t now = millis();
 		if (now - _last_scan < BLE_PEER_SCAN_INTERVAL_MS) return;
 		_last_scan = now;
 		BLEScan* scan = BLEDevice::getScan();
-		if (scan == nullptr) return;
-#if defined(NIMBLE_PEER_TRANSPORT)
-		// Android peers use rotating private addresses. Never let a result from a
-		// previous burst survive into the next connection attempt: dialling that
-		// address can only run to BLE_HS_ETIMEOUT, even though the same peer is
-		// already advertising under a new address.
-		if (!scan->isScanning()) scan->clearResults();
-		_candidate_valid = false;
-		_candidate_rssi = INT8_MIN;
-		_candidate_initiates = false;
-		scan->setScanCallbacks(this, false);
-#else
 		scan->setAdvertisedDeviceCallbacks(this, false);
-#endif
 		scan->setActiveScan(true);
 		scan->setInterval(100);
 		scan->setWindow(80);
 		// Non-blocking: results arrive in onResult().
-#if defined(NIMBLE_PEER_TRANSPORT)
-		if (!scan->start(BLE_PEER_SCAN_SECONDS * 1000, false, true)) {
-			printf("[blepeer] scan start failed\n");
-		}
-#else
 		scan->start(BLE_PEER_SCAN_SECONDS, nullptr, false);
-#endif
 	}
 
 	void connect_to_peer() {
 		BLEScan* scan = BLEDevice::getScan();
-		if (scan != nullptr) {
-			scan->stop();
-#if defined(NIMBLE_PEER_TRANSPORT)
-			// _connect_address owns its own copy; the scan result that supplied it
-			// can be discarded before connecting.
-			scan->clearResults();
-#endif
-		}
+		scan->stop();
 
-		if (_client == nullptr) {
-			_client = BLEDevice::createClient();
-#if defined(NIMBLE_PEER_TRANSPORT)
-			if (_client != nullptr) {
-				_client->setClientCallbacks(this, false);
-				_client->setConnectRetries(0);
-				_client->setConnectTimeout(BLE_PEER_CONNECT_TIMEOUT_MS);
-			}
-#endif
-		}
-		if (_client == nullptr) return;
-#if defined(NIMBLE_PEER_TRANSPORT)
-		printf("[blepeer] connecting asynchronously to %s (address type %u)\n",
-		       _connect_address.toString().c_str(),
-		       (unsigned)_connect_address.getType());
-		_client_connecting = true;
-		if (!_client->connect(_connect_address, true, true, true)) {
-			_client_connecting = false;
-			_client_fail_reason = _client->getLastError();
-			_client_fail_pending = true;
-		}
-		return;
-#else
+		if (_client == nullptr) _client = BLEDevice::createClient();
 		printf("[blepeer] connecting to %s\n", _connect_address.toString().c_str());
 		if (!_client->connect(_connect_address, _connect_type)) {
 			printf("[blepeer] connect failed\n");
 			return;
 		}
-		if (!finish_client_connection()) _client->disconnect();
-#endif
-	}
-
-	// Finish service discovery and the v2.2 identity handshake after the GAP
-	// connection has completed. On NimBLE this is called by the Arduino loop,
-	// never by the host callback; on Bluedroid it follows the blocking connect.
-	bool finish_client_connection() {
 		BLERemoteService* service = _client->getService(BLEUUID(BLE_PEER_SERVICE_UUID));
 		if (service == nullptr) {
 			printf("[blepeer] peer has no Reticulum service; disconnecting\n");
-			return false;
+			_client->disconnect();
+			return;
 		}
 		_remote_rx = service->getCharacteristic(BLEUUID(BLE_PEER_RX_UUID));
 		BLERemoteCharacteristic* remote_tx =
 			service->getCharacteristic(BLEUUID(BLE_PEER_TX_UUID));
-		BLERemoteCharacteristic* remote_identity =
-			service->getCharacteristic(BLEUUID(BLE_PEER_IDENTITY_UUID));
-		if (_remote_rx == nullptr || remote_tx == nullptr ||
-		    remote_identity == nullptr || !remote_identity->canRead()) {
-			printf("[blepeer] peer service is missing RX, TX or identity; disconnecting\n");
+		if (_remote_rx == nullptr || remote_tx == nullptr) {
+			printf("[blepeer] peer service is missing RX or TX; disconnecting\n");
+			_client->disconnect();
 			_remote_rx = nullptr;
-			return false;
+			return;
 		}
-
-		// Columba's central sequence reads identity before subscribing and
-		// writing its own identity. Mirror it, and reject incomplete peers rather
-		// than publishing a connected-but-inert Reticulum interface.
-		std::string identity_value = remote_identity->readValue();
-		if (identity_value.size() != BLE_PEER_IDENTITY_SIZE) {
-			printf("[blepeer] peer identity is %u bytes, expected %u; disconnecting\n",
-			       (unsigned)identity_value.size(), (unsigned)BLE_PEER_IDENTITY_SIZE);
-			_remote_rx = nullptr;
-			return false;
-		}
-		_peer_identity = RNS::Bytes((const uint8_t*)identity_value.data(),
-		                            identity_value.size());
-
 		// Subscribing is what makes the link two-way. A client that connects and
 		// does not subscribe receives nothing, which is indistinguishable from a
 		// peer that never speaks.
-#if defined(NIMBLE_PEER_TRANSPORT)
-		if (!remote_tx->subscribe(true, &ble_peer_notify_trampoline, true)) {
-			printf("[blepeer] notification subscription failed\n");
-			_remote_rx = nullptr;
-			return false;
-		}
-#else
 		remote_tx->registerForNotify(&ble_peer_notify_trampoline, true, true);
-#endif
-		// Written to RX, never notified: identity travels central -> peripheral
-		// on the RX characteristic only.
-#if defined(NIMBLE_PEER_TRANSPORT)
-		if (!_remote_rx->writeValue((uint8_t*)_identity_hash.data(),
-		                            _identity_hash.size(), true)) {
-			printf("[blepeer] identity handshake write failed; disconnecting\n");
-			_remote_rx = nullptr;
-			return false;
-		}
-#else
-		_remote_rx->writeValue((uint8_t*)_identity_hash.data(),
-		                       _identity_hash.size(), true);
-#endif
 		_client_connected = true;
 		_inbound.clear();
 		_expected = 0;
-		printf("[blepeer] connected as central to %s, mtu=%u\n",
-		       _connect_address.toString().c_str(), (unsigned)_client->getMTU());
-		return true;
-	}
-	bool has_server_link() const {
-		if (_server == nullptr) return false;
-#if defined(NIMBLE_PEER_TRANSPORT)
-		return _server_conn_handle != BLE_HS_CONN_HANDLE_NONE;
-#else
-		return _server->getConnectedCount() > 0;
-#endif
-	}
-
-#if defined(NIMBLE_PEER_TRANSPORT)
-	bool retry_due() const {
-		return _next_connect_attempt == 0 ||
-		       (int32_t)(millis() - _next_connect_attempt) >= 0;
-	}
-
-	bool address_blacklisted(const BLEAddress& address) const {
-		const uint32_t now = millis();
-		for (size_t i = 0; i < BLE_PEER_CONNECT_BLACKLIST_SIZE; ++i) {
-			if (_failed_until[i] != 0 &&
-			    (int32_t)(now - _failed_until[i]) < 0 &&
-			    _failed_addresses[i] == address) return true;
-		}
-		return false;
-	}
-
-	void blacklist_failed_address(const BLEAddress& address) {
-		const uint32_t now = millis();
-		size_t slot = 0;
-		for (size_t i = 0; i < BLE_PEER_CONNECT_BLACKLIST_SIZE; ++i) {
-			if (_failed_addresses[i] == address) { slot = i; break; }
-			if (_failed_until[i] == 0 || (int32_t)(now - _failed_until[i]) >= 0) {
-				slot = i;
-				break;
-			}
-			if (_failed_until[i] < _failed_until[slot]) slot = i;
-		}
-		_failed_addresses[slot] = address;
-		_failed_until[slot] = now + BLE_PEER_CONNECT_BLACKLIST_MS;
-	}
-
-	void process_client_events() {
-		if (_server_connect_pending) {
-			_server_connect_pending = false;
-			printf("[blepeer] inbound peripheral link %s connected (handle=%u, unpaired)\n",
-			       _server_peer_address.toString().c_str(),
-			       (unsigned)_server_conn_handle);
-		}
-		if (_server_disconnect_pending) {
-			_server_disconnect_pending = false;
-			printf("[blepeer] inbound peripheral link %s disconnected, reason=%d\n",
-			       _server_disconnect_address.toString().c_str(),
-			       _server_disconnect_reason);
-		}
-		if (_duplicate_server_pending && _server != nullptr) {
-			_duplicate_server_pending = false;
-			printf("[blepeer] rejecting duplicate inbound link %s (handle=%u)\n",
-			       _duplicate_server_address.toString().c_str(),
-			       (unsigned)_duplicate_server_handle);
-			_server->disconnect(_duplicate_server_handle);
-		}
-		const bool server_connected = has_server_link();
-		if (_client_fail_pending) {
-			_client_fail_pending = false;
-			_client_setup_pending = false;
-			printf("[blepeer] central connect failed, reason=%d; advertising for %ums before retry\n",
-			       _client_fail_reason, (unsigned)BLE_PEER_CONNECT_RETRY_MS);
-			_remote_rx = nullptr;
-			blacklist_failed_address(_connect_address);
-			_candidate_valid = false;
-			BLEScan* scan = BLEDevice::getScan();
-			if (scan != nullptr && !scan->isScanning()) scan->clearResults();
-			_next_connect_attempt = millis() + BLE_PEER_CONNECT_RETRY_MS;
-			if (!server_connected) restart_advertising();
-		}
-		if (_client_disconnect_pending) {
-			_client_disconnect_pending = false;
-			_client_setup_pending = false;
-			const bool completed_link = _client_connected;
-			client_disconnected();
-			printf("[blepeer] central link disconnected, reason=%d\n",
-			       _client_disconnect_reason);
-			if (!completed_link) blacklist_failed_address(_connect_address);
-			_candidate_valid = false;
-			BLEScan* scan = BLEDevice::getScan();
-			if (scan != nullptr && !scan->isScanning()) scan->clearResults();
-			_next_connect_attempt = millis() + BLE_PEER_CONNECT_RETRY_MS;
-			if (!server_connected) restart_advertising();
-		}
-		if (_client_setup_pending) {
-			_client_setup_pending = false;
-			// If Columba completed the inbound direction during our outgoing GAP
-			// attempt, keep that usable link and discard the duplicate central one.
-			if (server_connected && _client != nullptr) {
-				_client->disconnect();
-			} else if ((_client == nullptr || !_client->isConnected() ||
-			            !finish_client_connection()) && _client != nullptr) {
-				_client->disconnect();
+		// Read the peer's identity, then write ours to their RX. Both halves
+		// are required: the peer spawns its per-peer Reticulum interface only
+		// once the handshake completes, so a link that skips this stays
+		// connected, healthy and completely inert -- packets cross the wire
+		// and have nowhere to be delivered.
+		BLERemoteCharacteristic* remote_identity =
+			service->getCharacteristic(BLEUUID(BLE_PEER_IDENTITY_UUID));
+		if (remote_identity != nullptr && remote_identity->canRead()) {
+			std::string value = remote_identity->readValue();
+			if (value.size() == BLE_PEER_IDENTITY_SIZE) {
+				_peer_identity = RNS::Bytes((const uint8_t*)value.data(), value.size());
 			}
 		}
+		printf("[blepeer] connected as central to %s\n",
+		       _connect_address.toString().c_str());
+		// Written to RX, never notified: identity travels central -> peripheral
+		// on the RX characteristic only.
+		_remote_rx->writeValue((uint8_t*)_identity_hash.data(),
+		                       _identity_hash.size(), true);
 	}
-#endif
 
 	BLEServer*         _server   = nullptr;
 	BLEService*        _service  = nullptr;
@@ -1054,43 +671,15 @@ private:
 
 	BLEClient*               _client        = nullptr;
 	BLERemoteCharacteristic* _remote_rx     = nullptr;
-	BLEAddress               _connect_address
-#if defined(NIMBLE_PEER_TRANSPORT)
-		= BLEAddress();
-	uint8_t                  _connect_type = BLE_ADDR_PUBLIC;
-#else
-		= BLEAddress("00:00:00:00:00:00");
-	esp_ble_addr_type_t      _connect_type = BLE_ADDR_TYPE_PUBLIC;
-#endif
+	BLEAddress               _connect_address = BLEAddress("00:00:00:00:00:00");
+	esp_ble_addr_type_t      _connect_type  = BLE_ADDR_TYPE_PUBLIC;
 	bool     _connect_pending = false;
 	bool     _client_connected = false;
-#if defined(NIMBLE_PEER_TRANSPORT)
-	volatile bool _client_connecting = false;
-	volatile bool _client_setup_pending = false;
-	volatile bool _client_fail_pending = false;
-	volatile bool _client_disconnect_pending = false;
-	volatile bool _server_connect_pending = false;
-	volatile bool _server_disconnect_pending = false;
-	volatile bool _duplicate_server_pending = false;
-	volatile int  _client_fail_reason = 0;
-	volatile int  _client_disconnect_reason = 0;
-	volatile int  _server_disconnect_reason = 0;
-	volatile uint16_t _server_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-	volatile uint16_t _duplicate_server_handle = BLE_HS_CONN_HANDLE_NONE;
-	BLEAddress _server_peer_address;
-	BLEAddress _server_disconnect_address;
-	BLEAddress _duplicate_server_address;
-	uint32_t _next_connect_attempt = 0;
-	BLEAddress _failed_addresses[BLE_PEER_CONNECT_BLACKLIST_SIZE];
-	uint32_t _failed_until[BLE_PEER_CONNECT_BLACKLIST_SIZE] = {0};
-#endif
 	bool     _waiting_logged   = false;
 	uint32_t _last_scan        = 0;
 
 	bool     _started       = false;
-	bool     _begin_attempted = false;
 	bool     _was_connected = false;
-	volatile bool _advertise_pending = false;
 	uint32_t _last_keepalive = 0;
 	uint32_t _keepalives_in = 0;
 	uint32_t _last_advertise = 0;
@@ -1099,24 +688,13 @@ private:
 	uint32_t _last_out_size = 0;
 	uint32_t _last_mtu = 0;
 	uint32_t _identity_writes = 0;
-	volatile bool _identity_log_pending = false;
 	char     _last_frag_hdr[12] = {0};
 	uint32_t _frag_lone = 0;
 	uint32_t _frag_start = 0;
 	BLEUUID  _service_uuid = BLEUUID(BLE_PEER_SERVICE_UUID);
-	BLEAddress _candidate
-#if defined(NIMBLE_PEER_TRANSPORT)
-		= BLEAddress();
-	uint8_t _candidate_type = BLE_ADDR_PUBLIC;
-#else
-		= BLEAddress("00:00:00:00:00:00");
+	BLEAddress _candidate = BLEAddress("00:00:00:00:00:00");
 	esp_ble_addr_type_t _candidate_type = BLE_ADDR_TYPE_PUBLIC;
-#endif
 	volatile bool _candidate_valid = false;
-#if defined(NIMBLE_PEER_TRANSPORT)
-	volatile int8_t _candidate_rssi = INT8_MIN;
-	volatile bool _candidate_initiates = false;
-#endif
 	std::vector<RNS::Bytes> _rx_queue;
 	SemaphoreHandle_t _rx_lock = xSemaphoreCreateMutex();
 	uint8_t  _reject_bytes[12] = {0};
@@ -1135,5 +713,7 @@ inline void ble_peer_notify_trampoline(BLERemoteCharacteristic* characteristic,
 	(void)characteristic; (void)is_notify;
 	if (ble_peer_active != nullptr) ble_peer_active->client_data(data, length);
 }
+
+#endif // NIMBLE_PEER_TRANSPORT
 
 #endif // HAS_BLE && MCU_ESP32

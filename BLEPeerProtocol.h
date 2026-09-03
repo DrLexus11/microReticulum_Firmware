@@ -77,6 +77,13 @@
 #define BLE_PEER_MAX_MTU    517
 #define BLE_PEER_MAX_ATTR   512
 
+// Maximum simultaneous peer links carried by one BLE mesh interface. Columba
+// defaults to seven, and the ESP32 controller supports up to nine. Targets can
+// lower this at build time when their controller or heap budget is smaller.
+#ifndef BLE_PEER_MAX_CONNECTIONS
+#define BLE_PEER_MAX_CONNECTIONS 7
+#endif
+
 // Android BLE links drop after 20-30 seconds of silence, so both reference
 // implementations keepalive at 15. A node that does not will look like it
 // keeps losing peers.
@@ -120,9 +127,14 @@
 // Columba central can connect in the opposite direction instead of both peers
 // continuously colliding as centrals.
 #define BLE_PEER_CONNECT_TIMEOUT_MS 10000
-#define BLE_PEER_CONNECT_RETRY_MS   30000
-#define BLE_PEER_CONNECT_BLACKLIST_MS 120000
-#define BLE_PEER_CONNECT_BLACKLIST_SIZE 3
+#define BLE_PEER_CONNECT_RETRY_MS   10000
+#define BLE_PEER_CONNECT_BLACKLIST_MS 10000
+#define BLE_PEER_CONNECT_BLACKLIST_SIZE BLE_PEER_MAX_CONNECTIONS
+
+// Give reciprocal centrals (especially Android) a stable advertising window
+// before this node leaves advertising to initiate its own connection.
+#define BLE_PEER_PERIPHERAL_WINDOW_MS 15000
+#define BLE_PEER_ADVERTISE_SETTLE_MS  500
 
 // Do not dial an advertiser too weak to complete a connection.
 //
@@ -139,6 +151,35 @@
 // this is for, which is an advertiser at the edge of detection that can be
 // heard but not reached.
 #define BLE_PEER_CONNECT_MIN_RSSI (-85)
+
+// How often to present a fresh BLE address while no peer is connected.
+//
+// THIS IS A WORKAROUND FOR A CLIENT BUG, NOT PART OF THE PROTOCOL.
+//
+// Columba's BleScanner keeps a map of every address it has ever seen and fires
+// onDeviceDiscovered only when the address is absent from it:
+//
+//     if (existingDevice == null) { devices[address] = d; onDeviceDiscovered?.invoke(d) }
+//     else { /* update RSSI only, no callback */ }
+//
+// The callback is what reaches the Python driver, and the Python driver is what
+// calls connect(). So a client learns about a given BLE address exactly once,
+// for the lifetime of that map, and restarting the interface does not clear it.
+// A node with a fixed address that was first seen during a moment it could not
+// be connected to is then invisible to that client for ever, no matter how
+// correctly it advertises afterwards -- which is exactly what OZD-ARD-01 did:
+// discoverable at -61 dBm, advertising the right service UUID, and ignored.
+//
+// Presenting a new address while we have no peer makes us a new key in that map
+// on the next scan, so the client re-evaluates us. This is safe here because
+// the protocol already refuses to treat a BLE address as identity: peers are
+// tracked by the 16-byte Reticulum identity, precisely because Android rotates
+// its own address roughly every fifteen minutes.
+//
+// The proper fix belongs in the client, by evicting stale entries or firing the
+// callback on rediscovery. Remove this the day that lands.
+#define BLE_PEER_ADDRESS_ROTATE_MS 45000
+
 
 inline size_t ble_peer_usable_value_length(uint16_t raw_att_mtu) {
 	const int usable = (int)raw_att_mtu - BLE_PEER_ATT_HEADER;
