@@ -22,17 +22,41 @@ def main():
     ap.add_argument("--reset", action="store_true", help="reset once and capture boot")
     args = ap.parse_args()
 
-    p = serial.Serial(args.port, args.baud, timeout=0.2,
+    # Configure the control lines BEFORE opening.
+    #
+    # serial.Serial(port, ...) opens immediately, and pyserial asserts DTR and
+    # RTS by default while doing so. On this board's CP2102 auto-reset circuit
+    # that is a reset pulse on EN: attaching to watch the log rebooted the very
+    # thing being watched. It is visible on the OLED, which blanks for a second
+    # each time, and it is why captures sometimes showed a board that had just
+    # restarted, or nothing at all. Constructing without a port lets the line
+    # states be set first; pyserial then applies them as it opens.
+    p = serial.Serial(baudrate=args.baud, timeout=0.2,
                       dsrdtr=False, rtscts=False)
+    p.port = args.port
+    p.dtr = True
+    p.rts = True
+    p.open()
+
+    # Clear HUPCL, so the kernel does not drop the modem lines when we close.
+    # Lowering DTR/RTS on close is a reset pulse on EN for this board's CP2102
+    # auto-reset circuit -- the board reboots when the log viewer EXITS, which is
+    # why consecutive captures kept showing a freshly booted node and why the
+    # OLED blanks for a second around every attach/detach.
+    try:
+        import termios
+        attrs = termios.tcgetattr(p.fileno())
+        attrs[2] &= ~termios.HUPCL          # c_cflag
+        termios.tcsetattr(p.fileno(), termios.TCSANOW, attrs)
+    except Exception as exc:                # non-POSIX, or an exotic driver
+        print(f"-- could not clear HUPCL ({exc}); attaching may reset the board")
+
     if args.reset:
         p.dtr = False  # GPIO0 high
         p.rts = True   # EN low
         time.sleep(0.1)
         p.rts = False  # EN high
         p.dtr = False
-    else:
-        p.dtr = True
-        p.rts = True
 
     t0 = time.time()
     inframe = False
