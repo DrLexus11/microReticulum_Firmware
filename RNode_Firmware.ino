@@ -1637,12 +1637,12 @@ printf("[init] op_mode: %U\n", op_mode);
         nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 
         // These pages expose device telemetry (heap, flash, interfaces, transport
-        // metrics). Gated to the remote-management allow list by default; a peer
-        // that has not identified is refused before serve_page is ever called,
-        // which is indistinguishable from the request never arriving. Define
-        // NOMADNET_PAGES_ALLOW_ALL to open them to any peer on the mesh -- useful
-        // for diagnosis, but it publishes device internals to everyone.
-#ifdef NOMADNET_PAGES_ALLOW_ALL
+        // and peer metrics). They are registered ALLOW_ALL and gated inside
+        // serve_page on whether the peer identified -- see page_requires_identity
+        // in Pages.h. ALLOW_LIST cannot express "any identified peer", and its
+        // refusal happens before the handler runs, so an unlisted client got no
+        // response at all rather than one saying why. Define
+        // NOMADNET_PAGES_ALLOW_ALL to drop the identity requirement as well.
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
@@ -1650,16 +1650,6 @@ printf("[init] op_mode: %U\n", op_mode);
 #endif
 #if defined(BLE_PEER_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
-#endif
-#else
-        nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-        nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
-        nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-#endif
-#if defined(BLE_PEER_TRANSPORT)
-        nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-#endif
 #endif
 #ifdef HAS_BME
         if (BME680::bme_installed) {

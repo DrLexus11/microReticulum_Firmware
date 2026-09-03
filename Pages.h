@@ -108,6 +108,32 @@ inline std::string wall_time_iso8601() {
   return text;
 }
 
+// Pages that report device internals (heap, flash, interfaces, transport and
+// peer metrics). Reticulum's request policies are ALLOW_NONE, ALLOW_ALL and
+// ALLOW_LIST, with nothing in between: there is no "any peer that identified"
+// tier. ALLOW_LIST is also refused inside Destination before serve_page ever
+// runs, so the client sees no response at all -- indistinguishable from a node
+// that is switched off, which is how it kept presenting. These pages are
+// therefore registered ALLOW_ALL and gated here, where a peer that has not
+// identified can be told so.
+inline bool page_requires_identity(const RNS::Bytes& path) {
+#ifdef NOMADNET_PAGES_ALLOW_ALL
+  // Diagnostic fixtures publish everything to anyone on the mesh.
+  (void)path;
+  return false;
+#else
+  return path == "/page/stack.mu"
+      || path == "/page/device.mu"
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      || path == "/page/espnow.mu"
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+      || path == "/page/ble.mu"
+#endif
+      ;
+#endif
+}
+
 void add_interface_details(RNS::Bytes& content, const RNS::Interface& interface) {
   content << "    \"mode\": \"";
   switch (interface.mode()) {
@@ -189,6 +215,14 @@ RNS::Bytes serve_page(
 	MsgPack::Packer packer;
   {
     RNS::Bytes content;
+    if (page_requires_identity(path) && !remote_identity) {
+      content = "> Identification Required\n\n";
+      content << "This page reports device internals, so it is served only to a peer that has identified itself on the link. Any identity is accepted -- it does not have to be on this node's remote-management allow list.\n\n";
+      content << "Your client reached us without identifying. Enable identification in its settings and open this page again.\n\n";
+      content << "`!`[• Back to the index`:/page/index.mu]`\n";
+      packer.packBinary(content.data(), content.size());
+      return RNS::Bytes(packer.data(), packer.size());
+    }
     if (path == "/page/index.mu") {
       content = "> microReticulum Stats\n\n";
       content << ">> Memory\n";

@@ -224,7 +224,9 @@ class ESPNowArchitectureTests(unittest.TestCase):
         pages = source(PAGES)
         self.assertIn(
             'register_request_handler("/page/espnow.mu", serve_page', firmware)
-        page = pages[pages.index('path == "/page/espnow.mu"'):]
+        # Anchor on the serve_page branch, not on the first mention: the page
+        # path also appears in Pages.h's page_requires_identity gate.
+        page = pages[pages.index('else if (path == "/page/espnow.mu")'):]
         page = page[:page.index("else if", 1)]
         self.assertIn("Recovery policy", page)
         self.assertIn("Channel errors", page)
