@@ -7,6 +7,9 @@ GP-02 GNSS module buys us beyond TAK.
 Status: **TAK remains analysis; its wall-time prerequisite is implemented on
 `feature/wall-time`.** Updated 2026-09-03.
 
+Getting trustworthy UTC onto every node is designed in
+[`TimePropagation.md`](TimePropagation.md).
+
 Its two firmware prerequisites -- adopting wall time, and enforcing the duty
 cycle without silencing what matters -- are drafted separately in
 [`WallTimeAndDutyCycle.md`](WallTimeAndDutyCycle.md). Both are worth building

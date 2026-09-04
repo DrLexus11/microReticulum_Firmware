@@ -91,6 +91,8 @@ have:
 - **A trust model that scales.** This is the hard part and the reason to think
   about it now.
 
+The full design is now in [`TimePropagation.md`](TimePropagation.md).
+
 **Trust is the blocker, and the allow list is the wrong answer.** Today every
 management request is `ALLOW_LIST`, and an empty list denies everyone — silently,
 before the handler runs. That is precisely what made OZD-02 unable to be given
