@@ -355,6 +355,11 @@ private:
 		uint8_t mac[6];
 		uint32_t last_seen;
 		ESPNowDiscovery discovery;
+		// Consecutive unicast failures. A peer that has stopped answering must
+		// not hold up the frames addressed to everyone else -- that is what
+		// made the first attempt at fan-out worse than the broadcast it
+		// replaced.
+		uint8_t send_failures;
 	};
 
 	enum SendKind : uint8_t {
@@ -565,6 +570,15 @@ private:
 		apply_relay_policy("attached to a parent");
 	}
 
+	Peer* find_peer(const uint8_t* mac) {
+		for (uint8_t i = 0; i < MAX_PEERS; ++i) {
+			if (_peers[i].used && memcmp(_peers[i].mac, mac, 6) == 0) {
+				return &_peers[i];
+			}
+		}
+		return nullptr;
+	}
+
 	Peer* touch_peer(const uint8_t* mac, const ESPNowDiscovery* discovery) {
 		Peer* empty = nullptr;
 		Peer* oldest = &_peers[0];
@@ -572,6 +586,8 @@ private:
 			Peer& peer = _peers[i];
 			if (peer.used && memcmp(peer.mac, mac, 6) == 0) {
 				peer.last_seen = millis();
+				// Anything inbound is proof of life, so stop skipping it.
+				peer.send_failures = 0;
 				if (discovery != nullptr) peer.discovery = *discovery;
 				return &peer;
 			}
@@ -740,14 +756,42 @@ private:
 			_send_failures++;
 			_send_retry++;
 			_send_kind = SEND_NONE;
+			// Retry the peer that just failed, not the one after it. The
+			// cursor was advanced when this fragment was addressed, so
+			// without rewinding it the retry lands on the next peer and the
+			// failed one is never asked again -- which makes SEND_RETRIES
+			// dead code exactly when it is needed most.
+			if (_send_fanout && _tx_peer_cursor > 0) _tx_peer_cursor--;
 			return;
 		}
-		if (!ok) {
+		Peer* target = _send_target_is_peer ? find_peer(_send_target_mac) : nullptr;
+		if (ok) {
+			_tx_fragment_delivered = true;
+			if (target) target->send_failures = 0;
+		}
+		else {
 			_send_failures++;
-			_tx_packet_failed = true;
+			if (target && target->send_failures < 0xFF) target->send_failures++;
 		}
 		_send_retry = 0;
 		_send_kind = SEND_NONE;
+
+		// Fanning out: this fragment still owes the remaining peers. Only when
+		// every one has been addressed does the fragment count as sent, and
+		// only if nobody at all took it is the packet lost.
+		if (_send_fanout) {
+			const uint32_t peers_now = millis();
+			for (uint8_t i = _tx_peer_cursor; i < MAX_PEERS; ++i) {
+				if (peer_is_addressable(_peers[i], peers_now)) return;
+			}
+		}
+		if (!_tx_fragment_delivered) _tx_packet_failed = true;
+		_tx_fragment_delivered = false;
+		_tx_peer_cursor = 0;
+		_send_fanout = false;
+		_send_target_valid = false;
+		_send_target_is_peer = false;
+
 		_tx_fragment++;
 		TxPacket& packet = _tx_queue[_tx_tail];
 		const uint8_t count = fragment_count(packet.length);
@@ -760,6 +804,8 @@ private:
 			_tx_tail = (uint8_t)((_tx_tail + 1u) % TX_QUEUE_DEPTH);
 			_tx_fragment = 0;
 			_tx_packet_failed = false;
+			_tx_peer_cursor = 0;
+			_tx_fragment_delivered = false;
 		}
 	}
 
@@ -867,6 +913,25 @@ private:
 		};
 		espnow_write_header(wire, sizeof(wire), header);
 		memcpy(wire + ESPNOW_HEADER_SIZE, packet.data + offset, payload_length);
+
+		_send_target_is_peer = false;
+		_send_target_valid = false;
+		_send_fanout = false;
+		if (const uint8_t* pinned = pinned_target()) {
+			memcpy(_send_target_mac, pinned, 6);
+			_send_target_valid = true;
+		}
+		else if (addressable_peer_count(now) <= UNICAST_FANOUT_MAX) {
+			if (Peer* peer = next_fanout_peer(now)) {
+				memcpy(_send_target_mac, peer->mac, 6);
+				_send_target_is_peer = true;
+				_send_target_valid = true;
+				_send_fanout = true;
+			}
+			// No addressable peer left: fall through to broadcast, so a peer
+			// we have not learned yet -- or one currently being skipped for
+			// failing -- still has a chance of hearing this.
+		}
 		begin_send(SEND_DATA, wire, ESPNOW_HEADER_SIZE + payload_length, now);
 	}
 
@@ -1005,23 +1070,56 @@ private:
 		return (err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST);
 	}
 
-	// Returns the peer to unicast data to, or nullptr to fall back to broadcast.
-	const uint8_t* unicast_target() {
-		if (_recovery_state == RECOVERY_PINNED) {
-			static const uint8_t zero[6] = {0};
-			if (memcmp(_recovery_peer_mac, zero, 6) != 0) return _recovery_peer_mac;
-		}
-		// Otherwise only unicast when there is exactly one known peer. With
-		// several peers a broadcast is still the only way to reach all of them
-		// in one send, so accept the lower reliability rather than silently
-		// talking to just one of them.
-		const uint8_t* found = nullptr;
+	// Choose where the current data fragment goes.
+	//
+	// Broadcast is the cheap way to reach several peers and on this radio it is
+	// also the unreliable one: broadcast frames are never acknowledged by the
+	// 802.11 MAC, so a lost one is invisible and unrecoverable, while a unicast
+	// is ACKed and retried in hardware. Measured 2026-09-04, hub broadcasting
+	// downstream to two peers: the nearer one completed 33% of link setups and
+	// the further one 0 of 12, against 92% for a node reached over UDP. The
+	// failures are at link establishment, where the packets are small enough to
+	// fit one fragment -- so this is raw frame loss, not reassembly.
+	//
+	// So address peers individually while there are few enough to afford it.
+	// A peer that has stopped answering is skipped rather than allowed to stall
+	// the queue for the others; the first attempt at this omitted that and made
+	// things worse.
+	static constexpr uint8_t UNICAST_FANOUT_MAX = 3;
+	static constexpr uint8_t PEER_SEND_FAILURE_LIMIT = 3;
+
+	const uint8_t* pinned_target() const {
+		if (_recovery_state != RECOVERY_PINNED) return nullptr;
+		static const uint8_t zero[6] = {0};
+		if (memcmp(_recovery_peer_mac, zero, 6) == 0) return nullptr;
+		return _recovery_peer_mac;
+	}
+
+	bool peer_is_addressable(const Peer& peer, uint32_t now) const {
+		if (!peer.used) return false;
+		if ((uint32_t)(now - peer.last_seen) > ESPNOW_PEER_TIMEOUT_MS) return false;
+		// A peer whose discovery frames still arrive is alive, so its failure
+		// count is cleared by touch_peer(); a persistently failing one is not
+		// worth the airtime until it speaks again.
+		return peer.send_failures < PEER_SEND_FAILURE_LIMIT;
+	}
+
+	uint8_t addressable_peer_count(uint32_t now) const {
+		uint8_t count = 0;
 		for (uint8_t i = 0; i < MAX_PEERS; ++i) {
-			if (!_peers[i].used) continue;
-			if (found) return nullptr;
-			found = _peers[i].mac;
+			if (peer_is_addressable(_peers[i], now)) ++count;
 		}
-		return found;
+		return count;
+	}
+
+	// Next addressable peer at or after the cursor, leaving it one past.
+	Peer* next_fanout_peer(uint32_t now) {
+		while (_tx_peer_cursor < MAX_PEERS) {
+			Peer& peer = _peers[_tx_peer_cursor];
+			_tx_peer_cursor++;
+			if (peer_is_addressable(peer, now)) return &peer;
+		}
+		return nullptr;
 	}
 
 	void begin_send(SendKind kind, const uint8_t* data, size_t length, uint32_t now) {
@@ -1030,9 +1128,9 @@ private:
 		_send_waiting = true;
 		_send_started = now;
 		const uint8_t* target = broadcast_mac;
-		if (kind == SEND_DATA) {
-			const uint8_t* peer = unicast_target();
-			if (peer && ensure_unicast_peer(peer)) target = peer;
+		if (kind == SEND_DATA && _send_target_valid &&
+		    ensure_unicast_peer(_send_target_mac)) {
+			target = _send_target_mac;
 		}
 		const esp_err_t err = esp_now_send(target, data, length);
 		if (err != ESP_OK) {
@@ -1072,6 +1170,13 @@ private:
 	uint8_t _recovery_peer_mac[6] = {0};
 	char _recovery_peer_text[18] = {0};
 	bool _recovery_peer_has_upstream = false;
+	// Per-fragment unicast fan-out.
+	uint8_t _tx_peer_cursor = 0;
+	bool _tx_fragment_delivered = false;
+	bool _send_fanout = false;
+	bool _send_target_valid = false;
+	uint8_t _send_target_mac[6] = {0};
+	bool _send_target_is_peer = false;
 	// Best orphan seen during the current scan, adopted only if the budget
 	// expires without anything better answering.
 	bool _recovery_fallback_valid = false;
