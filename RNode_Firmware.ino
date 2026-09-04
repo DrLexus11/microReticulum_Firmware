@@ -70,6 +70,9 @@ uint32_t lxmf_announces_any();
 #include "Utilities.h"
 #include "WallTime.h"
 #include "TimeSync.h"
+#if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
+#include "esp_cpu.h"
+#endif
 #include "DeviceUID.h"
 #include "Platform.h"
 #include "WebSocketConsole.h"
@@ -162,6 +165,15 @@ volatile uint32_t tx_deferred_routine = 0;
 // illegal and degrades the band for every other user, so the compiled-in
 // regulatory value is a ceiling that a host cannot raise or clear -- it can
 // only ask for something tighter.
+// Forensics for an open bug: a node built with a regulatory limit reports it as
+// zero at runtime while the macro is demonstrably correct in this translation
+// unit. These record what the limit held once static initialisation was done,
+// and every host attempt to change it, so the writer can be identified without
+// disconnecting whatever client happens to be attached.
+float boot_lt_airtime_limit = -1.0f;
+volatile uint32_t lt_alock_writes = 0;
+float lt_alock_last_requested = -1.0f;
+
 static inline float clamp_host_airtime_limit(float requested, float regulatory) {
   if (regulatory <= 0.0f) return requested;          // no ceiling compiled in
   if (requested <= 0.0f) return regulatory;          // "unlimited" is not on offer
@@ -730,6 +742,20 @@ static void sample_loop_stack() {
 }
 
 void setup() {
+  // Before anything can run: what did static initialisation actually leave in
+  // the airtime limit?
+  boot_lt_airtime_limit = lt_airtime_limit;
+
+  // Temporary diagnostic. The limit is correct here and zero later, with no
+  // host command and no other assignment to it anywhere in the tree, so a
+  // stray write is doing it. A hardware store-watchpoint turns that into a
+  // panic with a backtrace at the instruction responsible, which is the only
+  // way to name it without guessing. Remove once the writer is fixed.
+#if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
+  esp_cpu_set_watchpoint(0, (void*)&lt_airtime_limit, 4, ESP_WATCHPOINT_STORE);
+  printf("[duty] watchpoint armed on lt_airtime_limit @ %p\n",
+         (void*)&lt_airtime_limit);
+#endif
 
   // Initialise serial communication
   memset(serialBuffer, 0, sizeof(serialBuffer));
@@ -2660,6 +2686,8 @@ void serial_callback(uint8_t sbyte) {
             requested = (float)at/(100.0*100.0);
             if (requested >= 1.0f) { requested = 0.0f; }
           }
+          lt_alock_writes++;
+          lt_alock_last_requested = requested;
           lt_airtime_limit = clamp_host_airtime_limit(requested,
                                                       RADIO_DUTY_CYCLE_LONGTERM);
           kiss_indicate_lt_alock();

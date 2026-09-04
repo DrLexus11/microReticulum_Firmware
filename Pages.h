@@ -282,6 +282,14 @@ RNS::Bytes serve_page(
       // discrepancy below was found and why this line stays.
       snprintf(pct, sizeof(pct), "%.5f", (double)RADIO_DUTY_CYCLE_LONGTERM);
       content << "Built-in cap: " << pct << "\n";
+      extern float boot_lt_airtime_limit;
+      extern volatile uint32_t lt_alock_writes;
+      extern float lt_alock_last_requested;
+      snprintf(pct, sizeof(pct), "%.5f", (double)boot_lt_airtime_limit);
+      content << "At boot     : " << pct << "\n";
+      content << "Host writes : " << std::to_string(lt_alock_writes) << "\n";
+      snprintf(pct, sizeof(pct), "%.5f", (double)lt_alock_last_requested);
+      content << "Host asked  : " << pct << "\n";
       snprintf(pct, sizeof(pct), "%.4f", (double)airtime);
       content << "Short-term  : " << pct << "\n";
       content << "Locked      : " << (airtime_lock ? "yes" : "no") << "\n";
