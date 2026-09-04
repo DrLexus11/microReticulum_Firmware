@@ -214,55 +214,66 @@ def compare(before_path, after_path, control):
     before, after = load(before_path), load(after_path)
     names = sorted({s["target"] for s in before} | {s["target"] for s in after})
 
-    # Reliability and latency drift independently, and conflating them hides
-    # real results. Observed 2026-09-04: the control held at exactly 11/12 in
-    # both runs while its median setup moved 1.56x, and a target went 33% ->
-    # 58% success. Judging that on the latency ratio alone would have thrown
-    # away a genuine 25-point reliability gain.
-    def control_axes():
-        if not control:
-            return None, None
-        b, a = summarise(before, control), summarise(after, control)
-        rate = None
-        if b["trials"] and a["trials"]:
-            rate = a["success_pct"] - b["success_pct"]
-        latency = None
-        if b["setup_median"] and a["setup_median"]:
-            latency = a["setup_median"] / b["setup_median"]
-        return rate, latency
+    # The control is a proxy for the room. Reliability and latency drift
+    # independently, so they are judged on separate axes -- and a target's
+    # change is judged *against* the control's, not merely gated on it.
+    #
+    # Gating alone cries wolf: on 2026-09-04 a target went 0% -> 85.7% while
+    # the control moved 8.3 points, and an earlier version called that "not
+    # sound". An 8-point shift in the room cannot produce an 85-point shift in
+    # one target. Subtract for rates, divide for latencies, and say what is
+    # left over.
+    def summarise_pair(name):
+        return summarise(before, name), summarise(after, name)
 
-    control_rate_shift, control_latency_shift = control_axes()
+    control_rate_delta = 0.0
+    control_latency_ratio = 1.0
+    have_control = bool(control) and control in names
+    if have_control:
+        cb, ca = summarise_pair(control)
+        control_rate_delta = ca["success_pct"] - cb["success_pct"]
+        if cb["setup_median"] and ca["setup_median"]:
+            control_latency_ratio = ca["setup_median"] / cb["setup_median"]
 
-    print("\n%-16s  %18s  %18s" % ("target", "before", "after"))
+    print("\n%-10s  %17s  %17s  %14s" % (
+        "target", "before", "after", "vs control"))
     for name in names:
-        b, a = summarise(before, name), summarise(after, name)
-        print("%-16s  %5.1f%% %10s  %5.1f%% %10s" % (
+        b, a = summarise_pair(name)
+        rate_delta = a["success_pct"] - b["success_pct"]
+        excess = rate_delta - control_rate_delta
+        note = ""
+        if name == control:
+            note = "(control)"
+        elif not have_control:
+            note = "no control"
+        elif abs(excess) < 5.0:
+            note = "%+.0f pts, noise" % excess
+        elif abs(control_rate_delta) <= 5.0 or abs(rate_delta) >= 3 * abs(control_rate_delta):
+            note = "%+.0f pts, REAL" % excess
+        else:
+            note = "%+.0f pts, unclear" % excess
+        print("%-10s  %5.1f%% %10s  %5.1f%% %10s  %14s" % (
             name, b["success_pct"],
             "%.3f s" % b["setup_median"] if b["setup_median"] else "-",
             a["success_pct"],
-            "%.3f s" % a["setup_median"] if a["setup_median"] else "-"))
+            "%.3f s" % a["setup_median"] if a["setup_median"] else "-",
+            note))
 
-    if control_rate_shift is None:
-        print("\nNo control in both runs. This comparison cannot separate your "
-              "change from the environment -- treat it as suggestive only.")
+    if not have_control:
+        print("\nNo control in both runs. Nothing here separates your change "
+              "from the environment -- treat it all as suggestive.")
         return
 
-    print("\nControl moved: success %+.1f points, median setup %.2fx." % (
-        control_rate_shift, control_latency_shift or 1.0))
-    if abs(control_rate_shift) <= 5.0:
-        print("  RELIABILITY comparison is sound -- the control's success rate "
-              "held, so success-rate differences larger than a few points are "
-              "the change, not the room.")
-    else:
-        print("  RELIABILITY comparison is NOT sound -- the control's own "
-              "success rate moved %+.1f points. Re-run both arms interleaved."
-              % control_rate_shift)
-    if control_latency_shift and 0.8 <= control_latency_shift <= 1.25:
-        print("  LATENCY comparison is sound.")
-    else:
-        print("  LATENCY comparison is NOT sound -- the control's median setup "
-              "moved %.2fx on its own. Ignore latency differences below that."
-              % (control_latency_shift or 1.0))
+    print("\nControl moved %+.1f points and %.2fx on median setup; target "
+          "changes above are net of that." % (
+              control_rate_delta, control_latency_ratio))
+    if abs(control_rate_delta) > 5.0:
+        print("  The room moved enough that small reliability differences are "
+              "meaningless. Only changes several times larger than the "
+              "control's are marked REAL.")
+    if not (0.8 <= control_latency_ratio <= 1.25):
+        print("  Latency: divide any target's ratio by %.2f before believing "
+              "it." % control_latency_ratio)
 
 
 def main():
