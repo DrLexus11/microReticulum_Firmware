@@ -64,8 +64,9 @@ def parse_heap(body):
     return values or None
 
 
-def poll(name, dest_hash, identity, timeout):
-    sample = {"target": name, "at": time.time(), "ok": False}
+def poll(name, dest_hash, identity, timeout, category="heap"):
+    sample = {"target": name, "at": time.time(), "ok": False,
+              "category": category}
     if not RNS.Transport.has_path(dest_hash):
         RNS.Transport.request_path(dest_hash)
         deadline = time.time() + min(30.0, timeout)
@@ -93,7 +94,7 @@ def poll(name, dest_hash, identity, timeout):
     def established(lk):
         sample["stage"] = "request"
         lk.identify(identity)
-        lk.request("/page/stack.mu", data={"var_c": "heap"},
+        lk.request("/page/stack.mu", data={"var_c": category},
                    response_callback=on_response,
                    failed_callback=lambda _r: state.update(done=True))
 
@@ -116,7 +117,8 @@ def plot(path):
     start = min(r["at"] for r in rows)
     names = sorted({r["target"] for r in rows})
     for name in names:
-        mine = [r for r in rows if r["target"] == name]
+        mine = [r for r in rows if r["target"] == name
+                and r.get("category", "heap") == "heap"]
         ok = [r for r in mine if r.get("ok")]
         print("\n=== %s: %d samples, %d answered ===" % (name, len(mine), len(ok)))
         if not ok:
@@ -156,6 +158,8 @@ def main():
         os.path.dirname(os.path.abspath(__file__)), "..", "bench-runs",
         "heap-soak.jsonl"))
     parser.add_argument("--identity", default="~/.nomadnetwork/storage/identity")
+    parser.add_argument("--pool", action="store_true",
+                        help="also sample the TLSF arena each round")
     parser.add_argument("--plot", metavar="FILE")
     args = parser.parse_args()
 
@@ -182,9 +186,18 @@ def main():
     with open(args.out, "a", encoding="utf-8") as handle:
         while time.time() < end:
             for name, dest_hash in targets:
-                sample = poll(name, dest_hash, identity, args.timeout)
-                handle.write(json.dumps(sample) + "\n")
+                # Both views each round: the system heap is where a node dies,
+                # the arena is where we can see why. A pool that is barely
+                # fragmented while the heap around it is not tells a very
+                # different story from both degrading together.
+                samples = [poll(name, dest_hash, identity, args.timeout, "heap")]
+                if args.pool:
+                    samples.append(poll(name, dest_hash, identity,
+                                        args.timeout, "pool"))
+                for sample in samples:
+                    handle.write(json.dumps(sample) + "\n")
                 handle.flush()
+                sample = samples[0]
                 print("%s %-7s %s" % (
                     time.strftime("%H:%M:%S"), name,
                     ("free=%d largest=%d frag=%s%%" % (

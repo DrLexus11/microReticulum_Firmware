@@ -319,10 +319,33 @@ RNS::Bytes serve_page(
       	content << "}";
       }
       else if (category == "pool") {
-        content = "NOT YET IMPLEMENTED\n";
+        // The tuning signal for a pooled allocator. alloc_fault counts
+        // allocations the arena could not serve, which spilled to the system
+        // heap instead of failing -- non-zero means the pool is undersized,
+        // which is a size to change rather than an outage. "largest_free" is
+        // the number that actually matters: a pool with plenty free but no
+        // large contiguous block will start refusing the allocations a link
+        // setup needs, while looking healthy on free bytes alone.
+        using Mem = RNS::Utilities::Memory;
+        content = "{\n";
+        content << "  \"heap_pool_size\": " << std::to_string(Mem::heap_pool_size()) << ",\n";
+        content << "  \"heap_pool_free\": " << std::to_string(Mem::heap_pool_free()) << ",\n";
+        content << "  \"heap_pool_largest_free\": " << std::to_string(Mem::heap_pool_largest_free()) << ",\n";
+        content << "  \"heap_pool_fragmented\": " << std::to_string(Mem::heap_pool_fragmented()) << ",\n";
+        content << "  \"heap_pool_alloc_fault\": " << std::to_string(Mem::heap_pool_alloc_fault()) << ",\n";
+        content << "  \"psram_pool_size\": " << std::to_string(Mem::psram_pool_size()) << ",\n";
+        content << "  \"psram_pool_free\": " << std::to_string(Mem::psram_pool_free()) << ",\n";
+        content << "  \"psram_pool_fragmented\": " << std::to_string(Mem::psram_pool_fragmented()) << ",\n";
+        content << "}\n";
       }
       else if (category == "alloc") {
-        content = "NOT YET IMPLEMENTED\n";
+        using Mem = RNS::Utilities::Memory;
+        content = "{\n";
+        content << "  \"default_alloc\": " << std::to_string(Mem::default_allocator_alloc()) << ",\n";
+        content << "  \"default_free\": " << std::to_string(Mem::default_allocator_free()) << ",\n";
+        content << "  \"container_alloc\": " << std::to_string(Mem::container_allocator_alloc()) << ",\n";
+        content << "  \"container_free\": " << std::to_string(Mem::container_allocator_free()) << ",\n";
+        content << "}\n";
       }
       else if (category == "store") {
         uint32_t destination_path_responses = 0;
