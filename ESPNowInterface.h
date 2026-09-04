@@ -185,7 +185,16 @@ public:
 		}
 
 		if (_tx_tail != _tx_head) {
-			send_current_fragment(now);
+			const uint32_t budget_end = now + SEND_DRAIN_BUDGET_MS;
+			for (uint8_t frames = 0; frames < SEND_DRAIN_MAX_FRAMES; ++frames) {
+				send_current_fragment(millis());
+				// Not finished inside the budget: leave it in flight and let
+				// the next pass collect it, exactly as before this change.
+				if (!settle_send(budget_end)) break;
+				if (!_started) break;
+				if (_tx_tail == _tx_head) break;
+				if ((int32_t)(millis() - budget_end) >= 0) break;
+			}
 		}
 		else if (time_reached(now, _next_discovery_at)) {
 			send_discovery(now);
@@ -323,6 +332,15 @@ private:
 	static constexpr uint8_t RX_DRAIN_PER_LOOP = 4;
 	static constexpr uint8_t SEND_RETRIES = 3;
 	static constexpr uint32_t SEND_TIMEOUT_MS = 1000;
+	// One frame per firmware loop pass is the wrong shape now that a fragment
+	// can be addressed to several peers and retried up to SEND_RETRIES times: a
+	// three-fragment packet to two peers could need a dozen passes, and the
+	// radio sits idle between them while conditions change. Push what fits a
+	// small budget within one pass instead. The cap is deliberately tight --
+	// this runs on the main loop, which also services LoRa, Wi-Fi, RNS and the
+	// display.
+	static constexpr uint32_t SEND_DRAIN_BUDGET_MS = 12;
+	static constexpr uint8_t SEND_DRAIN_MAX_FRAMES = 6;
 	static constexpr uint32_t START_RETRY_MS = 5000;
 	static constexpr uint32_t CHANNEL_CHECK_MS = 1000;
 
@@ -719,6 +737,25 @@ private:
 				_reassembly_timeouts++;
 			}
 		}
+	}
+
+	// Wait briefly for the in-flight frame so the next one can go out in this
+	// same loop pass. Yields rather than spinning, because the completion
+	// callback arrives on the Wi-Fi task. Returns false if it is still in
+	// flight when the budget runs out, in which case the caller must leave it
+	// alone -- the normal per-pass path will collect it.
+	bool settle_send(uint32_t budget_end) {
+		while (true) {
+			bool done;
+			portENTER_CRITICAL(&_send_mux);
+			done = _send_done;
+			portEXIT_CRITICAL(&_send_mux);
+			if (done) break;
+			if ((int32_t)(millis() - budget_end) >= 0) return false;
+			delay(1);
+		}
+		service_send_completion(millis());
+		return !_send_waiting;
 	}
 
 	void service_send_completion(uint32_t now) {
