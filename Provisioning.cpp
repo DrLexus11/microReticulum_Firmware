@@ -120,6 +120,7 @@ extern const char* boot_reset_reason;
 // Defined in TimeSync.h. Declared rather than included so this translation unit
 // does not depend on that header's ordering relative to the RNS types.
 extern RNS::Bytes time_sync_peer_hash;
+extern std::vector<RNS::Bytes> time_sync_authorities;
 extern bool boot_rail_lost;
 extern uint32_t boot_prev_uptime;
 extern uint32_t boot_count;
@@ -475,6 +476,10 @@ static void register_provisioning_namespaces() {
         RNS::Provisioning::fbytes_t(), 16,
         [](const Value& v) { time_sync_peer_hash = v.as_bytes(); return true; },
         []() { return RNS::Provisioning::fbytes_t(time_sync_peer_hash); })
+      .field_bytes_list("Time Authorities", PROV_GENERAL_TIME_AUTHORITIES,
+        FF_LIVE_APPLY, std::vector<RNS::Bytes>(), 16, 8,
+        [](const Value& v) { time_sync_authorities = v.as_bytes_list(); return true; },
+        []() { return time_sync_authorities; })
       .end();
 
 #else
@@ -496,7 +501,11 @@ static void register_provisioning_namespaces() {
       .field_bytes("Time Peer", PROV_GENERAL_TIME_PEER, FF_LIVE_APPLY,
         RNS::Provisioning::fbytes_t(), 16,
         [](const Value& v) { time_sync_peer_hash = v.as_bytes(); return true; },
-        []() { return RNS::Provisioning::fbytes_t(time_sync_peer_hash); });
+        []() { return RNS::Provisioning::fbytes_t(time_sync_peer_hash); })
+      .field_bytes_list("Time Authorities", PROV_GENERAL_TIME_AUTHORITIES,
+        FF_LIVE_APPLY, std::vector<RNS::Bytes>(), 16, 8,
+        [](const Value& v) { time_sync_authorities = v.as_bytes_list(); return true; },
+        []() { return time_sync_authorities; });
 #endif
 
 #if HAS_BLE == true && MCU_VARIANT == MCU_ESP32

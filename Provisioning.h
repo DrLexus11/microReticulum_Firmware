@@ -98,6 +98,8 @@
 #define PROV_GENERAL_GPIO1           7
 // Destination hash of the node this one asks for UTC. Empty disables it.
 #define PROV_GENERAL_TIME_PEER       8
+// Identity hashes permitted to assert time. Empty = trust any IFAC peer.
+#define PROV_GENERAL_TIME_AUTHORITIES 9
 
 #define PROV_METRICS_TRANS_ID   1
 #define PROV_METRICS_PROBE_DST  2

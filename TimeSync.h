@@ -41,8 +41,20 @@
 // Destination hash of the node to ask. Empty disables the whole mechanism.
 inline RNS::Bytes time_sync_peer_hash;
 
+// Identity hashes permitted to assert time.
+//
+// Empty means "trust any peer that reaches us", which is the IFAC-membership
+// model: passing the network's admission control is what belongs-here means,
+// and it is the v1 behaviour. Once this list is non-empty a reply must carry a
+// signature from one of these identities over the nonce we sent, and an
+// unsigned or wrongly-signed answer is refused. Hardening is therefore opt-in
+// and turning it on cannot silently break a node that was working.
+inline std::vector<RNS::Bytes> time_sync_authorities;
+
 struct TimeSyncState {
   RNS::Link link = {RNS::Type::NONE};
+  uint64_t nonce = 0;
+  RNS::Bytes peer_identity_hash;
   bool active = false;
   // Callbacks run inside the link and resource machinery, so they must not
   // tear the link down -- destroying the object the callback is executing
@@ -90,6 +102,8 @@ inline void time_sync_response(const RNS::Bytes& response) {
   uint64_t unix_ms = 0;
   uint8_t peer_stratum = 0;
   bool peer_known = false;
+  uint64_t echoed_nonce = 0;
+  RNS::Bytes signature;
   {
     MsgPack::Unpacker u;
     u.feed(response.data(), response.size());
@@ -101,6 +115,12 @@ inline void time_sync_response(const RNS::Bytes& response) {
       if (key == "unix_ms") u.deserialize(unix_ms);
       else if (key == "stratum") u.deserialize(peer_stratum);
       else if (key == "known") u.deserialize(peer_known);
+      else if (key == "nonce") u.deserialize(echoed_nonce);
+      else if (key == "sig") {
+        MsgPack::bin_t<uint8_t> raw;
+        u.deserialize(raw);
+        signature = RNS::Bytes(raw.data(), raw.size());
+      }
       else { MsgPack::object::nil_t ignored; u.deserialize(ignored); }
     }
   }
@@ -109,6 +129,38 @@ inline void time_sync_response(const RNS::Bytes& response) {
     st.refusals++;
     time_sync_finish("peer has no time of its own");
     return;
+  }
+
+  if (!time_sync_authorities.empty()) {
+    bool listed = false;
+    for (const RNS::Bytes& allowed : time_sync_authorities) {
+      if (allowed == st.peer_identity_hash) { listed = true; break; }
+    }
+    if (!listed) {
+      st.refusals++;
+      time_sync_finish("peer is not a time authority");
+      return;
+    }
+    // The nonce is what makes this proof of current time rather than a
+    // recording. Without it a replayed assertion is indistinguishable from a
+    // fresh one to a node that has no clock of its own -- which is precisely
+    // the node that needs the answer.
+    if (echoed_nonce != st.nonce || signature.size() == 0) {
+      st.refusals++;
+      time_sync_finish("authority did not sign our nonce");
+      return;
+    }
+    RNS::Identity peer_identity = RNS::Identity::recall(time_sync_peer_hash);
+    uint8_t message[17];
+    for (uint8_t i = 0; i < 8; ++i) message[i]     = (uint8_t)(echoed_nonce >> (56 - 8 * i));
+    for (uint8_t i = 0; i < 8; ++i) message[8 + i] = (uint8_t)(unix_ms >> (56 - 8 * i));
+    message[16] = peer_stratum;
+    if (!peer_identity ||
+        !peer_identity.validate(signature, RNS::Bytes(message, sizeof(message)))) {
+      st.refusals++;
+      time_sync_finish("time assertion failed signature check");
+      return;
+    }
   }
 
   // Strictly better, or this is a loop waiting to happen: two nodes at the same
@@ -156,9 +208,12 @@ inline void time_sync_link_established(RNS::Link& link) {
   // Identify even though reading is public: a node that says who it is can be
   // held to it, and the peer logs the exchange.
   link.identify(RNS::Transport::identity());
-  // Zero means "tell me your time, do not take mine".
+  // [0, nonce] -- zero means "tell me your time, do not take mine", and the
+  // nonce asks for a signed assertion that cannot be a replay.
   MsgPack::Packer packer;
+  packer.serialize(MsgPack::arr_size_t(2));
   packer.serialize((uint64_t)0);
+  packer.serialize(st.nonce);
   link.request(RNS::Bytes("/time"),
                RNS::Bytes(packer.data(), packer.size()),
                [](const RNS::RequestReceipt& receipt) {
@@ -222,6 +277,9 @@ inline void time_sync_loop() {
   RNS::Destination peer_mgmt(peer_identity, RNS::Type::Destination::OUT,
                              RNS::Type::Destination::SINGLE,
                              RNS::Type::Transport::APP_NAME, "remote.management");
+  st.nonce = ((uint64_t)esp_random() << 32) | (uint64_t)esp_random();
+  if (st.nonce == 0) st.nonce = 1;   // zero means "unsigned" on the wire
+  st.peer_identity_hash = peer_identity.hash();
   st.active = true;
   st.started = now;
   st.attempts++;

@@ -49,6 +49,26 @@ class TimeSyncTests(unittest.TestCase):
         # A stamp from a previous boot can sit ahead of the monotonic clock.
         self.assertIn("if (verified > now) return true", wants)
 
+    def test_a_nonce_is_required_for_a_signed_assertion(self):
+        # A signed timestamp does not prove *current* time. Without a nonce
+        # bound into the signature, a replayed assertion is indistinguishable
+        # from a fresh one to a node that has no clock -- which is exactly the
+        # node that needs the answer.
+        sync = source("TimeSync.h")
+        self.assertIn("echoed_nonce != st.nonce", sync)
+        self.assertIn("st.nonce = ((uint64_t)esp_random()", sync)
+        self.assertIn("if (st.nonce == 0) st.nonce = 1", sync)
+
+    def test_authorities_are_opt_in_but_binding_once_set(self):
+        # Empty means IFAC-membership trust, which is the v1 behaviour, so
+        # enabling this cannot silently break a working node. Non-empty means a
+        # valid signature from a listed identity is required.
+        sync = source("TimeSync.h")
+        self.assertIn("if (!time_sync_authorities.empty())", sync)
+        self.assertIn("peer is not a time authority", sync)
+        self.assertIn("time assertion failed signature check", sync)
+        self.assertIn("peer_identity.validate(signature", sync)
+
     def test_the_peer_is_configurable_not_compiled_in(self):
         provisioning = source("Provisioning.cpp")
         self.assertIn('field_bytes("Time Peer", PROV_GENERAL_TIME_PEER', provisioning)
