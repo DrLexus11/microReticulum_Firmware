@@ -239,6 +239,7 @@ RNS::Bytes serve_page(
       content << "`!`[• General`:/page/device.mu`c=general]`\n";
       content << "`!`[• Interface`:/page/device.mu`c=interfaces]`\n";
       content << "`!`[• Time Status`:/page/time.mu]`\n";
+      content << "`!`[• Airtime`:/page/airtime.mu]`\n";
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
       content << "`!`[• ESP-NOW Recovery`:/page/espnow.mu]`\n";
 #endif
@@ -255,6 +256,39 @@ RNS::Bytes serve_page(
 #endif
       if (remote_identity) content << "\n🛡️ Verified identity: " << remote_identity.hash().toHex() << "\n";
       else content << "\n⚠️ Unknown identity. Identity must be provided for access to this site.\n";
+    }
+    else if (path == "/page/airtime.mu") {
+      // Duty-cycle state was only ever visible on the serial console, which is
+      // redirected the moment a KISS host attaches -- so on a deployed node it
+      // was effectively unobservable. Exceeding a duty cycle is illegal and
+      // degrades the band for everyone, so it needs to be readable from the
+      // mesh like everything else.
+      extern float airtime;
+      extern float longterm_airtime;
+      extern float st_airtime_limit;
+      extern float lt_airtime_limit;
+      extern bool airtime_lock;
+      extern bool airtime_pressure;
+      extern volatile uint32_t tx_deferred_routine;
+      extern volatile uint8_t queue_height;
+      char pct[16];
+      content = "> Airtime\n\n";
+      snprintf(pct, sizeof(pct), "%.4f", (double)longterm_airtime);
+      content << "Long-term   : " << pct << "\n";
+      snprintf(pct, sizeof(pct), "%.5f", (double)lt_airtime_limit);
+      content << "Limit       : " << pct << (lt_airtime_limit == 0.0f ? "  (unenforced)" : "") << "\n";
+      // The compiled-in regulatory ceiling, shown beside the value actually in
+      // force. They should agree; on 2026-09-04 they did not, which is how the
+      // discrepancy below was found and why this line stays.
+      snprintf(pct, sizeof(pct), "%.5f", (double)RADIO_DUTY_CYCLE_LONGTERM);
+      content << "Built-in cap: " << pct << "\n";
+      snprintf(pct, sizeof(pct), "%.4f", (double)airtime);
+      content << "Short-term  : " << pct << "\n";
+      content << "Locked      : " << (airtime_lock ? "yes" : "no") << "\n";
+      content << "Pressure    : " << (airtime_pressure ? "yes" : "no") << "\n";
+      content << "Routine dropped: " << std::to_string(tx_deferred_routine) << "\n";
+      content << "Queued      : " << std::to_string(queue_height) << "\n\n";
+      content << "Under pressure, routine traffic (announces) stands aside so interactive traffic still has budget. Locked means the limit is reached and nothing is sent. A limit of zero means enforcement is off and only accounting is running.\n";
     }
     else if (path == "/page/time.mu") {
       using OS = RNS::Utilities::OS;

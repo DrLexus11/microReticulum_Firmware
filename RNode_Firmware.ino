@@ -125,6 +125,54 @@ uint16_t packet_starts_buf[CONFIG_QUEUE_MAX_LENGTH+1];
 FIFOBuffer16 packet_lengths;
 uint16_t packet_lengths_buf[CONFIG_QUEUE_MAX_LENGTH+1];
 
+// What each queued packet is for, so airtime can be spent on what matters when
+// there is not enough of it.
+//
+// Enforcing a duty cycle by blocking the whole queue treats a distress message
+// exactly like a position beacon -- and beaconing is precisely the workload
+// that exhausts the budget, so the traffic that caused the shortage would
+// silence the traffic that matters. The classes are coarse on purpose: the
+// modem cannot read an encrypted payload, but the Reticulum header's low two
+// bits give the packet type in the clear, which is enough to tell routine
+// routing chatter from everything else.
+#define TX_CLASS_ROUTINE   0   // announces: useful, endlessly repeated, droppable
+#define TX_CLASS_NORMAL    1   // data, links, proofs, and anything from the host
+#define TX_CLASS_CRITICAL  2   // reserved: nothing tags itself this yet
+FIFOBuffer16 packet_classes;
+uint16_t packet_classes_buf[CONFIG_QUEUE_MAX_LENGTH+1];
+
+// Fraction of the long-term limit above which routine traffic stands aside.
+// Below this everything flows; above it announces wait so that interactive
+// traffic still has budget when it is needed.
+#ifndef AIRTIME_PRESSURE_FRACTION
+#define AIRTIME_PRESSURE_FRACTION 0.75f
+#endif
+bool airtime_pressure = false;
+volatile uint32_t tx_deferred_routine = 0;
+
+// Classify an outbound Reticulum packet from its header. Type lives in the low
+// two bits of the first byte (Packet::unpack_flags), and is not encrypted.
+// A host may make the duty cycle stricter, never looser.
+//
+// Found on the bench: a node built with -DRADIO_DUTY_CYCLE_LONGTERM reported
+// its limit as 0.0000 anyway, because a client that attaches to the KISS port
+// configures the radio and commonly sends "no airtime limit" as part of
+// ordinary setup. Enforcement was therefore switched off by the first host to
+// connect, silently, on a node built to respect it. Exceeding a duty cycle is
+// illegal and degrades the band for every other user, so the compiled-in
+// regulatory value is a ceiling that a host cannot raise or clear -- it can
+// only ask for something tighter.
+static inline float clamp_host_airtime_limit(float requested, float regulatory) {
+  if (regulatory <= 0.0f) return requested;          // no ceiling compiled in
+  if (requested <= 0.0f) return regulatory;          // "unlimited" is not on offer
+  return (requested > regulatory) ? regulatory : requested;
+}
+
+static inline uint16_t tx_class_for_rns(const uint8_t* data, size_t length) {
+  if (data == nullptr || length < 1) return TX_CLASS_NORMAL;
+  return ((data[0] & 0b00000011) == 0x01) ? TX_CLASS_ROUTINE : TX_CLASS_NORMAL;
+}
+
 uint8_t packet_queue[CONFIG_QUEUE_SIZE];
 
 volatile uint8_t queue_height = 0;
@@ -266,6 +314,8 @@ protected:
 
               fifo16_push(&packet_starts, s);
               fifo16_push(&packet_lengths, l);
+              fifo16_push(&packet_classes,
+                          tx_class_for_rns(data.data(), data.size()));
 
               current_packet_start = queue_cursor;
           }
@@ -935,6 +985,9 @@ void setup() {
   
   memset(packet_lengths_buf, 0, sizeof(packet_starts_buf));
   fifo16_init(&packet_lengths, packet_lengths_buf, CONFIG_QUEUE_MAX_LENGTH);
+
+  memset(packet_classes_buf, 0, sizeof(packet_classes_buf));
+  fifo16_init(&packet_classes, packet_classes_buf, CONFIG_QUEUE_MAX_LENGTH);
 
   #if PLATFORM == PLATFORM_ESP32 || PLATFORM == PLATFORM_NRF52 || PLATFORM == PLATFORM_NATIVE
     modem_packet_queue = xQueueCreate(MODEM_QUEUE_SIZE, sizeof(modem_packet_t*));
@@ -1644,6 +1697,10 @@ printf("[init] op_mode: %U\n", op_mode);
         // public even on production builds. Setting the clock is the privileged
         // half, and that lives behind the allow list on Transport's /time.
         nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+        // Same reasoning as the clock: a node's airtime posture is not a
+        // secret, and a neighbour or operator needs it to understand why the
+        // node has gone quiet.
+        nomadnet_destination.register_request_handler("/page/airtime.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 
         // These pages expose device telemetry (heap, flash, interfaces, transport
         // and peer metrics). They are registered ALLOW_ALL and gated inside
@@ -2120,6 +2177,19 @@ void flush_queue(void) {
 
       uint16_t start = fifo16_pop(&packet_starts);
       uint16_t length = fifo16_pop(&packet_lengths);
+      uint16_t klass = fifo16_isempty(&packet_classes)
+                     ? (uint16_t)TX_CLASS_NORMAL : fifo16_pop(&packet_classes);
+
+      // Under airtime pressure routine traffic stands aside so that interactive
+      // traffic still has budget. Announces are dropped rather than deferred on
+      // purpose: they are re-sent on their own schedule, and holding stale ones
+      // to replay later spends the very airtime we are trying to protect.
+      if (klass == TX_CLASS_ROUTINE && airtime_pressure) {
+        tx_deferred_routine++;
+        queued_bytes -= length;
+        if (queue_height > 0) queue_height--;
+        continue;
+      }
 
       if (length >= MIN_L && length <= MTU) {
         for (uint16_t i = 0; i < length; i++) {
@@ -2160,7 +2230,12 @@ void pop_queue() {
 
       uint16_t start = fifo16_pop(&packet_starts);
       uint16_t length = fifo16_pop(&packet_lengths);
-      if (length >= MIN_L && length <= MTU) {
+      uint16_t klass = fifo16_isempty(&packet_classes)
+                     ? (uint16_t)TX_CLASS_NORMAL : fifo16_pop(&packet_classes);
+      // Same rule as flush_queue: routine traffic stands aside under pressure.
+      const bool send = !(klass == TX_CLASS_ROUTINE && airtime_pressure);
+      if (!send) tx_deferred_routine++;
+      if (send && length >= MIN_L && length <= MTU) {
         for (uint16_t i = 0; i < length; i++) {
           uint16_t pos = (start+i)%CONFIG_QUEUE_SIZE;
           tbuf[i] = packet_queue[pos];
@@ -2355,6 +2430,9 @@ void serial_callback(uint8_t sbyte) {
             queue_height++;
             fifo16_push(&packet_starts, s);
             fifo16_push(&packet_lengths, l);
+            // Host traffic is never classed routine: we cannot see inside it,
+            // and guessing wrong here means dropping something deliberate.
+            fifo16_push(&packet_classes, TX_CLASS_NORMAL);
             current_packet_start = queue_cursor;
         }
     }
@@ -2553,12 +2631,13 @@ void serial_callback(uint8_t sbyte) {
         if (frame_len == 2) {
           uint16_t at = (uint16_t)cmdbuf[0] << 8 | (uint16_t)cmdbuf[1];
 
-          if (at == 0) {
-            st_airtime_limit = 0.0;
-          } else {
-            st_airtime_limit = (float)at/(100.0*100.0);
-            if (st_airtime_limit >= 1.0) { st_airtime_limit = 0.0; }
+          float requested = 0.0f;
+          if (at != 0) {
+            requested = (float)at/(100.0*100.0);
+            if (requested >= 1.0f) { requested = 0.0f; }
           }
+          st_airtime_limit = clamp_host_airtime_limit(requested,
+                                                      RADIO_DUTY_CYCLE_SHORTTERM);
           kiss_indicate_st_alock();
         }
     } else if (command == CMD_LT_ALOCK) {
@@ -2576,12 +2655,13 @@ void serial_callback(uint8_t sbyte) {
         if (frame_len == 2) {
           uint16_t at = (uint16_t)cmdbuf[0] << 8 | (uint16_t)cmdbuf[1];
 
-          if (at == 0) {
-            lt_airtime_limit = 0.0;
-          } else {
-            lt_airtime_limit = (float)at/(100.0*100.0);
-            if (lt_airtime_limit >= 1.0) { lt_airtime_limit = 0.0; }
+          float requested = 0.0f;
+          if (at != 0) {
+            requested = (float)at/(100.0*100.0);
+            if (requested >= 1.0f) { requested = 0.0f; }
           }
+          lt_airtime_limit = clamp_host_airtime_limit(requested,
+                                                      RADIO_DUTY_CYCLE_LONGTERM);
           kiss_indicate_lt_alock();
         }
     } else if (command == CMD_STAT_RX) {
@@ -3687,9 +3767,10 @@ static void heap_watch() {
   // Duty-cycle headroom and BLE state. Both are otherwise invisible: a node
   // silenced by airtime_lock looks exactly like one with nothing to say, and
   // BLE has no status output at all.
-  printf("[duty] longterm=%.4f limit=%.4f locked=%d | [ble] state=%d\n",
+  printf("[duty] longterm=%.4f limit=%.4f locked=%d pressure=%d routine_dropped=%lu | [ble] state=%d\n",
          (double)longterm_airtime, (double)lt_airtime_limit,
-         (int)airtime_lock, (int)bt_state);
+         (int)airtime_lock, (int)airtime_pressure,
+         (unsigned long)tx_deferred_routine, (int)bt_state);
   size_t total = RNS::Utilities::Memory::heap_size();
   size_t avail = RNS::Utilities::Memory::heap_available();
   // Guarded on UDP_TRANSPORT, not HAS_WIFI: the counters are defined in
@@ -3925,6 +4006,13 @@ void loop() {
       airtime_lock = false;
       if (st_airtime_limit != 0.0 && airtime >= st_airtime_limit) airtime_lock = true;
       if (lt_airtime_limit != 0.0 && longterm_airtime >= lt_airtime_limit) airtime_lock = true;
+      // Back routine traffic off before the hard limit, not at it. Reaching
+      // airtime_lock means everything stops; the point of pressure is to make
+      // that far less likely by spending the last quarter of the budget on
+      // traffic that cannot simply be sent again later.
+      airtime_pressure = airtime_lock ||
+          (lt_airtime_limit != 0.0 &&
+           longterm_airtime >= lt_airtime_limit * AIRTIME_PRESSURE_FRACTION);
 
     #elif MCU_VARIANT == MCU_NRF52
       LoRa->handleDio0IfPending();
@@ -3947,6 +4035,13 @@ void loop() {
       airtime_lock = false;
       if (st_airtime_limit != 0.0 && airtime >= st_airtime_limit) airtime_lock = true;
       if (lt_airtime_limit != 0.0 && longterm_airtime >= lt_airtime_limit) airtime_lock = true;
+      // Back routine traffic off before the hard limit, not at it. Reaching
+      // airtime_lock means everything stops; the point of pressure is to make
+      // that far less likely by spending the last quarter of the budget on
+      // traffic that cannot simply be sent again later.
+      airtime_pressure = airtime_lock ||
+          (lt_airtime_limit != 0.0 &&
+           longterm_airtime >= lt_airtime_limit * AIRTIME_PRESSURE_FRACTION);
 
     #endif
 
