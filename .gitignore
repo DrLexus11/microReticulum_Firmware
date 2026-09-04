@@ -18,3 +18,4 @@ docker/workspace/*
 
 # PlatformIO leaves the Arduino preprocessor output beside the sketch
 RNode_Firmware.ino.cpp
+bench-runs/
