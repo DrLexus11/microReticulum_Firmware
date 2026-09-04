@@ -269,8 +269,23 @@ RNS::Bytes serve_page(
       content << "Unix ms     : " << std::to_string(OS::wall_time_millis()) << "\n";
       content << "Source      : " << OS::wall_time_source_name(OS::wall_time_source()) << "\n";
       content << "Last source : " << OS::wall_time_source_name(OS::wall_time_last_live_source()) << "\n";
-      content << "Sync age    : " << std::to_string(sync_age_ms / 1000ULL) << " s\n";
-      content << "Last advance: " << std::to_string(OS::wall_time_last_correction()) << " ms\n\n";
+      const uint64_t verified_at = OS::wall_time_verified_at();
+      const uint64_t verified_age_ms = known && monotonic_ms >= verified_at
+          ? monotonic_ms - verified_at : 0;
+      content << "Stratum     : " << (known ? std::to_string(OS::wall_time_stratum()) : "-") << "\n";
+      content << "Adopted     : " << std::to_string(sync_age_ms / 1000ULL) << " s ago\n";
+      // The number that says whether to believe the clock. "Adopted" only says
+      // when it last changed -- a node whose checks keep agreeing never adopts,
+      // so that figure grows without bound while the clock is perfect.
+      content << "Verified    : " << std::to_string(verified_age_ms / 1000ULL) << " s ago\n";
+      content << "Last advance: " << std::to_string(OS::wall_time_last_correction()) << " ms\n";
+      if (OS::wall_time_source() == OS::WallTimeSource::PERSISTED) {
+        content << "\n`!`⚠️ Restored from storage and not verified since. This is a\n";
+        content << "lower bound only: it cannot account for time spent powered off,\n";
+        content << "and drifts further behind on every restart until a live source\n";
+        content << "corrects it.`\n";
+      }
+      content << "\n";
       content << ">> Clock-domain check\n";
       content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";
       content << "Reload this page: both clocks must advance normally. Adopting UTC must not reset links or make monotonic time jump.\n";

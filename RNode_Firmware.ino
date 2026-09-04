@@ -69,6 +69,7 @@ uint32_t lxmf_announces_any();
 #include <SPI.h>
 #include "Utilities.h"
 #include "WallTime.h"
+#include "TimeSync.h"
 #include "DeviceUID.h"
 #include "Platform.h"
 #include "WebSocketConsole.h"
@@ -4004,6 +4005,9 @@ void loop() {
     if (wifi_initialized) update_wifi();
     wifi_liveness_watch();
     wall_time_update();
+  #endif
+  #ifdef HAS_RNS
+    time_sync_loop();
   #endif
 
   #if HAS_INPUT

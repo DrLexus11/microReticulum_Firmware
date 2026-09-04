@@ -117,6 +117,9 @@ uint32_t lxmf_sync_last_outcome();
 // with Bluetooth -- nesting them there compiled on the RAD boards and broke
 // every board without a Bluetooth stack.
 extern const char* boot_reset_reason;
+// Defined in TimeSync.h. Declared rather than included so this translation unit
+// does not depend on that header's ordering relative to the RNS types.
+extern RNS::Bytes time_sync_peer_hash;
 extern bool boot_rail_lost;
 extern uint32_t boot_prev_uptime;
 extern uint32_t boot_count;
@@ -468,6 +471,10 @@ static void register_provisioning_namespaces() {
         FF_REBOOT_REQUIRED, nomadnet_name, sizeof(nomadnet_name)-1,
         [](const Value& v) { strncpy(nomadnet_name, v.as_string().c_str(), sizeof(nomadnet_name)); return true; },
         []() { return nomadnet_name; })
+      .field_bytes("Time Peer", PROV_GENERAL_TIME_PEER, FF_LIVE_APPLY,
+        RNS::Provisioning::fbytes_t(), 16,
+        [](const Value& v) { time_sync_peer_hash = v.as_bytes(); return true; },
+        []() { return RNS::Provisioning::fbytes_t(time_sync_peer_hash); })
       .end();
 
 #else
@@ -485,7 +492,11 @@ static void register_provisioning_namespaces() {
         []() { return nomadnet_enabled; })
       .field_string("NomadNet Name", PROV_GENERAL_NOMADNET_NAME, FF_REBOOT_REQUIRED, nomadnet_name, sizeof(nomadnet_name)-1,
         [](const Value& v) { strncpy(nomadnet_name, v.as_string().c_str(), sizeof(nomadnet_name)); return true; },
-        []() { return nomadnet_name; });
+        []() { return nomadnet_name; })
+      .field_bytes("Time Peer", PROV_GENERAL_TIME_PEER, FF_LIVE_APPLY,
+        RNS::Provisioning::fbytes_t(), 16,
+        [](const Value& v) { time_sync_peer_hash = v.as_bytes(); return true; },
+        []() { return RNS::Provisioning::fbytes_t(time_sync_peer_hash); });
 #endif
 
 #if HAS_BLE == true && MCU_VARIANT == MCU_ESP32

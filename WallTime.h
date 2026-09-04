@@ -87,9 +87,18 @@ inline void wall_time_update() {
 
   // Never attempt a backwards correction. Small negative NTP phase errors are
   // normal and the monotonic-derived wall clock will catch up naturally.
+  //
+  // Returning here is the *healthy* path -- NTP checked and agreed closely
+  // enough that no correction was worth applying -- so record that it happened.
+  // Without it "sync age" counts from the last adoption, and a node whose
+  // checks keep agreeing looks progressively more stale the better its clock
+  // is. Rev 1 reported 11 hours that way while its NTP was working perfectly.
   if (RNS::Utilities::OS::wall_time_known()) {
     const uint64_t current = RNS::Utilities::OS::wall_time_millis();
-    if (candidate <= current || candidate - current < WALL_TIME_NTP_MIN_CORRECTION_MS) return;
+    if (candidate <= current || candidate - current < WALL_TIME_NTP_MIN_CORRECTION_MS) {
+      RNS::Utilities::OS::note_wall_time_verified();
+      return;
+    }
   }
 
   // A restored value is only a monotonic lower bound: it cannot account for

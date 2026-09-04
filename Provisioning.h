@@ -96,6 +96,8 @@
 #define PROV_GENERAL_NOMADNET_NAME   5
 #define PROV_GENERAL_GPIO0           6
 #define PROV_GENERAL_GPIO1           7
+// Destination hash of the node this one asks for UTC. Empty disables it.
+#define PROV_GENERAL_TIME_PEER       8
 
 #define PROV_METRICS_TRANS_ID   1
 #define PROV_METRICS_PROBE_DST  2
