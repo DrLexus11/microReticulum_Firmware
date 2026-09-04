@@ -3770,6 +3770,65 @@ static void heap_watch() {
 }
 #endif
 
+#if HAS_WIFI == true && defined(UDP_TRANSPORT)
+// A station reporting WL_CONNECTED is not necessarily on the network.
+//
+// Observed 2026-09-04: Rev 1 printed "[WiFi] status: 3" twice a second for
+// twenty minutes while unreachable from two separate interfaces on the same
+// LAN, and its ARP entry went stale. Every recovery path in Remote.h is gated
+// on status != WL_CONNECTED, so not one of them could fire. A node that
+// believes it is online is worse than one that knows it is not, because it
+// never tries to fix itself -- and it takes down everything meshed behind it,
+// which is what happened to both leaves.
+//
+// So trust traffic, not the driver. If we are transmitting and nothing at all
+// comes back for long enough, the path is dead whatever the driver claims.
+// When both directions are quiet the mesh is merely idle and there is nothing
+// to act on; that distinction is what keeps this from firing on a healthy but
+// unused node.
+#ifndef WIFI_LIVENESS_POLL_MS
+#define WIFI_LIVENESS_POLL_MS 15000UL
+#endif
+#ifndef WIFI_LIVENESS_TIMEOUT_MS
+#define WIFI_LIVENESS_TIMEOUT_MS 240000UL
+#endif
+
+static void wifi_liveness_watch() {
+  static uint32_t last_poll_ms = 0;
+  static size_t last_rx = 0;
+  static size_t last_tx = 0;
+  static uint32_t deaf_since_ms = 0;
+
+  if (!wifi_initialized || wifi_mode != WR_WIFI_STA) { deaf_since_ms = 0; return; }
+  if (wifi_ap_fallback_active) { deaf_since_ms = 0; return; }
+  if (WiFi.status() != WL_CONNECTED) { deaf_since_ms = 0; return; }
+
+  const uint32_t now = millis();
+  if (last_poll_ms != 0 && (uint32_t)(now - last_poll_ms) < WIFI_LIVENESS_POLL_MS) return;
+  last_poll_ms = now;
+
+  const size_t rx = udp_interface.rx();
+  const size_t tx = udp_interface.tx();
+  const bool heard = (rx != last_rx);
+  const bool spoke = (tx != last_tx);
+  last_rx = rx;
+  last_tx = tx;
+
+  if (heard || !spoke) { deaf_since_ms = 0; return; }
+  if (deaf_since_ms == 0) { deaf_since_ms = now; return; }
+  if ((uint32_t)(now - deaf_since_ms) < WIFI_LIVENESS_TIMEOUT_MS) return;
+
+  printf("[WiFi] connected but deaf for %lums while still transmitting -- "
+         "reinitialising the station\n", (unsigned long)(now - deaf_since_ms));
+  deaf_since_ms = 0;
+  last_poll_ms = 0;
+  wifi_sta_failing_since = millis();
+  wifi_remote_init();
+}
+#else
+static void wifi_liveness_watch() {}
+#endif
+
 void loop() {
 #if defined(ESP32) && defined(HAS_RNS)
   loop_phase(LOOP_PHASE_HEAP);
@@ -3943,6 +4002,7 @@ void loop() {
 
   #if HAS_WIFI
     if (wifi_initialized) update_wifi();
+    wifi_liveness_watch();
     wall_time_update();
   #endif
 
