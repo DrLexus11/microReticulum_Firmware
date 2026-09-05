@@ -123,6 +123,9 @@ def post_upload(source, target, env):
     platform = env.GetProjectOption("platform")
     board = env.GetProjectOption("board")
     if ("espressif32" in platform):
+        # Get the firmware actually running first: provisioning and the hash
+        # write below both speak KISS, which only the application answers.
+        boot_usb_jtag_app(env)
         time.sleep(10)
         # device provisioning is incomplete and only currently appropriate for 915MHz T-Beam
         #device_wipe(env)
@@ -165,6 +168,64 @@ def device_wipe(env):
     # Device wipe
     print("--- Wiping Device ---")
     env.Execute("rnodeconf --eeprom-wipe " + env.subst("$UPLOAD_PORT"))
+
+def boot_usb_jtag_app(env):
+    """Start the application after an upload over native USB-Serial/JTAG.
+
+    esptool finishes with "Hard resetting via RTS pin", but on some ESP32-S3
+    boards that leaves the chip latched in the ROM downloader rather than
+    running the freshly written image. Everything after the upload then talks
+    to the ROM instead of the firmware: provisioning times out, the hash write
+    goes nowhere, and the board looks dead while being perfectly healthy.
+    Measured on the second Rev 2 (N16R2), where the app only started after a
+    physical S1 press -- which is exactly the manual step native USB is
+    supposed to remove.
+
+    The sequence below -- DTR deasserted, pulse RTS -- is the one measured to
+    start the application after an upload, verified across repeated flashes of
+    the second Rev 2 (N16R2). The previous sequence asserted DTR instead, and
+    esptool could still connect with --before no_reset afterwards, proving the
+    downloader had never been left.
+
+    Stated as a measurement, not as a rule about which line drives what: the
+    behaviour depends on the open transition and on whether the ROM or the
+    application owns the endpoint. Note that tools/ifac/provision.py, which
+    talks to the *running* application, requires the opposite DTR state --
+    see the note there. Same two lines, different owner, different meaning.
+    """
+    try:
+        if env.GetProjectOption("custom_usb_jtag_reset") not in ("yes", "true", "1"):
+            return
+    except Exception:
+        return
+    port_path = env.subst("$UPLOAD_PORT")
+    if not port_path:
+        return
+    print("*** Booting the application over USB-JTAG (%s)" % port_path)
+    try:
+        import serial
+        port = serial.Serial(baudrate=115200, timeout=0.3,
+                             dsrdtr=False, rtscts=False)
+        port.port = port_path
+        port.dtr = False         # IO0 high: boot the app, not the downloader
+        port.rts = False
+        port.open()
+        port.dtr = False         # hold IO0 high across the whole pulse
+        port.rts = True          # EN low: reset
+        time.sleep(0.2)
+        port.rts = False         # release EN
+        port.close()
+    except Exception as error:
+        print("    could not drive the reset lines: %s" % error)
+        print("    press the board's S1 (reset) button to start the firmware")
+        return
+    # The reset re-enumerates the USB device, so wait for it to come back
+    # before anything downstream tries to open it.
+    deadline = time.time() + 25.0
+    while time.time() < deadline and not os.path.exists(port_path):
+        time.sleep(0.5)
+    time.sleep(3.0)
+
 
 def upload_leaves_device_in_bootloader(env):
     """True when the upload flags stop the board rebooting into the app.

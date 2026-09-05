@@ -402,6 +402,14 @@ verify them alongside the nearest affected PR:
 6. Make `ACCEPT_APP` Resource rejection effective in microReticulum and
    investigate the measured transfer stalls above roughly 8 KiB.
 
+## Standing direction
+
+Dense apartment deployment, service relay across the mesh, the second product
+(**Vox** -- an RPi Zero 2 W HaLow HAT), and the ordered work to pick up next are
+in [`MeshDirection.md`](MeshDirection.md). Read it before scheduling anything
+from the list above: it argues that ESP-NOW is a last-resort recovery transport
+rather than the backbone, which changes what several items here are worth.
+
 ## Priority rule
 
 Choose the next item by dependency and disaster value, not by novelty:

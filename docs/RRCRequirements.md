@@ -203,8 +203,8 @@ Large content is rejected rather than partially sent.
 - Slash commands, room registration, topics and moderation are not interpreted
   in the MVP. A hub shall not accidentally grant authority based on a nickname.
 
-The firmware has no persistent wall clock. Incoming client timestamps are
-forwarded unchanged and never used for authority, ordering, expiry or rate
+The firmware has a separately persisted wall clock. Incoming client timestamps
+are forwarded unchanged and never used for authority, ordering, expiry or rate
 calculation. Hub-generated timestamps use Unix milliseconds when wall time is
 available and `0` otherwise; uptime must not masquerade as Unix time. The field
 is advisory, so the missing RTC does not block RRC.

@@ -224,7 +224,9 @@ class ESPNowArchitectureTests(unittest.TestCase):
         pages = source(PAGES)
         self.assertIn(
             'register_request_handler("/page/espnow.mu", serve_page', firmware)
-        page = pages[pages.index('path == "/page/espnow.mu"'):]
+        # Anchor on the serve_page branch, not on the first mention: the page
+        # path also appears in Pages.h's page_requires_identity gate.
+        page = pages[pages.index('else if (path == "/page/espnow.mu")'):]
         page = page[:page.index("else if", 1)]
         self.assertIn("Recovery policy", page)
         self.assertIn("Channel errors", page)
@@ -292,16 +294,91 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("const bool node_config_ready = true", firmware)
         self.assertIn('[lora] not fitted (ESP-NOW-only target)', firmware)
 
-    def test_fixture_has_stable_device_and_nomadnet_name(self):
+    def test_fixture_names_itself_from_its_uid_not_from_a_build_flag(self):
+        # A per-unit -D means a per-unit build environment and a per-unit
+        # binary. Deriving the name means one image serves every board and each
+        # still names itself uniquely, with no provisioning step needed just to
+        # stop two units colliding.
         firmware = source(FIRMWARE)
-        self.assertGreaterEqual(
-            firmware.count(
-                'snprintf(bt_devname, sizeof(bt_devname), "OZD-ARD-01")'),
-            1)
-        self.assertGreaterEqual(
-            firmware.count(
-                'snprintf(nomadnet_name, sizeof(nomadnet_name), "OZD-ARD-01")'),
-            1)
+        platformio = source(PLATFORMIO)
+        self.assertIn(
+            'snprintf(bt_devname, sizeof(bt_devname), "OZD-%02X%02X%02X",',
+            firmware)
+        self.assertIn(
+            'snprintf(nomadnet_name, sizeof(nomadnet_name), "%s", bt_devname)',
+            firmware)
+        self.assertNotIn("OZD_DEVICE_NAME", firmware)
+        self.assertNotIn("OZD_DEVICE_NAME", platformio)
+        self.assertNotIn("ozdisan-esp32-espnow-02", platformio)
+
+    def test_constrained_fixture_can_still_be_granted_remote_management(self):
+        # This build skips the library's builtin namespaces, which is where the
+        # remote-management allow list normally lives. Without it the allow list
+        # is empty, every handler on that destination is ALLOW_LIST, and the
+        # node cannot be trusted by anyone -- including a peer offering it UTC.
+        provisioning = source("Provisioning.cpp")
+        compact = provisioning[provisioning.index("#if defined(OZD_COMPACT_PROVISIONING)"):
+                               provisioning.index("#else", provisioning.index(
+                                   "#if defined(OZD_COMPACT_PROVISIONING)"))]
+        self.assertIn("RemoteManagementAllowed", compact)
+        self.assertIn("RemoteManagementEnabled", compact)
+        self.assertIn("Ns::GeneralConfig::Id", compact)
+        self.assertIn("NomadNet Name", compact)
+
+    def test_parent_selection_prefers_a_peer_that_can_reach_the_mesh(self):
+        # Taking the first valid reply meant two orphans in range of each other
+        # were as likely to adopt each other as the hub. Reticulum learns paths
+        # by hop count and keeps whichever announce copy lands first, so it
+        # never corrects that -- the topology has to be honest to begin with.
+        protocol = source("ESPNowProtocol.h")
+        iface = source(INTERFACE)
+        self.assertIn("#define ESPNOW_CAP_UPSTREAM          0x08", protocol)
+        self.assertIn("local_has_upstream()) discovery.capabilities |= "
+                      "ESPNOW_CAP_UPSTREAM", iface)
+
+        reply = iface[iface.index("void handle_recovery_reply("):]
+        reply = reply[:reply.index("void pin_recovery_peer(")]
+        prefer = reply.index("discovery.capabilities & ESPNOW_CAP_UPSTREAM")
+        pin = reply.index('pin_recovery_peer(mac, discovery, "proven")', prefer)
+        fallback = reply.index("_recovery_fallback_valid = true", pin)
+        self.assertLess(prefer, pin)
+        self.assertLess(pin, fallback)
+
+    def test_an_orphan_peer_is_adopted_only_after_the_budget_expires(self):
+        iface = source(INTERFACE)
+        scan = iface[iface.index("void service_recovery_scan("):]
+        scan = scan[:scan.index("void send_current_fragment(")]
+        deadline = scan.index("time_reached(now, _recovery_scan_deadline)")
+        adopt = scan.index("_recovery_fallback_valid", deadline)
+        failed = scan.index("_recovery_state = RECOVERY_FAILED", adopt)
+        self.assertLess(deadline, adopt)
+        self.assertLess(adopt, failed)
+        # A fresh scan must not inherit a candidate from the previous one.
+        start = iface[iface.index("_recovery_scan_deadline = now + _recovery_budget_ms"):]
+        self.assertIn("_recovery_fallback_valid = false",
+                      start[:start.index("_recovery_scans++")])
+
+    def test_a_node_with_no_way_out_stops_relaying_while_it_has_a_parent(self):
+        # Every announce such a node repeats reaches the hub one hop longer
+        # than the copy the hub already heard directly. The moment the parent
+        # is lost this reverses and it is the only thing keeping neighbours
+        # reachable, so the policy is applied on both transitions.
+        iface = source(INTERFACE)
+        policy = iface[iface.index("void apply_relay_policy("):]
+        policy = policy[:policy.index("ESPNowDiscovery local_discovery()")]
+        self.assertIn("if (local_has_upstream()) return;", policy)
+        self.assertIn("const bool relay = (_recovery_state != RECOVERY_PINNED);",
+                      policy)
+        self.assertIn("RNS::Reticulum::transport_enabled(relay)", policy)
+        self.assertIn('apply_relay_policy("attached to a parent")', iface)
+        self.assertIn('apply_relay_policy("parent lost")', iface)
+
+    def test_upstream_claim_requires_a_route_that_is_not_esp_now(self):
+        iface = source(INTERFACE)
+        fn = iface[iface.index("bool local_has_upstream() const {"):]
+        fn = fn[:fn.index("\n\t}") + 3]
+        self.assertIn("#if defined(LORA_TRANSPORT)", fn)
+        self.assertIn("WiFi.status() == WL_CONNECTED", fn)
 
     def test_unconfigured_pinned_fixture_does_not_retry_blank_station(self):
         remote = source(REMOTE)

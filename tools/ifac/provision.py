@@ -54,8 +54,34 @@ def kiss_frame(command, payload=b""):
 
 
 class KissProvisioner:
-    def __init__(self, port, boot_wait=4.0, timeout=6.0):
-        self.serial = serial.Serial(port, 115200, timeout=0.1)
+    def __init__(self, port, boot_wait=4.0, timeout=6.0, usb_jtag=False):
+        # The ESP32-S3's native USB-Serial/JTAG gives these two lines opposite
+        # meanings depending on who owns the endpoint, which is worth stating
+        # plainly because it reads like a contradiction against
+        # tools/usb_jtag_boot.py:
+        #
+        #   ROM owns it   -- RTS drives EN, DTR drives IO0, both inverted. This
+        #                    is the strapping regime, and asserting DTR there
+        #                    selects the downloader.
+        #   The app owns it -- the lines are ordinary CDC signals, and DTR is
+        #                    the host-present indication the firmware's CDC
+        #                    waits on before it will transmit.
+        #
+        # Provisioning always talks to the running application, so DTR must be
+        # asserted here. Measured on the second Rev 2 (N16R2, 303a:1001):
+        # dtr=True answers immediately, dtr=False times out with the board
+        # perfectly healthy. RTS stays deasserted either way -- this never
+        # issues a reset, which is why the strapping regime does not apply.
+        # Boards behind a USB-serial bridge keep the old defaults.
+        if usb_jtag:
+            self.serial = serial.Serial(baudrate=115200, timeout=0.1,
+                                        dsrdtr=False, rtscts=False)
+            self.serial.port = port
+            self.serial.dtr = True
+            self.serial.rts = False
+            self.serial.open()
+        else:
+            self.serial = serial.Serial(port, 115200, timeout=0.1)
         self.timeout = timeout
         self.sequence = 1
         ready_at = time.monotonic() + boot_wait
@@ -230,6 +256,54 @@ def secure_node_enabled(client):
         FIELD_SECURE_NODE_ENABLED, False))
 
 
+def cmd_admin(client, args):
+    """Add or replace the remote-management allow list, and nothing else.
+
+    A node with an empty allow list refuses /status, /path and /time before the
+    handler runs, so it answers nothing at all -- which is why a node with no
+    clock could not simply be handed one. This grants that trust without
+    touching secure-node posture or any IFAC, so it is safe to run on a node
+    that is already deployed.
+    """
+    administrators = [parse_administrator(value) for value in args.identity]
+    schema = client.request(OP_GET_SCHEMA, {1: [NS_GENERAL]})
+    by_id = {entry[0]: entry for entry in schema
+             if isinstance(entry, list) and entry}
+    general = by_id.get(NS_GENERAL)
+    if general is None:
+        raise RuntimeError("firmware advertises no General Config namespace")
+    fields = {entry.get(1): entry for entry in general[3]
+              if isinstance(entry, dict)}
+    if FIELD_REMOTE_MANAGEMENT_ALLOWED not in fields:
+        raise RuntimeError(
+            "this firmware exposes no remote-management allow list; it cannot "
+            "be granted trust over the mesh")
+
+    changes = {NS_GENERAL: {FIELD_REMOTE_MANAGEMENT_ALLOWED: administrators}}
+    if FIELD_REMOTE_MANAGEMENT_ENABLED in fields:
+        changes[NS_GENERAL][FIELD_REMOTE_MANAGEMENT_ENABLED] = True
+
+    response = client.request(OP_SET_STATE, {3: changes, 5: True})
+    errors = response.get(3, []) if isinstance(response, dict) else []
+    if errors:
+        client.request(OP_DISCARD, [NS_GENERAL])
+        raise RuntimeError("SetState field errors: %r" % (errors,))
+    client.request(OP_COMMIT, {1: [NS_GENERAL], 5: True})
+
+    # Read back rather than trusting the commit: the allow list is the only
+    # thing standing between this node and anyone claiming to know the time.
+    state = client.request(OP_GET_STATE, {1: [NS_GENERAL]})
+    stored = state.get(1, {}).get(NS_GENERAL, {}).get(
+        FIELD_REMOTE_MANAGEMENT_ALLOWED, [])
+    stored = [bytes(entry) for entry in stored]
+    for administrator in administrators:
+        if administrator not in stored:
+            raise RuntimeError("allow list did not verify for %s"
+                               % administrator.hex())
+        print("allowed: %s" % administrator.hex())
+    print("committed and verified -- reboot for it to take effect")
+
+
 def parse_administrator(value):
     try:
         decoded = bytes.fromhex(value)
@@ -381,6 +455,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="board serial device")
     parser.add_argument("--boot-wait", type=float, default=4.0)
+    parser.add_argument("--usb-jtag", action="store_true",
+                        help="board is on the ESP32-S3 native USB-Serial/JTAG, "
+                             "where RTS drives EN -- asserting it, as pyserial "
+                             "does by default, holds the board in reset")
     sub = parser.add_subparsers(dest="action", required=True)
 
     enable = sub.add_parser("enable", help="stage and commit protected operation")
@@ -408,9 +486,16 @@ def main():
     mode = sub.add_parser("mode", help="stage and commit host or autonomous TNC mode")
     mode.add_argument("value", choices=("host", "tnc"))
     sub.add_parser("reboot", help="reboot after peers have all been committed")
+    admin = sub.add_parser(
+        "admin",
+        help="set the remote-management allow list, without changing posture")
+    admin.add_argument("identity", nargs="+",
+                       help="16-byte identity hash(es) permitted to manage this "
+                            "node -- including supplying it UTC via /time")
     args = parser.parse_args()
 
-    client = KissProvisioner(args.port, boot_wait=args.boot_wait)
+    client = KissProvisioner(args.port, boot_wait=args.boot_wait,
+                             usb_jtag=args.usb_jtag)
     try:
         if args.action == "schema":
             selected = (available_ifac_schemas(client)
@@ -439,6 +524,8 @@ def main():
         elif args.action == "reboot":
             client.reboot()
             print("reboot requested")
+        elif args.action == "admin":
+            cmd_admin(client, args)
         elif args.action == "secure":
             interfaces = available_ifac_schemas(client)
             networks = {}

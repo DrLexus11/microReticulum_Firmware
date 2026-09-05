@@ -15,6 +15,10 @@
 
 #include "Graphics.h"
 #include <Adafruit_GFX.h>
+#if defined(HAS_RNS) && BOARD_MODEL == BOARD_OZDISAN_ESP32
+  #include <microReticulum/Utilities/OS.h>
+  #include <time.h>
+#endif
 
 #if BOARD_MODEL != BOARD_TECHO
   #if BOARD_MODEL == BOARD_TDECK
@@ -982,6 +986,40 @@ void draw_disp_area() {
         } else {
           disp_area.setFont(SMALL_FONT); disp_area.setTextWrap(false); disp_area.setTextColor(SSD1306_WHITE); disp_area.setTextSize(2);
           disp_area.fillRect(0, 20, disp_area.width(), 17, SSD1306_BLACK); uint8_t ofsc = 0;
+          #if BOARD_MODEL == BOARD_OZDISAN_ESP32 && defined(HAS_RNS)
+            // This band is otherwise blank on the radio-less OZD fixture
+            // (there is no Classic-BT suffix to render). Reuse it for a small
+            // UTC proof without changing the surrounding RNode UI layout.
+            char clock_text[9];
+            const bool wall_known = RNS::Utilities::OS::wall_time_known();
+            if (wall_known) {
+              time_t seconds = (time_t)(RNS::Utilities::OS::wall_time_millis() / 1000ULL);
+              struct tm utc{};
+              if (gmtime_r(&seconds, &utc) != nullptr) {
+                snprintf(clock_text, sizeof(clock_text), "%02d:%02d:%02d",
+                         utc.tm_hour, utc.tm_min, utc.tm_sec);
+              } else {
+                snprintf(clock_text, sizeof(clock_text), "TIME --");
+              }
+            } else {
+              // Uptime is useful while isolated, but label it so it can never
+              // be mistaken for the UTC clock this feature is establishing.
+              const uint64_t up_minutes =
+                  (uint64_t)RNS::Utilities::OS::monotonic_time() / 60ULL;
+              if (up_minutes < 6000ULL) {
+                snprintf(clock_text, sizeof(clock_text), "UP %02llu:%02llu",
+                         up_minutes / 60ULL, up_minutes % 60ULL);
+              } else {
+                const uint64_t up_days = up_minutes / 1440ULL;
+                snprintf(clock_text, sizeof(clock_text), "U%03llud%02lluh",
+                         up_days > 999ULL ? 999ULL : up_days,
+                         (up_minutes / 60ULL) % 24ULL);
+              }
+            }
+            disp_area.setTextSize(1);
+            disp_area.setCursor(13, 31);
+            disp_area.print(clock_text);
+          #endif
           #if HAS_BT
             if ((bt_dh[14] & 0b00001111) == 0x01) { ofsc += 8; }
             if ((bt_dh[14] >> 4)         == 0x01) { ofsc += 8; }

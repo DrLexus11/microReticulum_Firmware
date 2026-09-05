@@ -172,6 +172,10 @@ public:
 		    (uint32_t)(now - _recovery_peer_last_seen) > ESPNOW_PEER_TIMEOUT_MS) {
 			_recovery_state = RECOVERY_FAILED;
 			_recovery_failures++;
+			_recovery_peer_has_upstream = false;
+			// The hub is gone. Whatever this node can repeat for its
+			// neighbours now matters more than the duplicate traffic it costs.
+			apply_relay_policy("parent lost");
 			return;
 		}
 
@@ -181,7 +185,16 @@ public:
 		}
 
 		if (_tx_tail != _tx_head) {
-			send_current_fragment(now);
+			const uint32_t budget_end = now + SEND_DRAIN_BUDGET_MS;
+			for (uint8_t frames = 0; frames < SEND_DRAIN_MAX_FRAMES; ++frames) {
+				send_current_fragment(millis());
+				// Not finished inside the budget: leave it in flight and let
+				// the next pass collect it, exactly as before this change.
+				if (!settle_send(budget_end)) break;
+				if (!_started) break;
+				if (_tx_tail == _tx_head) break;
+				if ((int32_t)(millis() - budget_end) >= 0) break;
+			}
 		}
 		else if (time_reached(now, _next_discovery_at)) {
 			send_discovery(now);
@@ -222,6 +235,8 @@ public:
 		       _recovery_state == RECOVERY_PINNED;
 	}
 	bool recovery_pinned() const { return _recovery_state == RECOVERY_PINNED; }
+	bool recovery_peer_has_upstream() const { return _recovery_peer_has_upstream; }
+	bool has_upstream() const { return local_has_upstream(); }
 	bool recovery_failed() const { return _recovery_state == RECOVERY_FAILED; }
 	uint8_t recovery_channel() const { return _recovery_selected_channel; }
 	uint32_t recovery_pinned_since() const { return _recovery_pinned_since; }
@@ -317,6 +332,15 @@ private:
 	static constexpr uint8_t RX_DRAIN_PER_LOOP = 4;
 	static constexpr uint8_t SEND_RETRIES = 3;
 	static constexpr uint32_t SEND_TIMEOUT_MS = 1000;
+	// One frame per firmware loop pass is the wrong shape now that a fragment
+	// can be addressed to several peers and retried up to SEND_RETRIES times: a
+	// three-fragment packet to two peers could need a dozen passes, and the
+	// radio sits idle between them while conditions change. Push what fits a
+	// small budget within one pass instead. The cap is deliberately tight --
+	// this runs on the main loop, which also services LoRa, Wi-Fi, RNS and the
+	// display.
+	static constexpr uint32_t SEND_DRAIN_BUDGET_MS = 12;
+	static constexpr uint8_t SEND_DRAIN_MAX_FRAMES = 6;
 	static constexpr uint32_t START_RETRY_MS = 5000;
 	static constexpr uint32_t CHANNEL_CHECK_MS = 1000;
 
@@ -349,6 +373,11 @@ private:
 		uint8_t mac[6];
 		uint32_t last_seen;
 		ESPNowDiscovery discovery;
+		// Consecutive unicast failures. A peer that has stopped answering must
+		// not hold up the frames addressed to everyone else -- that is what
+		// made the first attempt at fan-out worse than the broadcast it
+		// replaced.
+		uint8_t send_failures;
 	};
 
 	enum SendKind : uint8_t {
@@ -511,6 +540,34 @@ private:
 		}
 
 		touch_peer(mac, &discovery);
+
+		// Prefer a peer that can actually reach the mesh. Taking the first
+		// valid reply meant two orphans in range of each other were as likely
+		// to adopt each other as the hub, which costs a hop that leads nowhere
+		// and makes every route through them longer than it needs to be.
+		// Reticulum learns paths from announces by hop count alone and keeps
+		// whichever copy arrives first, so it will not correct that later --
+		// the topology has to be honest to begin with.
+		if ((discovery.capabilities & ESPNOW_CAP_UPSTREAM) != 0) {
+			pin_recovery_peer(mac, discovery, "proven");
+			return;
+		}
+
+		// An orphan is still better than nothing, but only once the budget is
+		// spent and nothing better has answered. Remember the first one.
+		if (!_recovery_fallback_valid) {
+			memcpy(_recovery_fallback_mac, mac, 6);
+			_recovery_fallback_discovery = discovery;
+			_recovery_fallback_channel = _channel;
+			_recovery_fallback_valid = true;
+			printf("[espnow] peer %02x:%02x:%02x:%02x:%02x:%02x has no upstream; "
+			       "holding it as fallback and continuing the scan\n",
+			       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+		}
+	}
+
+	void pin_recovery_peer(const uint8_t* mac, const ESPNowDiscovery& discovery,
+	                       const char* how) {
 		memcpy(_recovery_peer_mac, mac, 6);
 		snprintf(_recovery_peer_text, sizeof(_recovery_peer_text),
 		         "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -520,10 +577,24 @@ private:
 		_recovery_pinned_since = millis();
 		_recovery_state = RECOVERY_PINNED;
 		_recovery_successes++;
+		_recovery_peer_has_upstream =
+		    (discovery.capabilities & ESPNOW_CAP_UPSTREAM) != 0;
 		_last_peer_phy_hash = discovery.phy_hash;
 		_next_discovery_at = millis();
-		printf("[espnow] recovery peer %s proven on channel %u\n",
-		       _recovery_peer_text, (unsigned)_channel);
+		_recovery_fallback_valid = false;
+		printf("[espnow] recovery peer %s %s on channel %u (upstream=%u)\n",
+		       _recovery_peer_text, how, (unsigned)_channel,
+		       (unsigned)_recovery_peer_has_upstream);
+		apply_relay_policy("attached to a parent");
+	}
+
+	Peer* find_peer(const uint8_t* mac) {
+		for (uint8_t i = 0; i < MAX_PEERS; ++i) {
+			if (_peers[i].used && memcmp(_peers[i].mac, mac, 6) == 0) {
+				return &_peers[i];
+			}
+		}
+		return nullptr;
 	}
 
 	Peer* touch_peer(const uint8_t* mac, const ESPNowDiscovery* discovery) {
@@ -533,6 +604,8 @@ private:
 			Peer& peer = _peers[i];
 			if (peer.used && memcmp(peer.mac, mac, 6) == 0) {
 				peer.last_seen = millis();
+				// Anything inbound is proof of life, so stop skipping it.
+				peer.send_failures = 0;
 				if (discovery != nullptr) peer.discovery = *discovery;
 				return &peer;
 			}
@@ -666,6 +739,25 @@ private:
 		}
 	}
 
+	// Wait briefly for the in-flight frame so the next one can go out in this
+	// same loop pass. Yields rather than spinning, because the completion
+	// callback arrives on the Wi-Fi task. Returns false if it is still in
+	// flight when the budget runs out, in which case the caller must leave it
+	// alone -- the normal per-pass path will collect it.
+	bool settle_send(uint32_t budget_end) {
+		while (true) {
+			bool done;
+			portENTER_CRITICAL(&_send_mux);
+			done = _send_done;
+			portEXIT_CRITICAL(&_send_mux);
+			if (done) break;
+			if ((int32_t)(millis() - budget_end) >= 0) return false;
+			delay(1);
+		}
+		service_send_completion(millis());
+		return !_send_waiting;
+	}
+
 	void service_send_completion(uint32_t now) {
 		bool done = false;
 		bool ok = false;
@@ -701,14 +793,42 @@ private:
 			_send_failures++;
 			_send_retry++;
 			_send_kind = SEND_NONE;
+			// Retry the peer that just failed, not the one after it. The
+			// cursor was advanced when this fragment was addressed, so
+			// without rewinding it the retry lands on the next peer and the
+			// failed one is never asked again -- which makes SEND_RETRIES
+			// dead code exactly when it is needed most.
+			if (_send_fanout && _tx_peer_cursor > 0) _tx_peer_cursor--;
 			return;
 		}
-		if (!ok) {
+		Peer* target = _send_target_is_peer ? find_peer(_send_target_mac) : nullptr;
+		if (ok) {
+			_tx_fragment_delivered = true;
+			if (target) target->send_failures = 0;
+		}
+		else {
 			_send_failures++;
-			_tx_packet_failed = true;
+			if (target && target->send_failures < 0xFF) target->send_failures++;
 		}
 		_send_retry = 0;
 		_send_kind = SEND_NONE;
+
+		// Fanning out: this fragment still owes the remaining peers. Only when
+		// every one has been addressed does the fragment count as sent, and
+		// only if nobody at all took it is the packet lost.
+		if (_send_fanout) {
+			const uint32_t peers_now = millis();
+			for (uint8_t i = _tx_peer_cursor; i < MAX_PEERS; ++i) {
+				if (peer_is_addressable(_peers[i], peers_now)) return;
+			}
+		}
+		if (!_tx_fragment_delivered) _tx_packet_failed = true;
+		_tx_fragment_delivered = false;
+		_tx_peer_cursor = 0;
+		_send_fanout = false;
+		_send_target_valid = false;
+		_send_target_is_peer = false;
+
 		_tx_fragment++;
 		TxPacket& packet = _tx_queue[_tx_tail];
 		const uint8_t count = fragment_count(packet.length);
@@ -721,6 +841,8 @@ private:
 			_tx_tail = (uint8_t)((_tx_tail + 1u) % TX_QUEUE_DEPTH);
 			_tx_fragment = 0;
 			_tx_packet_failed = false;
+			_tx_peer_cursor = 0;
+			_tx_fragment_delivered = false;
 		}
 	}
 
@@ -753,6 +875,7 @@ private:
 
 		_recovery_state = RECOVERY_SCANNING;
 		_recovery_scan_deadline = now + _recovery_budget_ms;
+		_recovery_fallback_valid = false;
 		_recovery_next_hop = now;
 		_scan_channel = 0;
 		_scan_first_hop = true;
@@ -765,6 +888,16 @@ private:
 
 	void service_recovery_scan(uint32_t now) {
 		if (time_reached(now, _recovery_scan_deadline)) {
+			if (_recovery_fallback_valid) {
+				// Nothing with a way out answered in the whole budget. An
+				// orphan neighbour is still a mesh, and being reachable badly
+				// beats not being reachable.
+				_channel = _recovery_fallback_channel;
+				pin_recovery_peer(_recovery_fallback_mac,
+				                  _recovery_fallback_discovery,
+				                  "adopted as last resort");
+				return;
+			}
 			_recovery_state = RECOVERY_FAILED;
 			_recovery_failures++;
 			printf("[espnow] recovery scan found no proven peer\n");
@@ -817,7 +950,57 @@ private:
 		};
 		espnow_write_header(wire, sizeof(wire), header);
 		memcpy(wire + ESPNOW_HEADER_SIZE, packet.data + offset, payload_length);
+
+		_send_target_is_peer = false;
+		_send_target_valid = false;
+		_send_fanout = false;
+		if (const uint8_t* pinned = pinned_target()) {
+			memcpy(_send_target_mac, pinned, 6);
+			_send_target_valid = true;
+		}
+		else if (addressable_peer_count(now) <= UNICAST_FANOUT_MAX) {
+			if (Peer* peer = next_fanout_peer(now)) {
+				memcpy(_send_target_mac, peer->mac, 6);
+				_send_target_is_peer = true;
+				_send_target_valid = true;
+				_send_fanout = true;
+			}
+			// No addressable peer left: fall through to broadcast, so a peer
+			// we have not learned yet -- or one currently being skipped for
+			// failing -- still has a chance of hearing this.
+		}
 		begin_send(SEND_DATA, wire, ESPNOW_HEADER_SIZE + payload_length, now);
+	}
+
+	// Can this node reach the rest of the mesh without going back out through
+	// ESP-NOW? A LoRa radio always can. Otherwise the only way out is
+	// infrastructure Wi-Fi, which the deliberately unconfigured fixtures never
+	// have -- so they never claim to be a way out for anyone else.
+	bool local_has_upstream() const {
+#if defined(LORA_TRANSPORT)
+		return true;
+#else
+		return WiFi.status() == WL_CONNECTED;
+#endif
+	}
+
+	// A node whose only route to the mesh is its own ESP-NOW parent must not
+	// repeat for anybody: every announce it relays arrives at the hub as one
+	// hop longer than the copy the hub already heard directly, and Reticulum
+	// keeps whichever copy lands first. That is how a board one hop from the
+	// hub ended up recorded three hops away, through a sibling.
+	//
+	// The moment the parent is gone this reverses -- a node that can still
+	// hear its neighbours is the only thing keeping them reachable, and the
+	// duplicate traffic stops mattering. Nodes with a way out of their own
+	// are never touched by this.
+	void apply_relay_policy(const char* reason) {
+		if (local_has_upstream()) return;
+		const bool relay = (_recovery_state != RECOVERY_PINNED);
+		if (relay == RNS::Reticulum::transport_enabled()) return;
+		RNS::Reticulum::transport_enabled(relay);
+		printf("[espnow] relaying %s: %s\n",
+		       relay ? "enabled" : "disabled", reason);
 	}
 
 	ESPNowDiscovery local_discovery() const {
@@ -836,6 +1019,7 @@ private:
 		discovery.capabilities |= ESPNOW_CAP_LORA;
 #endif
 		if (RNS::Reticulum::transport_enabled()) discovery.capabilities |= ESPNOW_CAP_TRANSPORT;
+		if (local_has_upstream()) discovery.capabilities |= ESPNOW_CAP_UPSTREAM;
 		if (_ifac_key.size() > 0) discovery.capabilities |= ESPNOW_CAP_IFAC_PROOF;
 		discovery.wifi_channel = _channel;
 		return discovery;
@@ -923,23 +1107,56 @@ private:
 		return (err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST);
 	}
 
-	// Returns the peer to unicast data to, or nullptr to fall back to broadcast.
-	const uint8_t* unicast_target() {
-		if (_recovery_state == RECOVERY_PINNED) {
-			static const uint8_t zero[6] = {0};
-			if (memcmp(_recovery_peer_mac, zero, 6) != 0) return _recovery_peer_mac;
-		}
-		// Otherwise only unicast when there is exactly one known peer. With
-		// several peers a broadcast is still the only way to reach all of them
-		// in one send, so accept the lower reliability rather than silently
-		// talking to just one of them.
-		const uint8_t* found = nullptr;
+	// Choose where the current data fragment goes.
+	//
+	// Broadcast is the cheap way to reach several peers and on this radio it is
+	// also the unreliable one: broadcast frames are never acknowledged by the
+	// 802.11 MAC, so a lost one is invisible and unrecoverable, while a unicast
+	// is ACKed and retried in hardware. Measured 2026-09-04, hub broadcasting
+	// downstream to two peers: the nearer one completed 33% of link setups and
+	// the further one 0 of 12, against 92% for a node reached over UDP. The
+	// failures are at link establishment, where the packets are small enough to
+	// fit one fragment -- so this is raw frame loss, not reassembly.
+	//
+	// So address peers individually while there are few enough to afford it.
+	// A peer that has stopped answering is skipped rather than allowed to stall
+	// the queue for the others; the first attempt at this omitted that and made
+	// things worse.
+	static constexpr uint8_t UNICAST_FANOUT_MAX = 3;
+	static constexpr uint8_t PEER_SEND_FAILURE_LIMIT = 3;
+
+	const uint8_t* pinned_target() const {
+		if (_recovery_state != RECOVERY_PINNED) return nullptr;
+		static const uint8_t zero[6] = {0};
+		if (memcmp(_recovery_peer_mac, zero, 6) == 0) return nullptr;
+		return _recovery_peer_mac;
+	}
+
+	bool peer_is_addressable(const Peer& peer, uint32_t now) const {
+		if (!peer.used) return false;
+		if ((uint32_t)(now - peer.last_seen) > ESPNOW_PEER_TIMEOUT_MS) return false;
+		// A peer whose discovery frames still arrive is alive, so its failure
+		// count is cleared by touch_peer(); a persistently failing one is not
+		// worth the airtime until it speaks again.
+		return peer.send_failures < PEER_SEND_FAILURE_LIMIT;
+	}
+
+	uint8_t addressable_peer_count(uint32_t now) const {
+		uint8_t count = 0;
 		for (uint8_t i = 0; i < MAX_PEERS; ++i) {
-			if (!_peers[i].used) continue;
-			if (found) return nullptr;
-			found = _peers[i].mac;
+			if (peer_is_addressable(_peers[i], now)) ++count;
 		}
-		return found;
+		return count;
+	}
+
+	// Next addressable peer at or after the cursor, leaving it one past.
+	Peer* next_fanout_peer(uint32_t now) {
+		while (_tx_peer_cursor < MAX_PEERS) {
+			Peer& peer = _peers[_tx_peer_cursor];
+			_tx_peer_cursor++;
+			if (peer_is_addressable(peer, now)) return &peer;
+		}
+		return nullptr;
 	}
 
 	void begin_send(SendKind kind, const uint8_t* data, size_t length, uint32_t now) {
@@ -948,9 +1165,9 @@ private:
 		_send_waiting = true;
 		_send_started = now;
 		const uint8_t* target = broadcast_mac;
-		if (kind == SEND_DATA) {
-			const uint8_t* peer = unicast_target();
-			if (peer && ensure_unicast_peer(peer)) target = peer;
+		if (kind == SEND_DATA && _send_target_valid &&
+		    ensure_unicast_peer(_send_target_mac)) {
+			target = _send_target_mac;
 		}
 		const esp_err_t err = esp_now_send(target, data, length);
 		if (err != ESP_OK) {
@@ -989,6 +1206,20 @@ private:
 	bool _recovery_reply_pending = false;
 	uint8_t _recovery_peer_mac[6] = {0};
 	char _recovery_peer_text[18] = {0};
+	bool _recovery_peer_has_upstream = false;
+	// Per-fragment unicast fan-out.
+	uint8_t _tx_peer_cursor = 0;
+	bool _tx_fragment_delivered = false;
+	bool _send_fanout = false;
+	bool _send_target_valid = false;
+	uint8_t _send_target_mac[6] = {0};
+	bool _send_target_is_peer = false;
+	// Best orphan seen during the current scan, adopted only if the budget
+	// expires without anything better answering.
+	bool _recovery_fallback_valid = false;
+	uint8_t _recovery_fallback_mac[6] = {0};
+	uint8_t _recovery_fallback_channel = 0;
+	ESPNowDiscovery _recovery_fallback_discovery = {};
 
 	Peer _peers[MAX_PEERS];
 	Reassembly _reassembly[REASSEMBLY_SLOTS];

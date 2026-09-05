@@ -367,7 +367,8 @@ inline void lxmf_peer_offer_response(const RNS::Bytes& response) {
 	// Same container shape a client pushes to us: [timebase, [messages]].
 	MsgPack::Packer packer;
 	packer.serialize(MsgPack::arr_size_t(2));
-	packer.serialize((uint64_t)RNS::Utilities::OS::time());
+	packer.serialize(RNS::Utilities::OS::wall_time_known()
+		? (uint64_t)RNS::Utilities::OS::wall_time() : 0ULL);
 	packer.serialize(MsgPack::arr_size_t(send.size()));
 	for (const RNS::Bytes& m : send) {
 		packer.serialize(MsgPack::bin_t<uint8_t>(m.data(), m.data() + m.size()));

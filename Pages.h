@@ -23,6 +23,9 @@
 #include <microReticulum/Identity.h>
 #include <microReticulum/Utilities/OS.h>
 #include <microReticulum/Bytes.h>
+// The clock page reports how time is being distributed, not only what it says.
+#include "TimeSync.h"
+#include "TimeBeacon.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #endif
@@ -33,6 +36,7 @@
 #include <MsgPack.h>
 
 #include <string>
+#include <time.h>
 
 extern RNS::Interface lora_interface;
 #if defined(TCP_SERVER_TRANSPORT)
@@ -92,8 +96,48 @@ const char* espnow_recovery_peer_mac();
 extern uint8_t wifi_espnow_recovery_mode;
 extern uint32_t wifi_espnow_scan_budget_ms;
 extern uint8_t wifi_espnow_rendezvous_channel;
+bool espnow_peer_has_upstream();
+bool espnow_local_has_upstream();
 #endif
 extern RNS::Destination nomadnet_destination;
+
+inline std::string wall_time_iso8601() {
+  if (!RNS::Utilities::OS::wall_time_known()) return "unknown";
+  const time_t seconds = (time_t)(RNS::Utilities::OS::wall_time_millis() / 1000ULL);
+  struct tm utc{};
+  if (gmtime_r(&seconds, &utc) == nullptr) return "invalid";
+  char text[24];
+  snprintf(text, sizeof(text), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+           utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+           utc.tm_hour, utc.tm_min, utc.tm_sec);
+  return text;
+}
+
+// Pages that report device internals (heap, flash, interfaces, transport and
+// peer metrics). Reticulum's request policies are ALLOW_NONE, ALLOW_ALL and
+// ALLOW_LIST, with nothing in between: there is no "any peer that identified"
+// tier. ALLOW_LIST is also refused inside Destination before serve_page ever
+// runs, so the client sees no response at all -- indistinguishable from a node
+// that is switched off, which is how it kept presenting. These pages are
+// therefore registered ALLOW_ALL and gated here, where a peer that has not
+// identified can be told so.
+inline bool page_requires_identity(const RNS::Bytes& path) {
+#ifdef NOMADNET_PAGES_ALLOW_ALL
+  // Diagnostic fixtures publish everything to anyone on the mesh.
+  (void)path;
+  return false;
+#else
+  return path == "/page/stack.mu"
+      || path == "/page/device.mu"
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+      || path == "/page/espnow.mu"
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+      || path == "/page/ble.mu"
+#endif
+      ;
+#endif
+}
 
 void add_interface_details(RNS::Bytes& content, const RNS::Interface& interface) {
   content << "    \"mode\": \"";
@@ -176,6 +220,14 @@ RNS::Bytes serve_page(
 	MsgPack::Packer packer;
   {
     RNS::Bytes content;
+    if (page_requires_identity(path) && !remote_identity) {
+      content = "> Identification Required\n\n";
+      content << "This page reports device internals, so it is served only to a peer that has identified itself on the link. Any identity is accepted -- it does not have to be on this node's remote-management allow list.\n\n";
+      content << "Your client reached us without identifying. Enable identification in its settings and open this page again.\n\n";
+      content << "`!`[• Back to the index`:/page/index.mu]`\n";
+      packer.packBinary(content.data(), content.size());
+      return RNS::Bytes(packer.data(), packer.size());
+    }
     if (path == "/page/index.mu") {
       content = "> microReticulum Stats\n\n";
       content << ">> Memory\n";
@@ -189,6 +241,8 @@ RNS::Bytes serve_page(
       content << ">> Device\n";
       content << "`!`[• General`:/page/device.mu`c=general]`\n";
       content << "`!`[• Interface`:/page/device.mu`c=interfaces]`\n";
+      content << "`!`[• Time Status`:/page/time.mu]`\n";
+      content << "`!`[• Airtime`:/page/airtime.mu]`\n";
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
       content << "`!`[• ESP-NOW Recovery`:/page/espnow.mu]`\n";
 #endif
@@ -205,6 +259,104 @@ RNS::Bytes serve_page(
 #endif
       if (remote_identity) content << "\n🛡️ Verified identity: " << remote_identity.hash().toHex() << "\n";
       else content << "\n⚠️ Unknown identity. Identity must be provided for access to this site.\n";
+    }
+    else if (path == "/page/airtime.mu") {
+      // Duty-cycle state was only ever visible on the serial console, which is
+      // redirected the moment a KISS host attaches -- so on a deployed node it
+      // was effectively unobservable. Exceeding a duty cycle is illegal and
+      // degrades the band for everyone, so it needs to be readable from the
+      // mesh like everything else.
+      extern float airtime;
+      extern float longterm_airtime;
+      extern float st_airtime_limit;
+      extern float lt_airtime_limit;
+      extern bool airtime_lock;
+      extern bool airtime_pressure;
+      extern volatile uint32_t tx_deferred_routine;
+      extern volatile uint8_t queue_height;
+      char pct[16];
+      content = "> Airtime\n\n";
+      snprintf(pct, sizeof(pct), "%.4f", (double)longterm_airtime);
+      content << "Long-term   : " << pct << "\n";
+      snprintf(pct, sizeof(pct), "%.5f", (double)lt_airtime_limit);
+      content << "Limit       : " << pct << (lt_airtime_limit == 0.0f ? "  (unenforced)" : "") << "\n";
+      // The compiled-in regulatory ceiling, shown beside the value actually in
+      // force. They should agree; on 2026-09-04 they did not, which is how the
+      // discrepancy below was found and why this line stays.
+      snprintf(pct, sizeof(pct), "%.5f", (double)RADIO_DUTY_CYCLE_LONGTERM);
+      content << "Built-in cap: " << pct << "\n";
+      extern float boot_lt_airtime_limit;
+      extern volatile uint32_t lt_alock_writes;
+      extern float lt_alock_last_requested;
+      snprintf(pct, sizeof(pct), "%.5f", (double)boot_lt_airtime_limit);
+      content << "At boot     : " << pct << "\n";
+      content << "Host writes : " << std::to_string(lt_alock_writes) << "\n";
+      snprintf(pct, sizeof(pct), "%.5f", (double)lt_alock_last_requested);
+      content << "Host asked  : " << pct << "\n";
+      snprintf(pct, sizeof(pct), "%.4f", (double)airtime);
+      content << "Short-term  : " << pct << "\n";
+      content << "Locked      : " << (airtime_lock ? "yes" : "no") << "\n";
+      content << "Pressure    : " << (airtime_pressure ? "yes" : "no") << "\n";
+      content << "Routine dropped: " << std::to_string(tx_deferred_routine) << "\n";
+      content << "Queued      : " << std::to_string(queue_height) << "\n\n";
+      content << "Under pressure, routine traffic (announces) stands aside so interactive traffic still has budget. Locked means the limit is reached and nothing is sent. A limit of zero means enforcement is off and only accounting is running.\n";
+    }
+    else if (path == "/page/time.mu") {
+      using OS = RNS::Utilities::OS;
+      const bool known = OS::wall_time_known();
+      const uint64_t monotonic_ms = OS::monotonic_time_millis();
+      const uint64_t adopted_ms = OS::wall_time_adopted_at();
+      const uint64_t sync_age_ms = known && monotonic_ms >= adopted_ms
+          ? monotonic_ms - adopted_ms : 0;
+      content = "> Wall Time\n\n";
+      content << "Status      : " << (known ? "known" : "unknown") << "\n";
+      content << "UTC         : " << wall_time_iso8601() << "\n";
+      content << "Unix ms     : " << std::to_string(OS::wall_time_millis()) << "\n";
+      content << "Source      : " << OS::wall_time_source_name(OS::wall_time_source()) << "\n";
+      content << "Last source : " << OS::wall_time_source_name(OS::wall_time_last_live_source()) << "\n";
+      const uint64_t verified_at = OS::wall_time_verified_at();
+      const uint64_t verified_age_ms = known && monotonic_ms >= verified_at
+          ? monotonic_ms - verified_at : 0;
+      content << "Stratum     : " << (known ? std::to_string(OS::wall_time_stratum()) : "-") << "\n";
+      content << "Adopted     : " << std::to_string(sync_age_ms / 1000ULL) << " s ago\n";
+      // The number that says whether to believe the clock. "Adopted" only says
+      // when it last changed -- a node whose checks keep agreeing never adopts,
+      // so that figure grows without bound while the clock is perfect.
+      content << "Verified    : " << std::to_string(verified_age_ms / 1000ULL) << " s ago\n";
+      content << "Last advance: " << std::to_string(OS::wall_time_last_correction()) << " ms\n";
+      if (OS::wall_time_source() == OS::WallTimeSource::PERSISTED) {
+        content << "\n`!`⚠️ Restored from storage and not verified since. This is a\n";
+        content << "lower bound only: it cannot account for time spent powered off,\n";
+        content << "and drifts further behind on every restart until a live source\n";
+        content << "corrects it.`\n";
+      }
+      content << "\n";
+      // Distribution, not just the value. A node that is hearing assertions but
+      // refusing them looks exactly like one that is hearing nothing, and the
+      // difference is the whole diagnosis: no authority provisioned, a key that
+      // does not match, or a relay sitting on stale assertions.
+      {
+        const TimeBeaconStats& tb = time_beacon_stats();
+        content << ">> Signed assertions\n";
+        content << "Authorities : " << std::to_string(time_sync_authorities.size()) << "\n";
+        content << "Originating : " << (time_beacon_enabled ? "yes" : "no");
+        if (time_beacon_enabled) {
+          content << " (" << std::to_string(tb.emitted) << " emitted, every "
+                  << std::to_string(time_beacon_interval_s) << " s)";
+        }
+        content << "\n";
+        content << "Heard       : " << std::to_string(tb.heard) << "\n";
+        content << "Verified    : " << std::to_string(tb.verified) << "\n";
+        content << "Adopted     : " << std::to_string(tb.adopted) << "\n";
+        content << "Refused     : " << std::to_string(tb.refused_unlisted) << " not an authority, "
+                << std::to_string(tb.refused_signature) << " bad signature, "
+                << std::to_string(tb.refused_stale) << " stale, "
+                << std::to_string(tb.refused_rules) << " unsafe\n";
+        content << "\n";
+      }
+      content << ">> Clock-domain check\n";
+      content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";
+      content << "Reload this page: both clocks must advance normally. Adopting UTC must not reset links or make monotonic time jump.\n";
     }
     else if (path == "/page/stack.mu") {
   	  if (category == "heap") {
@@ -250,10 +402,33 @@ RNS::Bytes serve_page(
       	content << "}";
       }
       else if (category == "pool") {
-        content = "NOT YET IMPLEMENTED\n";
+        // The tuning signal for a pooled allocator. alloc_fault counts
+        // allocations the arena could not serve, which spilled to the system
+        // heap instead of failing -- non-zero means the pool is undersized,
+        // which is a size to change rather than an outage. "largest_free" is
+        // the number that actually matters: a pool with plenty free but no
+        // large contiguous block will start refusing the allocations a link
+        // setup needs, while looking healthy on free bytes alone.
+        using Mem = RNS::Utilities::Memory;
+        content = "{\n";
+        content << "  \"heap_pool_size\": " << std::to_string(Mem::heap_pool_size()) << ",\n";
+        content << "  \"heap_pool_free\": " << std::to_string(Mem::heap_pool_free()) << ",\n";
+        content << "  \"heap_pool_largest_free\": " << std::to_string(Mem::heap_pool_largest_free()) << ",\n";
+        content << "  \"heap_pool_fragmented\": " << std::to_string(Mem::heap_pool_fragmented()) << ",\n";
+        content << "  \"heap_pool_alloc_fault\": " << std::to_string(Mem::heap_pool_alloc_fault()) << ",\n";
+        content << "  \"psram_pool_size\": " << std::to_string(Mem::psram_pool_size()) << ",\n";
+        content << "  \"psram_pool_free\": " << std::to_string(Mem::psram_pool_free()) << ",\n";
+        content << "  \"psram_pool_fragmented\": " << std::to_string(Mem::psram_pool_fragmented()) << ",\n";
+        content << "}\n";
       }
       else if (category == "alloc") {
-        content = "NOT YET IMPLEMENTED\n";
+        using Mem = RNS::Utilities::Memory;
+        content = "{\n";
+        content << "  \"default_alloc\": " << std::to_string(Mem::default_allocator_alloc()) << ",\n";
+        content << "  \"default_free\": " << std::to_string(Mem::default_allocator_free()) << ",\n";
+        content << "  \"container_alloc\": " << std::to_string(Mem::container_allocator_alloc()) << ",\n";
+        content << "  \"container_free\": " << std::to_string(Mem::container_allocator_free()) << ",\n";
+        content << "}\n";
       }
       else if (category == "store") {
         uint32_t destination_path_responses = 0;
@@ -472,6 +647,9 @@ RNS::Bytes serve_page(
       content << "Scan budget : " << std::to_string(wifi_espnow_scan_budget_ms / 1000) << " s\n";
       content << "Rendezvous  : channel " << std::to_string(wifi_espnow_rendezvous_channel) << "\n";
       content << "Selected    : " << espnow_recovery_peer_mac() << "\n";
+      content << "Parent upstream: " << (espnow_peer_has_upstream() ? "yes" : "no") << "\n";
+      content << "We are upstream: " << (espnow_local_has_upstream() ? "yes" : "no") << "\n";
+      content << "Relaying    : " << (RNS::Reticulum::transport_enabled() ? "yes" : "no") << "\n";
       content << "Pinned chan : " << std::to_string(espnow_recovery_channel()) << "\n";
       content << "Scans       : " << std::to_string(espnow_recovery_scans()) << "\n";
       content << "Succeeded   : " << std::to_string(espnow_recovery_successes()) << "\n";
@@ -488,7 +666,8 @@ RNS::Bytes serve_page(
       content << "TX drops    : " << std::to_string(espnow_tx_dropped()) << "\n";
       content << "Send failures: " << std::to_string(espnow_send_failures()) << "\n";
       content << "Reassembly timeouts: " << std::to_string(espnow_reassembly_timeouts()) << "\n\n";
-      content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n";
+      content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n\n";
+      content << "A node attaches to a peer that can reach the mesh, and adopts one that cannot only after the scan budget expires with nothing better. A node with no way out of its own stops relaying while it has a parent, because every announce it repeats reaches the hub one hop longer than the copy the hub already heard, and it starts again the moment the parent is lost.\n";
     }
 #endif
 #ifdef HAS_BME

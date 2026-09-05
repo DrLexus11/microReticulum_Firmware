@@ -3,7 +3,8 @@
 The two prerequisites that block TAK, and that each pay for themselves without
 it. Neither needs a board revision.
 
-Status: **proposal, nothing implemented.** Written 2026-09-03.
+Status: **wall-time foundation implemented on `feature/wall-time`; duty-cycle
+priority remains a proposal.** Updated 2026-09-03.
 
 Related: [`TAKCapability.md`](TAKCapability.md) (the analysis that surfaced
 both), [`FeatureRoadmap.md`](FeatureRoadmap.md) item 8, and
@@ -61,17 +62,22 @@ never goes stale is worse than no marker, because it renders a team member's las
 known position as current. A gateway cannot synthesise this: only the sender
 knows when the fix was taken.
 
-## Design
+## Implemented design
 
-Keep the monotonic clock. Add an offset.
+Keep the logical/monotonic clock. Add a separate wall clock.
 
 - `millis()` remains the source for every interval, timeout and backoff. Nothing
   that measures duration should ever read wall time.
-- A `wall_offset` is set when a trusted source supplies UTC, and persisted to
-  `/time_offset` -- the file the Ozdisan partition table header already
-  anticipates and instructs operators to preserve.
-- `OS::time()` returns `uptime + wall_offset` once the offset is known, and
-  continues to report uptime with an explicit "time unknown" flag until then.
+- Existing `OS::time()` and `OS::ltime()` semantics are unchanged. Reticulum
+  Link, Resource and routing deadlines therefore cannot jump when UTC arrives.
+- New `OS::monotonic_time*()` names make the duration clock explicit, while
+  `OS::wall_time*()` is absolute UTC and returns zero while unknown.
+- A wall offset is set when a trusted source supplies UTC and is persisted in a
+  versioned `/wall_time` record. The legacy `/time_offset` remains exclusively
+  Reticulum's logical uptime checkpoint.
+- A restored wall sample is marked `persisted`: it is a monotonic lower bound,
+  since an unpowered board cannot measure the elapsed outage. A live source
+  replaces it when available.
 
 Callers must be able to ask **whether** the time is known, not just what it is.
 Every current caller that sends 0 rather than a fake timestamp is doing the right
@@ -91,6 +97,42 @@ In priority order. These are complementary, not alternatives.
 The second row is the one that matters for this product. In a real outage there
 is no NTP, but every responder carries a phone whose clock is good, and Columba
 is already peered over BLE. The node asks its identified peer.
+
+### Time crosses the mesh, not the internet
+
+Worth being explicit, because "we need NTP on the node" is the obvious wrong
+answer. NTP is an IP protocol whose accuracy model assumes a symmetric,
+low-latency path; a LoRa hop is neither, and a duty-cycle-gated one is not even
+close. Nothing about it survives the trip.
+
+What a node actually needs is a *trusted peer that says what time it is*, and an
+authenticated Reticulum Link already carries that over **any** interface --
+LoRa, ESP-NOW, BLE, UDP, TCP -- without the endpoint knowing which. Transport's
+`/time` request handler is that endpoint, and `tools/set_node_time.py` is the
+client. Accuracy is bounded by the round trip, so the client sends the midpoint
+estimate rather than the instant it sent: tenths of a second over LoRa, against
+requirements (expiry, stamp validation, CoT staleness) measured in minutes.
+
+Measured deck to Rev 1, one hop:
+
+```
+link established rtt=0.241s -- supplying 1788448202094 ms
+node replied: {'result': 'backwards', 'known': True,
+               'unix_ms': 1788448202329, 'source': 'ntp', ...}
+```
+
+Refused, and correctly: our estimate was 235 ms behind the node's own NTP clock
+and the never-backwards rule held. That two independently synchronised clocks
+agree to a quarter of a second across a Reticulum link is the number to keep.
+
+The gate is not the transport, it is trust. Every handler on the management
+destination is `ALLOW_LIST`, and **an empty allow list denies everyone** --
+before the handler runs, so the caller gets no response at all rather than a
+refusal. A node built without a way to populate that list therefore cannot be
+given time by anyone, which is exactly the state the constrained OZD build was
+in. Grant it with `tools/ifac/provision.py --port <dev> admin <identity-hash>`;
+the field is reboot-required, and the setter is applied at boot before Transport
+registers its handlers.
 
 **An RTC cannot originate time.** It only remembers what something else told it.
 It is a cold-start convenience, never the fix, and it is the only part of this
@@ -113,10 +155,25 @@ validation and the age of every position on a map. So:
 
 ## Where the work lands
 
-The offset belongs in `OS::time()`, which is **microReticulum, not this
-firmware**. That means a fork change and a library PR, as `edab7c3` was, with the
-pin bump that follows. Worth knowing before scheduling: the firmware-side work is
-small, and the library-side change gates it.
+The clock-domain split belongs in **microReticulum**, while source acquisition
+and user-visible diagnostics belong in this firmware. The library branch adds
+the APIs, persistence and authenticated `/time` request handler. The firmware
+branch adds station-only NTP, timestamp consumers, a NomadNet status page and a
+small OZD OLED UTC display. A published library commit and firmware pin bump are
+still required before merging.
+
+### Runtime validation
+
+- `/page/time.mu` reports known/unknown state, UTC, source, sync age,
+  correction, and monotonic milliseconds. Reloading it demonstrates that UTC
+  and monotonic time advance together without resetting either domain.
+- OZD boards show `HH:MM:SS` UTC in the otherwise unused middle band. While
+  UTC is unknown they show explicitly labelled uptime (`UP hh:mm`, then
+  days/hours), so isolation remains useful without presenting uptime as UTC.
+  The Wi-Fi IP view retains that band.
+- NTP runs only while configured as a connected Wi-Fi station. Acquisition is
+  polled quickly, established clocks are checked every six hours, and
+  sub-second differences are ignored to avoid flash wear.
 
 ---
 
@@ -172,12 +229,13 @@ that quietly exceeds its regional duty cycle is not shippable in the EU.
 
 ## Effort, in order
 
-1. **`wall_offset` in `OS::time()`** plus `/time_offset` persistence, and a
-   "time known" flag. Library change, then a pin bump. Small.
-2. **NTP when a station link exists.** Near-free, and makes every lab board
-   correct immediately.
-3. **Time adoption from an allow-listed client.** The disaster path, and the one
-   worth designing carefully rather than quickly.
+1. **Separate wall-time API plus `/wall_time` persistence and a known flag.**
+   Implemented in the library branch without changing `OS::time()`.
+2. **NTP when a station link exists.** Implemented in the firmware branch.
+3. **Time adoption from an allow-listed client.** Implemented end to end and
+   verified against Rev 1 over the mesh, with `tools/set_node_time.py` as the
+   client. A Columba-side caller -- so a responder's phone becomes the time
+   source without a laptop -- remains follow-up client work.
 4. **Priority classes on the transmit queue**, then set the long-term duty cycle
    to 0.01f.
 5. **GNSS** only when a node must be correct with no phone and no Wi-Fi. A module

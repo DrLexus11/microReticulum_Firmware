@@ -4,12 +4,27 @@ Whether ATAK/WinTAK situational awareness can run on this mesh, what it would
 cost in airtime, how mobility interacts with Reticulum's routing, and what the
 GP-02 GNSS module buys us beyond TAK.
 
-Status: **analysis, nothing implemented.** Written 2026-08-28.
+Status: **TAK remains analysis. Its wall-time prerequisite is now finished and
+hardware-verified** -- distribution included, which was the part that did not
+scale to a deployment. Updated 2026-09-05.
 
-Its two firmware prerequisites -- adopting wall time, and enforcing the duty
-cycle without silencing what matters -- are drafted separately in
-[`WallTimeAndDutyCycle.md`](WallTimeAndDutyCycle.md). Both are worth building
-whether or not TAK ever is.
+What that leaves is **not** the duty cycle. These boards run under approved
+laboratory conditions and are deliberately not airtime-limited: both duty-cycle
+limits compile to `0.0f`, every enforcement site is guarded on a non-zero
+limit, and the priority classes in the transmit queue are inert by choice
+rather than by defect. The regulatory constraint that will apply is on gain,
+not on time on air.
+
+So nothing prerequisite is outstanding. §7 below is the whole of what remains,
+and it can start whenever the position budget in §2 is agreed.
+
+Getting trustworthy UTC onto every node is designed in
+[`TimePropagation.md`](TimePropagation.md).
+
+Adopting wall time, and the duty-cycle machinery that was drafted alongside it,
+are in [`WallTimeAndDutyCycle.md`](WallTimeAndDutyCycle.md). The clock half is
+built. The duty-cycle half stays unenforced by policy, not by omission --
+see the status note above.
 
 ---
 
@@ -99,12 +114,13 @@ before someone discovers it in an exercise.
 
 The node has **no real-time clock**, and it has cost us repeatedly:
 
-- the LXMF propagation announce advertises **uptime** as its timebase, not wall
-  time (`docs/Messaging.md` known gaps);
+- the LXMF propagation announce previously advertised **uptime** as its
+  timebase; the wall-time branch now advertises UTC when known and zero when
+  unknown;
 - message **expiry cannot be implemented** at all, because ageing needs a clock
   -- Python expires at 30 days and we only evict on capacity;
-- RRC hub timestamps are sent as **0**, because uptime must not masquerade as
-  Unix time (`docs/RRCRequirements.md` §6).
+- RRC hub timestamps previously stayed **0**; the wall-time branch uses Unix
+  milliseconds after synchronization and preserves zero while unknown.
 
 A GNSS fix carries UTC. Wiring the module solves a problem we have deferred three
 times, independent of whether TAK is ever built. **That alone probably justifies
@@ -140,7 +156,10 @@ exposes decides the rest -- that is the one fact needed before wiring.
    Moderate; the destination and codec patterns already exist from RRC and LXMF.
 4. **Blackbox CoT gateway** in Python: receive, expand to CoT XML, serve ATAK
    over TCP/multicast. Moderate, and entirely off-device.
-5. **Rate policy and duty-cycle accounting** before any of it is used in anger.
+5. **Rate policy** before any of it is used in anger. Accounting, not
+   enforcement: the point is knowing what a node spends, so a position cadence
+   can be chosen on evidence. Airtime is not capped on these boards, and the
+   regulatory constraint that will apply is on gain.
 
 Steps 1 and 2 are worth doing on their own merits. Steps 3 to 5 are TAK proper,
 and should not start until the position budget in §2 is agreed as a product

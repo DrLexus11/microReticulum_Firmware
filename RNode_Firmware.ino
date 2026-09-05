@@ -68,6 +68,12 @@ uint32_t lxmf_announces_any();
 #include <Arduino.h>
 #include <SPI.h>
 #include "Utilities.h"
+#include "WallTime.h"
+#include "TimeSync.h"
+#include "TimeBeacon.h"
+#if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
+#include "esp_cpu.h"
+#endif
 #include "DeviceUID.h"
 #include "Platform.h"
 #include "WebSocketConsole.h"
@@ -122,6 +128,63 @@ uint16_t packet_starts_buf[CONFIG_QUEUE_MAX_LENGTH+1];
 
 FIFOBuffer16 packet_lengths;
 uint16_t packet_lengths_buf[CONFIG_QUEUE_MAX_LENGTH+1];
+
+// What each queued packet is for, so airtime can be spent on what matters when
+// there is not enough of it.
+//
+// Enforcing a duty cycle by blocking the whole queue treats a distress message
+// exactly like a position beacon -- and beaconing is precisely the workload
+// that exhausts the budget, so the traffic that caused the shortage would
+// silence the traffic that matters. The classes are coarse on purpose: the
+// modem cannot read an encrypted payload, but the Reticulum header's low two
+// bits give the packet type in the clear, which is enough to tell routine
+// routing chatter from everything else.
+#define TX_CLASS_ROUTINE   0   // announces: useful, endlessly repeated, droppable
+#define TX_CLASS_NORMAL    1   // data, links, proofs, and anything from the host
+#define TX_CLASS_CRITICAL  2   // reserved: nothing tags itself this yet
+FIFOBuffer16 packet_classes;
+uint16_t packet_classes_buf[CONFIG_QUEUE_MAX_LENGTH+1];
+
+// Fraction of the long-term limit above which routine traffic stands aside.
+// Below this everything flows; above it announces wait so that interactive
+// traffic still has budget when it is needed.
+#ifndef AIRTIME_PRESSURE_FRACTION
+#define AIRTIME_PRESSURE_FRACTION 0.75f
+#endif
+bool airtime_pressure = false;
+volatile uint32_t tx_deferred_routine = 0;
+
+// Classify an outbound Reticulum packet from its header. Type lives in the low
+// two bits of the first byte (Packet::unpack_flags), and is not encrypted.
+// A host may make the duty cycle stricter, never looser.
+//
+// Found on the bench: a node built with -DRADIO_DUTY_CYCLE_LONGTERM reported
+// its limit as 0.0000 anyway, because a client that attaches to the KISS port
+// configures the radio and commonly sends "no airtime limit" as part of
+// ordinary setup. Enforcement was therefore switched off by the first host to
+// connect, silently, on a node built to respect it. Exceeding a duty cycle is
+// illegal and degrades the band for every other user, so the compiled-in
+// regulatory value is a ceiling that a host cannot raise or clear -- it can
+// only ask for something tighter.
+// Forensics for an open bug: a node built with a regulatory limit reports it as
+// zero at runtime while the macro is demonstrably correct in this translation
+// unit. These record what the limit held once static initialisation was done,
+// and every host attempt to change it, so the writer can be identified without
+// disconnecting whatever client happens to be attached.
+float boot_lt_airtime_limit = -1.0f;
+volatile uint32_t lt_alock_writes = 0;
+float lt_alock_last_requested = -1.0f;
+
+static inline float clamp_host_airtime_limit(float requested, float regulatory) {
+  if (regulatory <= 0.0f) return requested;          // no ceiling compiled in
+  if (requested <= 0.0f) return regulatory;          // "unlimited" is not on offer
+  return (requested > regulatory) ? regulatory : requested;
+}
+
+static inline uint16_t tx_class_for_rns(const uint8_t* data, size_t length) {
+  if (data == nullptr || length < 1) return TX_CLASS_NORMAL;
+  return ((data[0] & 0b00000011) == 0x01) ? TX_CLASS_ROUTINE : TX_CLASS_NORMAL;
+}
 
 uint8_t packet_queue[CONFIG_QUEUE_SIZE];
 
@@ -264,6 +327,8 @@ protected:
 
               fifo16_push(&packet_starts, s);
               fifo16_push(&packet_lengths, l);
+              fifo16_push(&packet_classes,
+                          tx_class_for_rns(data.data(), data.size()));
 
               current_packet_start = queue_cursor;
           }
@@ -332,6 +397,8 @@ uint32_t espnow_recovery_channel_errors() { return espnow_impl ? espnow_impl->re
 uint32_t espnow_accepted_packets_in()  { return espnow_impl ? espnow_impl->accepted_packets_in() : 0; }
 uint32_t espnow_accepted_from_selected() { return espnow_impl ? espnow_impl->accepted_from_selected() : 0; }
 const char* espnow_recovery_peer_mac() { return espnow_impl ? espnow_impl->recovery_peer_mac() : ""; }
+bool espnow_peer_has_upstream()        { return espnow_impl ? espnow_impl->recovery_peer_has_upstream() : false; }
+bool espnow_local_has_upstream()       { return espnow_impl ? espnow_impl->has_upstream() : false; }
 bool espnow_request_recovery_scan(uint32_t budget_ms, uint8_t rendezvous_channel) {
   return espnow_impl ? espnow_impl->request_recovery_scan(budget_ms, rendezvous_channel) : false;
 }
@@ -676,6 +743,20 @@ static void sample_loop_stack() {
 }
 
 void setup() {
+  // Before anything can run: what did static initialisation actually leave in
+  // the airtime limit?
+  boot_lt_airtime_limit = lt_airtime_limit;
+
+  // Temporary diagnostic. The limit is correct here and zero later, with no
+  // host command and no other assignment to it anywhere in the tree, so a
+  // stray write is doing it. A hardware store-watchpoint turns that into a
+  // panic with a backtrace at the instruction responsible, which is the only
+  // way to name it without guessing. Remove once the writer is fixed.
+#if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
+  esp_cpu_set_watchpoint(0, (void*)&lt_airtime_limit, 4, ESP_WATCHPOINT_STORE);
+  printf("[duty] watchpoint armed on lt_airtime_limit @ %p\n",
+         (void*)&lt_airtime_limit);
+#endif
 
   // Initialise serial communication
   memset(serialBuffer, 0, sizeof(serialBuffer));
@@ -932,6 +1013,9 @@ void setup() {
   memset(packet_lengths_buf, 0, sizeof(packet_starts_buf));
   fifo16_init(&packet_lengths, packet_lengths_buf, CONFIG_QUEUE_MAX_LENGTH);
 
+  memset(packet_classes_buf, 0, sizeof(packet_classes_buf));
+  fifo16_init(&packet_classes, packet_classes_buf, CONFIG_QUEUE_MAX_LENGTH);
+
   #if PLATFORM == PLATFORM_ESP32 || PLATFORM == PLATFORM_NRF52 || PLATFORM == PLATFORM_NATIVE
     modem_packet_queue = xQueueCreate(MODEM_QUEUE_SIZE, sizeof(modem_packet_t*));
   #endif
@@ -1110,16 +1194,20 @@ void setup() {
       // This fixture has no Bluetooth stack to derive bt_devname from, but the
       // same buffer also names its fallback AP and DHCP host. Give lab boards
       // a stable, unmistakable identity instead of leaving that name empty.
-      // bt_devname is 11 bytes: ten characters and a NUL. A longer name is
-      // truncated silently, and two boards whose names collide after
-      // truncation are indistinguishable to a BLE client and in our own logs,
-      // so keep every unit's name within ten characters.
-      #if !defined(OZD_DEVICE_NAME)
-      #define OZD_DEVICE_NAME "OZD-ARD-01"
-      #endif
-      static_assert(sizeof(OZD_DEVICE_NAME) <= sizeof(bt_devname),
-                    "OZD_DEVICE_NAME does not fit bt_devname; keep it to ten characters");
-      snprintf(bt_devname, sizeof(bt_devname), OZD_DEVICE_NAME);
+      //
+      // Derive it from the device UID rather than a build flag. A per-unit -D
+      // means a per-unit build environment and a per-unit binary: two boards
+      // of the same model then need two builds, which does not survive past a
+      // bench. This way one image serves every unit and each still names
+      // itself uniquely, with no provisioning step needed to avoid a clash.
+      //
+      // bt_devname is 11 bytes -- ten characters and a NUL -- and a name that
+      // truncates makes two boards indistinguishable both to a BLE client and
+      // in our own logs. "OZD-" plus three UID bytes is exactly ten.
+      static_assert(sizeof(bt_devname) >= 11,
+                    "bt_devname must hold OZD-xxxxxx and its NUL");
+      snprintf(bt_devname, sizeof(bt_devname), "OZD-%02X%02X%02X",
+               device_uid[3], device_uid[4], device_uid[5]);
     #endif
 
     #if defined(NIMBLE_PEER_TRANSPORT)
@@ -1322,6 +1410,11 @@ void setup() {
       microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
       if (bl) {
         char line[96];
+        // The rail-loss distinction comes from RTC_NOINIT memory, which only
+        // the ESP32 build has; the globals holding it are defined inside that
+        // same guard. Using them unconditionally here is what broke every
+        // nRF52 board.
+#if MCU_VARIANT == MCU_ESP32
         if (boot_rail_lost) {
           snprintf(line, sizeof(line), "boot reason=%s prev=hw-reset\n",
                    boot_reset_reason);
@@ -1329,6 +1422,9 @@ void setup() {
           snprintf(line, sizeof(line), "boot reason=%s prev=%lus\n",
                    boot_reset_reason, (unsigned long)boot_prev_uptime);
         }
+#else
+        snprintf(line, sizeof(line), "boot reason=%s\n", boot_reset_reason);
+#endif
         bl.write(line);
         bl.close();
       }
@@ -1479,7 +1575,9 @@ void setup() {
 #ifdef URTN_STATS_PAGES
       // Provisioning default
 #if BOARD_MODEL == BOARD_OZDISAN_ESP32
-      snprintf(nomadnet_name, sizeof(nomadnet_name), OZD_DEVICE_NAME);
+      // Same derived identity, and Provisioning's "NomadNet Name" field can
+      // still replace it with something a human chose.
+      snprintf(nomadnet_name, sizeof(nomadnet_name), "%s", bt_devname);
 #else
       snprintf(nomadnet_name, sizeof(nomadnet_name), "microReticulum Node [%s]", device_uid_str);
 #endif
@@ -1627,13 +1725,25 @@ printf("[init] op_mode: %U\n", op_mode);
         lxmf_propagation_destination.set_link_established_callback(lxmf_link_established);
         lxmf_store_load();
 #endif
+        // Whether this node's clock can be trusted is not device telemetry --
+        // it is what any peer needs before it believes a timestamp we stamped,
+        // and what tells an operator which node to go fix. The page is
+        // read-only and carries no configuration, keys or identity, so it stays
+        // public even on production builds. Setting the clock is the privileged
+        // half, and that lives behind the allow list on Transport's /time.
+        nomadnet_destination.register_request_handler("/page/time.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+        // Same reasoning as the clock: a node's airtime posture is not a
+        // secret, and a neighbour or operator needs it to understand why the
+        // node has gone quiet.
+        nomadnet_destination.register_request_handler("/page/airtime.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
+
         // These pages expose device telemetry (heap, flash, interfaces, transport
-        // metrics). Gated to the remote-management allow list by default; a peer
-        // that has not identified is refused before serve_page is ever called,
-        // which is indistinguishable from the request never arriving. Define
-        // NOMADNET_PAGES_ALLOW_ALL to open them to any peer on the mesh -- useful
-        // for diagnosis, but it publishes device internals to everyone.
-#ifdef NOMADNET_PAGES_ALLOW_ALL
+        // and peer metrics). They are registered ALLOW_ALL and gated inside
+        // serve_page on whether the peer identified -- see page_requires_identity
+        // in Pages.h. ALLOW_LIST cannot express "any identified peer", and its
+        // refusal happens before the handler runs, so an unlisted client got no
+        // response at all rather than one saying why. Define
+        // NOMADNET_PAGES_ALLOW_ALL to drop the identity requirement as well.
         nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
         nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
@@ -1641,16 +1751,6 @@ printf("[init] op_mode: %U\n", op_mode);
 #endif
 #if defined(BLE_PEER_TRANSPORT)
         nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_ALL);
-#endif
-#else
-        nomadnet_destination.register_request_handler("/page/stack.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-        nomadnet_destination.register_request_handler("/page/device.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
-        nomadnet_destination.register_request_handler("/page/espnow.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-#endif
-#if defined(BLE_PEER_TRANSPORT)
-        nomadnet_destination.register_request_handler("/page/ble.mu", serve_page, RNS::Type::Destination::ALLOW_LIST, RNS::Transport::remote_management_allowed());
-#endif
 #endif
 #ifdef HAS_BME
         if (BME680::bme_installed) {
@@ -1668,6 +1768,12 @@ printf("[init] op_mode: %U\n", op_mode);
         }
       }
 #endif // URTN_STATS_PAGES
+
+      // Time distribution. The listening half costs nothing and is always on,
+      // because a node that cannot originate time is exactly the node that
+      // needs to hear it. The originating half only exists on a node that has
+      // been provisioned as an authority.
+      time_beacon_begin();
 
 #if defined(RRC_HUB)
       // RRC is a separate Reticulum service from NomadNet pages and LXMF.
@@ -2112,6 +2218,19 @@ void flush_queue(void) {
 
       uint16_t start = fifo16_pop(&packet_starts);
       uint16_t length = fifo16_pop(&packet_lengths);
+      uint16_t klass = fifo16_isempty(&packet_classes)
+                     ? (uint16_t)TX_CLASS_NORMAL : fifo16_pop(&packet_classes);
+
+      // Under airtime pressure routine traffic stands aside so that interactive
+      // traffic still has budget. Announces are dropped rather than deferred on
+      // purpose: they are re-sent on their own schedule, and holding stale ones
+      // to replay later spends the very airtime we are trying to protect.
+      if (klass == TX_CLASS_ROUTINE && airtime_pressure) {
+        tx_deferred_routine++;
+        queued_bytes -= length;
+        if (queue_height > 0) queue_height--;
+        continue;
+      }
 
       if (length >= MIN_L && length <= MTU) {
         for (uint16_t i = 0; i < length; i++) {
@@ -2152,7 +2271,12 @@ void pop_queue() {
 
       uint16_t start = fifo16_pop(&packet_starts);
       uint16_t length = fifo16_pop(&packet_lengths);
-      if (length >= MIN_L && length <= MTU) {
+      uint16_t klass = fifo16_isempty(&packet_classes)
+                     ? (uint16_t)TX_CLASS_NORMAL : fifo16_pop(&packet_classes);
+      // Same rule as flush_queue: routine traffic stands aside under pressure.
+      const bool send = !(klass == TX_CLASS_ROUTINE && airtime_pressure);
+      if (!send) tx_deferred_routine++;
+      if (send && length >= MIN_L && length <= MTU) {
         for (uint16_t i = 0; i < length; i++) {
           uint16_t pos = (start+i)%CONFIG_QUEUE_SIZE;
           tbuf[i] = packet_queue[pos];
@@ -2347,6 +2471,9 @@ void serial_callback(uint8_t sbyte) {
             queue_height++;
             fifo16_push(&packet_starts, s);
             fifo16_push(&packet_lengths, l);
+            // Host traffic is never classed routine: we cannot see inside it,
+            // and guessing wrong here means dropping something deliberate.
+            fifo16_push(&packet_classes, TX_CLASS_NORMAL);
             current_packet_start = queue_cursor;
         }
     }
@@ -2545,12 +2672,13 @@ void serial_callback(uint8_t sbyte) {
         if (frame_len == 2) {
           uint16_t at = (uint16_t)cmdbuf[0] << 8 | (uint16_t)cmdbuf[1];
 
-          if (at == 0) {
-            st_airtime_limit = 0.0;
-          } else {
-            st_airtime_limit = (float)at/(100.0*100.0);
-            if (st_airtime_limit >= 1.0) { st_airtime_limit = 0.0; }
+          float requested = 0.0f;
+          if (at != 0) {
+            requested = (float)at/(100.0*100.0);
+            if (requested >= 1.0f) { requested = 0.0f; }
           }
+          st_airtime_limit = clamp_host_airtime_limit(requested,
+                                                      RADIO_DUTY_CYCLE_SHORTTERM);
           kiss_indicate_st_alock();
         }
     } else if (command == CMD_LT_ALOCK) {
@@ -2568,12 +2696,15 @@ void serial_callback(uint8_t sbyte) {
         if (frame_len == 2) {
           uint16_t at = (uint16_t)cmdbuf[0] << 8 | (uint16_t)cmdbuf[1];
 
-          if (at == 0) {
-            lt_airtime_limit = 0.0;
-          } else {
-            lt_airtime_limit = (float)at/(100.0*100.0);
-            if (lt_airtime_limit >= 1.0) { lt_airtime_limit = 0.0; }
+          float requested = 0.0f;
+          if (at != 0) {
+            requested = (float)at/(100.0*100.0);
+            if (requested >= 1.0f) { requested = 0.0f; }
           }
+          lt_alock_writes++;
+          lt_alock_last_requested = requested;
+          lt_airtime_limit = clamp_host_airtime_limit(requested,
+                                                      RADIO_DUTY_CYCLE_LONGTERM);
           kiss_indicate_lt_alock();
         }
     } else if (command == CMD_STAT_RX) {
@@ -3679,9 +3810,10 @@ static void heap_watch() {
   // Duty-cycle headroom and BLE state. Both are otherwise invisible: a node
   // silenced by airtime_lock looks exactly like one with nothing to say, and
   // BLE has no status output at all.
-  printf("[duty] longterm=%.4f limit=%.4f locked=%d | [ble] state=%d\n",
+  printf("[duty] longterm=%.4f limit=%.4f locked=%d pressure=%d routine_dropped=%lu | [ble] state=%d\n",
          (double)longterm_airtime, (double)lt_airtime_limit,
-         (int)airtime_lock, (int)bt_state);
+         (int)airtime_lock, (int)airtime_pressure,
+         (unsigned long)tx_deferred_routine, (int)bt_state);
   size_t total = RNS::Utilities::Memory::heap_size();
   size_t avail = RNS::Utilities::Memory::heap_available();
   // Guarded on UDP_TRANSPORT, not HAS_WIFI: the counters are defined in
@@ -3761,6 +3893,65 @@ static void heap_watch() {
          (unsigned)RNS::Transport::path_table_maxsize());
 #endif
 }
+#endif
+
+#if HAS_WIFI == true && defined(UDP_TRANSPORT)
+// A station reporting WL_CONNECTED is not necessarily on the network.
+//
+// Observed 2026-09-04: Rev 1 printed "[WiFi] status: 3" twice a second for
+// twenty minutes while unreachable from two separate interfaces on the same
+// LAN, and its ARP entry went stale. Every recovery path in Remote.h is gated
+// on status != WL_CONNECTED, so not one of them could fire. A node that
+// believes it is online is worse than one that knows it is not, because it
+// never tries to fix itself -- and it takes down everything meshed behind it,
+// which is what happened to both leaves.
+//
+// So trust traffic, not the driver. If we are transmitting and nothing at all
+// comes back for long enough, the path is dead whatever the driver claims.
+// When both directions are quiet the mesh is merely idle and there is nothing
+// to act on; that distinction is what keeps this from firing on a healthy but
+// unused node.
+#ifndef WIFI_LIVENESS_POLL_MS
+#define WIFI_LIVENESS_POLL_MS 15000UL
+#endif
+#ifndef WIFI_LIVENESS_TIMEOUT_MS
+#define WIFI_LIVENESS_TIMEOUT_MS 240000UL
+#endif
+
+static void wifi_liveness_watch() {
+  static uint32_t last_poll_ms = 0;
+  static size_t last_rx = 0;
+  static size_t last_tx = 0;
+  static uint32_t deaf_since_ms = 0;
+
+  if (!wifi_initialized || wifi_mode != WR_WIFI_STA) { deaf_since_ms = 0; return; }
+  if (wifi_ap_fallback_active) { deaf_since_ms = 0; return; }
+  if (WiFi.status() != WL_CONNECTED) { deaf_since_ms = 0; return; }
+
+  const uint32_t now = millis();
+  if (last_poll_ms != 0 && (uint32_t)(now - last_poll_ms) < WIFI_LIVENESS_POLL_MS) return;
+  last_poll_ms = now;
+
+  const size_t rx = udp_interface.rx();
+  const size_t tx = udp_interface.tx();
+  const bool heard = (rx != last_rx);
+  const bool spoke = (tx != last_tx);
+  last_rx = rx;
+  last_tx = tx;
+
+  if (heard || !spoke) { deaf_since_ms = 0; return; }
+  if (deaf_since_ms == 0) { deaf_since_ms = now; return; }
+  if ((uint32_t)(now - deaf_since_ms) < WIFI_LIVENESS_TIMEOUT_MS) return;
+
+  printf("[WiFi] connected but deaf for %lums while still transmitting -- "
+         "reinitialising the station\n", (unsigned long)(now - deaf_since_ms));
+  deaf_since_ms = 0;
+  last_poll_ms = 0;
+  wifi_sta_failing_since = millis();
+  wifi_remote_init();
+}
+#else
+static void wifi_liveness_watch() {}
 #endif
 
 void loop() {
@@ -3858,6 +4049,13 @@ void loop() {
       airtime_lock = false;
       if (st_airtime_limit != 0.0 && airtime >= st_airtime_limit) airtime_lock = true;
       if (lt_airtime_limit != 0.0 && longterm_airtime >= lt_airtime_limit) airtime_lock = true;
+      // Back routine traffic off before the hard limit, not at it. Reaching
+      // airtime_lock means everything stops; the point of pressure is to make
+      // that far less likely by spending the last quarter of the budget on
+      // traffic that cannot simply be sent again later.
+      airtime_pressure = airtime_lock ||
+          (lt_airtime_limit != 0.0 &&
+           longterm_airtime >= lt_airtime_limit * AIRTIME_PRESSURE_FRACTION);
 
     #elif MCU_VARIANT == MCU_NRF52
       LoRa->handleDio0IfPending();
@@ -3880,6 +4078,13 @@ void loop() {
       airtime_lock = false;
       if (st_airtime_limit != 0.0 && airtime >= st_airtime_limit) airtime_lock = true;
       if (lt_airtime_limit != 0.0 && longterm_airtime >= lt_airtime_limit) airtime_lock = true;
+      // Back routine traffic off before the hard limit, not at it. Reaching
+      // airtime_lock means everything stops; the point of pressure is to make
+      // that far less likely by spending the last quarter of the budget on
+      // traffic that cannot simply be sent again later.
+      airtime_pressure = airtime_lock ||
+          (lt_airtime_limit != 0.0 &&
+           longterm_airtime >= lt_airtime_limit * AIRTIME_PRESSURE_FRACTION);
 
     #endif
 
@@ -3936,6 +4141,12 @@ void loop() {
 
   #if HAS_WIFI
     if (wifi_initialized) update_wifi();
+    wifi_liveness_watch();
+    wall_time_update();
+  #endif
+  #ifdef HAS_RNS
+    time_sync_loop();
+    time_beacon_loop();
   #endif
 
   #if HAS_INPUT

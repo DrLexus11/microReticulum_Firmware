@@ -232,9 +232,54 @@ void wifi_build_ap_ssid() {
 }
 
 // Raise our own AP because the configured network is unreachable or absent.
+// Wi-Fi power save costs far more than it saves on a node like this.
+//
+// A station in the Arduino default (WIFI_PS_MIN_MODEM) sleeps between DTIM
+// beacons, so an inbound frame waits for the next wake. Measured against Rev 1
+// on the bench: ICMP min 2.7 ms, avg 53 ms, max 183 ms -- and a Reticulum link
+// handshake is several round trips, each paying that toll, which is most of
+// the 0.38 s link setup we were seeing on a LAN.
+//
+// For ESP-NOW it is not a latency question but a correctness one. ESP-NOW has
+// no buffering for a sleeping peer: a unicast frame is retried by the MAC, but
+// a broadcast that arrives while the radio is down is simply gone. A hub that
+// sleeps drops its orphans' traffic on the floor.
+//
+// The cost is a few tens of milliamps on a mains-powered node.
+//
+// But it is not ours to spend when Bluetooth is also up. Wi-Fi and BT share
+// one 2.4 GHz radio on the ESP32 and their coexistence scheduler is built on
+// the modem-sleep slices, so ESP-IDF does not merely warn -- it aborts at
+// Wi-Fi init:
+//
+//   E wifi: Error! Should enable WiFi modem sleep when both WiFi and
+//           Bluetooth are enabled!!!!!!
+//   abort() was called
+//
+// which is a boot loop, verified the hard way on both Rev 1 and the OZD
+// fixture. So this is available only to a node that is not running Bluetooth,
+// and choosing between BLE and a low-latency ESP-NOW mesh on one ESP32 is a
+// real product decision, not a tuning flag. See docs/ESPNowPeerProtocol.md.
+#ifndef WIFI_NO_POWER_SAVE
+  #if defined(ESPNOW_TRANSPORT) && !defined(BLE_PEER_TRANSPORT) && \
+      !defined(NIMBLE_PEER_TRANSPORT) && HAS_BLUETOOTH == false && HAS_BLE == false
+    #define WIFI_NO_POWER_SAVE 1
+  #else
+    #define WIFI_NO_POWER_SAVE 0
+  #endif
+#endif
+
+inline void wifi_apply_power_save_policy() {
+#if WIFI_NO_POWER_SAVE
+  WiFi.setSleep(false);
+  printf("[WiFi] power save disabled (mesh node, no Bluetooth)\n");
+#endif
+}
+
 void wifi_remote_start_ap_fallback() {
 	wifi_build_ap_ssid();
 	WiFi.mode(WIFI_AP);
+	wifi_apply_power_save_policy();
 	if (wifi_ap_psk[0] != 0) { WiFi.softAP(wifi_ap_ssid, wifi_ap_psk, wr_channel); }
 	else                     { WiFi.softAP(wifi_ap_ssid, NULL, wr_channel); }
 	delay(150);
@@ -280,6 +325,7 @@ void wifi_remote_start_ap_fallback() {
 
 void wifi_remote_start_ap() {
   WiFi.mode(WIFI_AP);
+  wifi_apply_power_save_policy();
   if (wr_ssid[0] != 0x00) {
     if (wr_psk[0] != 0x00) { WiFi.softAP(wr_ssid, wr_psk, wr_channel); }
     else                   { WiFi.softAP(wr_ssid, NULL, wr_channel); }
@@ -294,6 +340,7 @@ void wifi_remote_start_ap() {
 
 void wifi_remote_start_sta() {
   WiFi.mode(WIFI_STA);
+  wifi_apply_power_save_policy();
 
   uint8_t ip[4]; bool ip_ok = true;
   for (uint8_t i = 0; i < 4; i++) { ip[i]  = EEPROM.read(config_addr(ADDR_CONF_IP+i)); }

@@ -69,6 +69,11 @@ Discovery is a single 16-byte payload containing, in order: LoRa PHY hash
 current WiFi channel, and capability flags. It is emitted every 10 seconds plus
 up to two seconds of jitter. A peer remains recent for 45 seconds.
 
+Capability flags: `0x01` LoRa fitted, `0x02` acts as a Reticulum transport,
+`0x04` can produce an IFAC admission proof, `0x08` has a route to the mesh that
+does not go back out through ESP-NOW. Only `0x04` is authenticated; the rest are
+advisory, and `0x08` is used solely to rank candidate parents -- see below.
+
 Discovery data is unauthenticated and advisory. It exists to show an operator
 that a nearby radio uses a different LoRa PHY. This implementation never
 applies a PHY change from a discovery frame.
@@ -90,11 +95,125 @@ rendezvous channel and 260 ms on each other channel, repeating until its
 provisioned budget expires. Every hop uses a fresh nonce. Responders add 20-100
 ms jitter so several nearby RADs do not reply in lockstep.
 
-The first valid response pins the channel and peer for 45 seconds. A discovery
-from that MAC or a complete Reticulum packet from it that passes the interface's
-IFAC handling refreshes the lease. Merely receiving an ESP-NOW data frame does
-not. Expiry marks recovery failed so the established fallback logic can raise
-SoftAP.
+A response that sets `CAP_UPSTREAM` pins the channel and peer for 45 seconds.
+One that does not is held as a fallback and the scan continues; it is adopted
+only when the budget expires with nothing better -- being reachable badly still
+beats not being reachable. A discovery from the pinned MAC, or a complete
+Reticulum packet from it that passes the interface's IFAC handling, refreshes
+the lease. Merely receiving an ESP-NOW data frame does not. Expiry marks
+recovery failed so the established fallback logic can raise SoftAP.
+
+## Choosing a parent, and who is allowed to repeat
+
+Taking the **first** valid response was the original behaviour, and it does not
+survive a third node. Two orphans in range of each other both advertise
+`CAP_TRANSPORT` and both prove IFAC, so each looks exactly as good as the hub,
+and they are as likely to adopt each other as to adopt it. A node cannot route
+through a peer that has no route itself.
+
+Reticulum does not correct this afterwards. It learns paths from announces by
+**hop count alone**, keeps whichever copy of an announce arrives first, and
+never re-evaluates -- it is an overlay for heterogeneous transports, not a radio
+routing protocol. Observed directly: OZD-02, one hop from the hub, was recorded
+three hops away through a sibling, and Links across that chain would not
+establish. So the topology has to be honest to begin with; the router will not
+make it so.
+
+`CAP_UPSTREAM` means "I can reach the mesh without going back out through
+ESP-NOW" -- true for a LoRa-equipped node, or one associated to infrastructure
+Wi-Fi, and never true for the deliberately unconfigured fixtures. Two rules
+follow:
+
+1. **Prefer a peer that sets it**, and take one that does not only as a last
+   resort.
+2. **A node that does not set it stops relaying while it has a parent.** Every
+   announce it repeats reaches the hub one hop longer than the copy the hub
+   already heard directly, and costs a duplicate flood to produce it. The
+   moment the parent is lost this reverses -- it is then the only thing keeping
+   its neighbours reachable -- so the policy is re-applied on both transitions.
+   Nodes that are themselves a way out are never touched by it.
+
+### Where this sits against the literature
+
+The problem is ordinary and well studied; the useful part is which idea is
+worth borrowing at this scale.
+
+| Protocol | Mechanism | Relation to the above |
+| --- | --- | --- |
+| **RPL** | *Rank* -- distance to root, must strictly improve when choosing a parent | `CAP_UPSTREAM` is rank reduced to one bit |
+| **batman-adv** | *TQ* from OGM reception ratios; best next hop by link quality, re-evaluated continuously | What we would need if hop count alone stopped being good enough |
+| **Babel** | Distance-vector with a *feasibility condition*; loop-free without full path knowledge | The rule to adopt if re-parenting ever becomes dynamic |
+| **OLSR** | *MPR* -- only a covering subset of neighbours rebroadcasts | Rule 2 is the degenerate case: the covering set of a hub-and-spoke is the hub |
+| **Meshtastic** | SNR-weighted rebroadcast delay, cancelled on overhearing | The next step if multi-hop ESP-NOW is ever wanted |
+
+The common property is that **none of them let first-arrival decide.** Each
+either measures the link, ranks candidates by distance to a root, or elects who
+may repeat. One bit buys the third of those, which is the one this topology
+needs; the others stay available if the shape of the network changes.
+
+## Reliability and latency: what was measured
+
+Bench measurements, 2026-09-03, deck to node, six or more Reticulum link
+setups plus one page fetch each:
+
+| Target | Path | Link setup (median) | Page fetch (median) | Failures |
+| --- | --- | ---: | ---: | ---: |
+| Rev 1 | deck -> UDP | **0.37 s** | 0.83 s | **0 / 10** |
+| OZD-02 | deck -> UDP -> ESP-NOW | **1.45 s** | 3.4 s | **3 / 6 and worse** |
+
+Two separate problems sit behind those numbers.
+
+### Wi-Fi power save, and why we cannot simply turn it off
+
+ICMP to Rev 1 measures min 2.7 ms, avg 53 ms, **max 183 ms**. That distribution
+is not a network; it is a station sleeping between DTIM beacons and answering on
+the next wake. A Reticulum link handshake is several round trips and pays the
+toll on each, which is most of the 0.37 s setup seen on a quiet LAN.
+
+For ESP-NOW it is worse than latency. ESP-NOW has no buffering for a sleeping
+peer: a unicast frame is retried by the 802.11 MAC until the peer wakes, but a
+**broadcast that lands while the radio is down is simply gone**.
+
+The obvious fix is not available. Wi-Fi and Bluetooth share one 2.4 GHz radio
+on the ESP32 and their coexistence scheduler is built on the modem-sleep slices,
+so ESP-IDF does not warn -- it aborts at Wi-Fi init:
+
+```
+E wifi: Error! Should enable WiFi modem sleep when both WiFi and Bluetooth
+        are enabled!!!!!!
+abort() was called
+```
+
+Verified the hard way: both Rev 1 and the OZD fixture went into a boot loop.
+`WIFI_NO_POWER_SAVE` in `Remote.h` therefore compiles in only for a node with
+no Bluetooth, which today is none of ours. **Choosing between BLE and a
+low-latency ESP-NOW mesh on one ESP32 is a product decision, not a tuning
+flag.** A hub that dropped Bluetooth would get both lower latency and fewer
+lost ESP-NOW frames; the cost is the BLE peer transport on that board.
+
+### The downstream direction is unacknowledged
+
+A node pinned to a parent unicasts to it, so upstream traffic is ACKed and
+retried in hardware. The hub is not pinned to anything and has several peers,
+so **everything it sends downstream is broadcast** -- unacknowledged, one
+attempt, and the strictly sequential reassembler discards a whole packet when
+any fragment of it is lost. Announces from a leaf therefore arrive reliably
+while the hub's replies do not, which is exactly the observed shape: paths stay
+fresh and links fail to establish.
+
+Naive per-peer unicast fan-out was tried and **made it worse** (6/8 failures
+against 3/6). The sender is strictly one frame in flight, serviced once per
+firmware loop, so addressing peers in turn multiplies head-of-line blocking:
+one slow or absent peer stalls the queue for every other. It was reverted. Any
+future attempt needs the send path to stop being serial first, or to skip peers
+that are failing, rather than simply addressing more of them.
+
+Not yet isolated: OZD-02 performs markedly worse than OZD-01 on the same
+channel, at the same hop count, from the same parent -- and neither the relay
+policy (tested by neutralising it) nor the fan-out explains it. OZD-02 is the
+unit attached by USB to the machine running the tests, which is a well-known
+2.4 GHz desense arrangement, so the RF environment is the first thing to rule
+out before more code is written.
 
 ## Security
 
