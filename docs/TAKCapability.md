@@ -4,8 +4,15 @@ Whether ATAK/WinTAK situational awareness can run on this mesh, what it would
 cost in airtime, how mobility interacts with Reticulum's routing, and what the
 GP-02 GNSS module buys us beyond TAK.
 
-Status: **TAK remains analysis; its wall-time prerequisite is implemented on
-`feature/wall-time`.** Updated 2026-09-03.
+Status: **TAK remains analysis. Its wall-time prerequisite is now finished and
+hardware-verified** -- distribution included, which was the part that did not
+scale to a deployment. Updated 2026-09-05.
+
+What that leaves: the duty-cycle prerequisite, which is drafted but not
+enforced. Priority classes are in the transmit queue and inert, because the
+airtime limit reads back as zero and enabling enforcement on a limit of zero
+would silence the radio. That is the blocker to clear before any of §7 below
+starts, not the clock.
 
 Getting trustworthy UTC onto every node is designed in
 [`TimePropagation.md`](TimePropagation.md).
