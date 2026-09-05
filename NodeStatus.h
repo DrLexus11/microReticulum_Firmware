@@ -139,6 +139,11 @@ struct NodeStatusView {
   // that is right and a time that is merely restored look identical otherwise,
   // and only one of them should be trusted.
   const char* time_source = "";
+  // Adopted from a live source rather than restored from storage. A restored
+  // clock is a lower bound that drifts further behind on every reboot and can
+  // account for none of the time spent powered off, so it is not a clock --
+  // showing it beside a protocol name would dress it up as one.
+  bool time_current = false;
 
   uint16_t peers = 0;
   // Distinct identities heard, not path-table entries. See NODE_CENSUS_NODE.

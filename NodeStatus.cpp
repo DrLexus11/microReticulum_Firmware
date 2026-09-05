@@ -219,6 +219,8 @@ NodeStatusView node_status() {
   s.time_known = OS::wall_time_known();
   s.stratum = OS::wall_time_stratum();
   s.unix_ms = OS::wall_time_millis();
+  s.time_current = s.time_known &&
+                   OS::wall_time_source() != OS::WallTimeSource::PERSISTED;
   switch (OS::wall_time_source()) {
     case OS::WallTimeSource::NTP:                  s.time_source = "NTP"; break;
     case OS::WallTimeSource::GNSS:                 s.time_source = "GPS"; break;

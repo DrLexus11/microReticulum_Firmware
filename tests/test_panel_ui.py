@@ -200,6 +200,39 @@ class PanelLayoutTests(unittest.TestCase):
         self.assertIn("GFXcanvas1 canvas", band)
         self.assertIn("drawBitmap(0, UI_FOOT_BAND_Y", band)
 
+    def test_a_stale_clock_shows_uptime_not_a_time(self):
+        # "OLD 18:51" is worse than no clock: a plausible time on the glass
+        # with the lie in three characters that are easy to stop seeing.
+        main = self.ui[self.ui.index("inline void ui_draw_main("):
+                       self.ui.index("// --- pages 2-4")]
+        self.assertIn("if (s.time_current)", main)
+        self.assertIn('"UP %s"', main)
+        status = source("NodeStatus.cpp")
+        self.assertIn("WallTimeSource::PERSISTED", status)
+
+    def test_the_clock_shows_it_is_ticking(self):
+        # Ten characters fit beside the badges and "NTP 18:51:22z" is
+        # thirteen, so the protocol name wins and the colon carries the
+        # liveliness -- as every digital clock has since they were invented.
+        main = self.ui[self.ui.index("inline void ui_draw_main("):
+                       self.ui.index("// --- pages 2-4")]
+        self.assertIn("tick ? ':' : ' '", main)
+        # The seconds go where a whole line is free.
+        build = self.ui[self.ui.index("inline uint8_t ui_footer_build("):
+                        self.ui.index("inline void ui_footer_draw_slot(")]
+        self.assertIn("utc.tm_sec", build)
+
+    def test_the_clock_fits_beside_the_badges(self):
+        # Four badges from the left margin, then the widest clock string.
+        badge_px = 4 * (2 * CELL_WIDTH + 1) + 3 * define(self.ui, "UI_BADGE_GAP")
+        free = (PANEL_WIDTH - define(self.ui, "UI_MARGIN")) - (
+            define(self.ui, "UI_MARGIN") + badge_px)
+        for text in ("NTP 18:51z", "UP 21h48m"):
+            self.assertLessEqual(
+                len(text) * CELL_WIDTH, free,
+                "%r needs %dpx of the %dpx beside the badges"
+                % (text, len(text) * CELL_WIDTH, free))
+
     def test_the_footer_only_offers_slots_that_apply(self):
         # A board with no ESP-NOW fitted should not cycle through empty frames
         # about it, and "idle" every four seconds is noise.

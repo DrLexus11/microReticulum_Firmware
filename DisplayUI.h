@@ -218,11 +218,26 @@ inline uint8_t ui_footer_build(const NodeStatusView& s, UiFooterSlot* slots) {
     }
   }
 
+  // The footer has a whole line, so this is where the seconds go: a second
+  // hand ticking once a second is the clearest evidence a panel is alive and
+  // not a frozen frame, and there is no room for it beside the badges.
   UiFooterSlot& clock = slots[count++];
-  if (s.time_known) {
-    snprintf(clock.left, sizeof(clock.left), "UTC %s",
-             s.time_source && s.time_source[0] ? s.time_source : "?");
-    snprintf(clock.right, sizeof(clock.right), "STRATUM %u", (unsigned)s.stratum);
+  if (s.time_current) {
+    const time_t seconds = (time_t)(s.unix_ms / 1000ULL);
+    struct tm utc {};
+    if (gmtime_r(&seconds, &utc) != nullptr) {
+      snprintf(clock.left, sizeof(clock.left), "UTC %02d:%02d:%02d",
+               utc.tm_hour, utc.tm_min, utc.tm_sec);
+    } else {
+      snprintf(clock.left, sizeof(clock.left), "UTC --:--:--");
+    }
+    snprintf(clock.right, sizeof(clock.right), "%s S%u",
+             s.time_source && s.time_source[0] ? s.time_source : "?",
+             (unsigned)s.stratum);
+  } else if (s.time_known) {
+    // Known but restored: say which, rather than showing the number.
+    snprintf(clock.left, sizeof(clock.left), "UTC STALE");
+    snprintf(clock.right, sizeof(clock.right), "FROM DISK");
   } else {
     snprintf(clock.left, sizeof(clock.left), "UTC");
     snprintf(clock.right, sizeof(clock.right), "UNKNOWN");
@@ -320,34 +335,37 @@ inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t p
   ix = ui_badge(d, ix, UI_Y_IFACE, "EN", ui_badge_state(s.espnow_present, s.espnow_active));
   (void)ix;
 
-  // Network time, or an honest absence. A clock quietly showing uptime where
-  // UTC belongs is worse than one that admits it has none.
-  if (s.time_known) {
+  // The clock, but only when there is one.
+  //
+  // A restored clock shown as "OLD 18:51" is worse than no clock: it puts a
+  // plausible time on the glass and labels the lie in three characters that
+  // are easy to stop seeing. When the time is not current this shows uptime
+  // instead, which is true, useful, and cannot be mistaken for UTC.
+  //
+  // Ten characters fit beside the badges, so a protocol name and seconds
+  // cannot both go here -- "NTP 18:51:22z" is thirteen. The protocol name
+  // wins, because knowing a clock came from NTP rather than a relayed beacon
+  // is worth more at a glance than its second hand, and the seconds are on the
+  // footer's UTC slot where a whole line is free. Liveliness comes from the
+  // colon instead: it blinks at 1Hz exactly as every digital clock has since
+  // they were invented, which says "this is ticking" without costing a pixel.
+  if (s.time_current) {
     const time_t seconds = (time_t)(s.unix_ms / 1000ULL);
     struct tm utc {};
+    const bool tick = ((millis() / 500UL) % 2UL) == 0UL;
     if (gmtime_r(&seconds, &utc) != nullptr) {
-      snprintf(buf, sizeof(buf), "%02d:%02dz", utc.tm_hour, utc.tm_min);
+      snprintf(buf, sizeof(buf), "%s %02d%c%02dz",
+               s.time_source && s.time_source[0] ? s.time_source : "UTC",
+               utc.tm_hour, tick ? ':' : ' ', utc.tm_min);
     } else {
       snprintf(buf, sizeof(buf), "--:--z");
     }
   } else {
-    snprintf(buf, sizeof(buf), "NO UTC");
+    char uptime_text[10];
+    ui_format_uptime(uptime_text, sizeof(uptime_text), s.uptime_s);
+    snprintf(buf, sizeof(buf), "UP %s", uptime_text);
   }
   ui_right_text(d, UI_X_RIGHT_EDGE, UI_Y_IFACE, buf);
-
-  // Where the clock came from, in the design's "NTC" slot but naming the
-  // actual provenance. A clock restored from storage and one disciplined by
-  // NTP read identically otherwise, and only one of them is worth trusting --
-  // which is the whole argument the time work has been making.
-  if (s.time_known && s.time_source && s.time_source[0]) {
-    // Plain text, as the design has "NTC": the badge row is already carrying
-    // four inverted blocks and a fifth turns the row into noise. This is a
-    // label on the clock, not another piece of hardware.
-    const int tag_x = UI_X_RIGHT_EDGE - (int)strlen(buf) * UI_COL
-                      - UI_BADGE_GAP - (int)strlen(s.time_source) * UI_COL;
-    d.setCursor(tag_x, UI_Y_IFACE);
-    d.print(s.time_source);
-  }
 
   d.drawFastHLine(0, UI_Y_RULE_MID, d.width(), SSD1306_WHITE);
 
