@@ -167,11 +167,46 @@ class PanelLayoutTests(unittest.TestCase):
     def test_trouble_inverts_the_whole_footer(self):
         # The one thing on this panel readable across a room without reading
         # it: a white bar along the bottom means go and look.
-        main = self.ui[self.ui.index("inline void ui_draw_main("):
-                       self.ui.index("// --- pages 2-4")]
-        self.assertIn("const bool trouble", main)
-        self.assertIn("fillRect(0, UI_Y_RULE_BOT + 1", main)
-        self.assertIn("SSD1306_BLACK", main)
+        band = self.ui[self.ui.index("inline void ui_draw_footer_band("):
+                       self.ui.index("// --- page 1: main status")]
+        self.assertIn("const bool trouble", band)
+        self.assertIn("canvas.fillScreen(trouble ? 1 : 0)", band)
+
+    def test_the_alarm_does_not_cycle_with_the_content(self):
+        # A status light that blinks the problem away every few seconds is
+        # worse than one that never lit. The background is set from `trouble`
+        # once per draw, outside the slot selection.
+        band = self.ui[self.ui.index("inline void ui_draw_footer_band("):
+                       self.ui.index("// --- page 1: main status")]
+        alarm = band.index("canvas.fillScreen(trouble ? 1 : 0)")
+        # Every slot is drawn after the background is laid down, so all of them
+        # inherit it.
+        self.assertLess(alarm, band.index("ui_footer_draw_slot"))
+
+    def test_the_footer_rolls_one_pixel_per_frame(self):
+        # A pixel is the smallest step this display has, so a 1px roll is the
+        # smoothest motion it can produce; interpolating between pixel
+        # positions could only add stutter.
+        band = self.ui[self.ui.index("inline void ui_draw_footer_band("):
+                       self.ui.index("// --- page 1: main status")]
+        self.assertIn("st.roll++", band)
+        self.assertIn("st.roll >= UI_FOOT_BAND_H", band)
+
+    def test_the_rolling_footer_is_clipped_to_its_band(self):
+        # Drawn straight onto the panel, the outgoing line would smear up
+        # through the body rows. Blitting an offscreen canvas is what clips it.
+        band = self.ui[self.ui.index("inline void ui_draw_footer_band("):
+                       self.ui.index("// --- page 1: main status")]
+        self.assertIn("GFXcanvas1 canvas", band)
+        self.assertIn("drawBitmap(0, UI_FOOT_BAND_Y", band)
+
+    def test_the_footer_only_offers_slots_that_apply(self):
+        # A board with no ESP-NOW fitted should not cycle through empty frames
+        # about it, and "idle" every four seconds is noise.
+        build = self.ui[self.ui.index("inline uint8_t ui_footer_build("):
+                        self.ui.index("inline void ui_footer_draw_slot(")]
+        self.assertIn("if (s.espnow_present)", build)
+        self.assertIn("interesting", build)
 
     def test_an_inactive_badge_is_not_boxed(self):
         # Boxing the inactive badges too made the row read as one blob on

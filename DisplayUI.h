@@ -128,6 +128,164 @@ inline void ui_pair(Adafruit_SSD1306& d, int x, int right_edge, int y,
   ui_right_text(d, right_edge, y, value);
 }
 
+// --- the footer, which is the only part of this panel that moves -------------
+//
+// A still panel hides the state that changes. On a board whose only way back
+// to the mesh is a channel sweep, "scanning channel 7" and "attached on 9" are
+// the difference between waiting and intervening, and neither fits beside the
+// health summary.
+//
+// So the footer cycles. Four seconds a slot, then the outgoing line rolls up
+// and out while the incoming one rolls in beneath it -- the departure-board
+// idiom, which people read without being taught.
+//
+// One pixel per rendered frame, deliberately. The panel refreshes at 7fps and
+// a pixel is the smallest step this display has, so a 1px roll is the smoothest
+// motion it can physically produce; easing between pixel positions would only
+// add stutter. Ten pixels of band at 7fps is a roll of about 1.4 seconds,
+// which reads as unhurried rather than twitchy beside a bed.
+//
+// The alarm does not cycle. When something is wrong the whole band stays
+// inverted through every slot, so the warning is continuous while the detail
+// underneath it rotates. A status light that blinks away the problem every few
+// seconds is worse than one that never lit.
+
+#define UI_FOOT_BAND_Y  (UI_Y_RULE_BOT + 1)
+#define UI_FOOT_BAND_H  (64 - UI_Y_RULE_BOT - 1)
+#define UI_FOOT_HOLD_MS 4000UL
+#define UI_FOOT_SLOTS   4
+
+struct UiFooterSlot {
+  char left[16];
+  char right[12];
+  bool used;
+};
+
+struct UiFooterState {
+  uint8_t current = 0;
+  uint8_t next = 0;
+  int8_t roll = -1;            // -1 while holding, else pixels rolled so far
+  uint32_t held_since = 0;
+};
+
+inline UiFooterState& ui_footer_state() {
+  static UiFooterState state;
+  return state;
+}
+
+// Build the slots that apply to this node. A board with no ESP-NOW fitted
+// should not cycle through two empty frames about it.
+inline uint8_t ui_footer_build(const NodeStatusView& s, UiFooterSlot* slots) {
+  uint8_t count = 0;
+
+  // Always first: is this thing working.
+  UiFooterSlot& health = slots[count++];
+  snprintf(health.left, sizeof(health.left), "%s", s.mesh_on ? "MESH ON" : "NO MESH");
+  if (s.interfaces_ok) {
+    snprintf(health.right, sizeof(health.right), "ALL OK");
+  } else {
+    snprintf(health.right, sizeof(health.right), "%s DOWN",
+             s.down_interface ? s.down_interface : "IF");
+  }
+
+  if (s.espnow_present) {
+    UiFooterSlot& link = slots[count++];
+    snprintf(link.left, sizeof(link.left), "EN CH%u", (unsigned)s.espnow_channel);
+    if (s.espnow_peers == 0) {
+      snprintf(link.right, sizeof(link.right), "NO PEERS");
+    } else {
+      snprintf(link.right, sizeof(link.right), "%u PEER%s",
+               (unsigned)s.espnow_peers, s.espnow_peers == 1 ? "" : "S");
+    }
+
+    // Only while the state machine has something to say. "idle" every four
+    // seconds is noise.
+    const bool interesting = s.recovery_active || s.recovery_pinned || s.recovery_failed;
+    if (interesting) {
+      UiFooterSlot& rec = slots[count++];
+      snprintf(rec.left, sizeof(rec.left), "REC %.9s",
+               s.recovery_state ? s.recovery_state : "?");
+      // The channel, not the state word again: "REC pinned / PINNED" spends
+      // half the line repeating itself, and which channel it settled on is the
+      // thing you actually want when a board has gone quiet.
+      if (s.recovery_channel > 0) {
+        snprintf(rec.right, sizeof(rec.right), "CH%u", (unsigned)s.recovery_channel);
+      } else if (s.recovery_failed) {
+        snprintf(rec.right, sizeof(rec.right), "FAILED");
+      } else {
+        snprintf(rec.right, sizeof(rec.right), "SWEEPING");
+      }
+    }
+  }
+
+  UiFooterSlot& clock = slots[count++];
+  if (s.time_known) {
+    snprintf(clock.left, sizeof(clock.left), "UTC %s",
+             s.time_source && s.time_source[0] ? s.time_source : "?");
+    snprintf(clock.right, sizeof(clock.right), "STRATUM %u", (unsigned)s.stratum);
+  } else {
+    snprintf(clock.left, sizeof(clock.left), "UTC");
+    snprintf(clock.right, sizeof(clock.right), "UNKNOWN");
+  }
+  return count;
+}
+
+inline void ui_footer_draw_slot(GFXcanvas1& canvas, int y, const UiFooterSlot& slot,
+                                bool inverted) {
+  canvas.setTextColor(inverted ? 0 : 1);
+  canvas.setCursor(UI_X_LEFT, y);
+  canvas.print(slot.left);
+  const int width = (int)strlen(slot.right) * UI_COL;
+  canvas.setCursor(UI_X_RIGHT_EDGE - width, y);
+  canvas.print(slot.right);
+}
+
+inline void ui_draw_footer_band(Adafruit_SSD1306& d, const NodeStatusView& s) {
+  static GFXcanvas1 canvas(128, UI_FOOT_BAND_H);
+  UiFooterSlot slots[UI_FOOT_SLOTS];
+  const uint8_t count = ui_footer_build(s, slots);
+  UiFooterState& st = ui_footer_state();
+  if (st.current >= count) st.current = 0;
+  if (st.next >= count) st.next = 0;
+
+  const uint32_t now = millis();
+  if (st.held_since == 0) st.held_since = now;
+
+  if (st.roll < 0) {
+    if (count > 1 && (now - st.held_since) >= UI_FOOT_HOLD_MS) {
+      st.roll = 0;
+      st.next = (uint8_t)((st.current + 1) % count);
+    }
+  } else {
+    // One pixel per rendered frame: the smoothest step the panel has.
+    st.roll++;
+    if (st.roll >= UI_FOOT_BAND_H) {
+      st.current = st.next;
+      st.roll = -1;
+      st.held_since = now;
+    }
+  }
+
+  // The alarm is the background and does not rotate with the content.
+  const bool trouble = !s.mesh_on || !s.interfaces_ok;
+  canvas.fillScreen(trouble ? 1 : 0);
+
+  // Text sits two pixels below the band top when at rest, which is where the
+  // static footer used to be.
+  const int rest = UI_Y_FOOT - UI_FOOT_BAND_Y;
+  if (st.roll < 0) {
+    ui_footer_draw_slot(canvas, rest, slots[st.current], trouble);
+  } else {
+    ui_footer_draw_slot(canvas, rest - st.roll, slots[st.current], trouble);
+    ui_footer_draw_slot(canvas, rest - st.roll + UI_FOOT_BAND_H, slots[st.next], trouble);
+  }
+
+  // Blitting the canvas is what clips the rolling text to the band; drawing
+  // straight onto the panel would smear it up through the body rows.
+  d.drawBitmap(0, UI_FOOT_BAND_Y, canvas.getBuffer(), 128, UI_FOOT_BAND_H,
+               SSD1306_WHITE, SSD1306_BLACK);
+}
+
 // --- page 1: main status -----------------------------------------------------
 
 inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t page) {
@@ -228,21 +386,7 @@ inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t p
   // this panel that is readable from across a room without reading it: a white
   // bar along the bottom means go and look. "IF:WF MESH ON" said as much in
   // two half-sentences that had to be parsed first.
-  const bool trouble = !s.mesh_on || !s.interfaces_ok;
-  if (trouble) {
-    d.fillRect(0, UI_Y_RULE_BOT + 1, d.width(), d.height() - UI_Y_RULE_BOT - 1,
-               SSD1306_WHITE);
-    d.setTextColor(SSD1306_BLACK);
-  }
-  d.setCursor(UI_X_LEFT, UI_Y_FOOT);
-  d.print(s.mesh_on ? "MESH ON" : "NO MESH");
-  if (s.interfaces_ok) {
-    ui_right_text(d, UI_X_RIGHT_EDGE, UI_Y_FOOT, "ALL OK");
-  } else {
-    snprintf(buf, sizeof(buf), "%s DOWN", s.down_interface ? s.down_interface : "IF");
-    ui_right_text(d, UI_X_RIGHT_EDGE, UI_Y_FOOT, buf);
-  }
-  d.setTextColor(SSD1306_WHITE);
+  ui_draw_footer_band(d, s);
 }
 
 // --- pages 2-4 ---------------------------------------------------------------

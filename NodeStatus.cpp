@@ -28,6 +28,12 @@ extern uint32_t boot_count;
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
 extern uint32_t espnow_peer_count();
 extern bool espnow_local_has_upstream();
+extern uint32_t espnow_channel();
+extern const char* espnow_recovery_state_name();
+extern bool espnow_recovery_active();
+extern bool espnow_recovery_pinned();
+extern bool espnow_recovery_failed();
+extern uint32_t espnow_recovery_channel();
 #endif
 
 #if defined(BLE_PEER_TRANSPORT)
@@ -200,7 +206,14 @@ NodeStatusView node_status() {
 
 #if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
   s.espnow_present = true;
-  s.espnow_active = (espnow_peer_count() > 0);
+  s.espnow_peers = (uint16_t)espnow_peer_count();
+  s.espnow_active = (s.espnow_peers > 0);
+  s.espnow_channel = (uint8_t)espnow_channel();
+  s.recovery_state = espnow_recovery_state_name();
+  s.recovery_active = espnow_recovery_active();
+  s.recovery_pinned = espnow_recovery_pinned();
+  s.recovery_failed = espnow_recovery_failed();
+  s.recovery_channel = (uint8_t)espnow_recovery_channel();
 #endif
 
   s.time_known = OS::wall_time_known();

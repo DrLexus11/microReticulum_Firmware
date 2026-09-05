@@ -120,6 +120,17 @@ struct NodeStatusView {
   bool ble_present = false, ble_active = false;
   bool wifi_present = false, wifi_active = false;
   bool espnow_present = false, espnow_active = false;
+  // Enough of the ESP-NOW link and its recovery state machine to say what the
+  // radio is doing, not merely whether it is up. On a board whose only way
+  // home is a channel sweep, "scanning" and "attached" are the difference
+  // between wait and intervene.
+  uint8_t espnow_channel = 0;
+  uint16_t espnow_peers = 0;
+  const char* recovery_state = "";
+  bool recovery_active = false;
+  bool recovery_pinned = false;
+  bool recovery_failed = false;
+  uint8_t recovery_channel = 0;
 
   bool time_known = false;
   uint8_t stratum = 0;
