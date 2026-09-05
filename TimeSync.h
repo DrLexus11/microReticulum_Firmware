@@ -68,6 +68,13 @@ struct TimeSyncState {
   uint32_t attempts = 0;
   uint32_t adoptions = 0;
   uint32_t refusals = 0;
+  // Why a node that wants time is not asking for it. Both of the paths below
+  // return silently, which made a client that never got anywhere look exactly
+  // like one that was never configured -- measured on the second Rev 2, which
+  // sat wanting time and saying nothing about it.
+  uint32_t path_requests = 0;
+  uint32_t no_identity = 0;
+  bool reported_waiting = false;
 };
 
 inline TimeSyncState& time_sync_state() {
@@ -269,10 +276,27 @@ inline void time_sync_loop() {
   if (!time_sync_wants_time()) return;
   if (!RNS::Transport::has_path(time_sync_peer_hash)) {
     RNS::Transport::request_path(time_sync_peer_hash);
+    st.path_requests++;
+    // Once, not every minute: this is a standing condition, not an event, and
+    // a node with no route to its time peer would otherwise fill the log.
+    if (!st.reported_waiting) {
+      st.reported_waiting = true;
+      printf("[timesync] no path to <%s> yet, requesting one\n",
+             time_sync_peer_hash.toHex().substr(0, 16).c_str());
+    }
     return;   // try again next poll, once a path exists
   }
   RNS::Identity peer_identity = RNS::Identity::recall(time_sync_peer_hash);
-  if (!peer_identity) return;
+  if (!peer_identity) {
+    st.no_identity++;
+    if (!st.reported_waiting) {
+      st.reported_waiting = true;
+      printf("[timesync] have a path to <%s> but no identity for it yet\n",
+             time_sync_peer_hash.toHex().substr(0, 16).c_str());
+    }
+    return;
+  }
+  st.reported_waiting = false;
 
   RNS::Destination peer_mgmt(peer_identity, RNS::Type::Destination::OUT,
                              RNS::Type::Destination::SINGLE,
@@ -283,6 +307,9 @@ inline void time_sync_loop() {
   st.active = true;
   st.started = now;
   st.attempts++;
+  printf("[timesync] soliciting UTC from <%s> (attempt %u)\n",
+         time_sync_peer_hash.toHex().substr(0, 16).c_str(),
+         (unsigned)st.attempts);
   st.link = RNS::Link(peer_mgmt, time_sync_link_established,
                       time_sync_link_closed);
 }
