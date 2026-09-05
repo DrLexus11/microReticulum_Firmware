@@ -28,6 +28,7 @@ records is `signed-beacon`, never `ntp`.
 
 import argparse
 import os
+import stat
 import struct
 import sys
 import time
@@ -69,12 +70,34 @@ def build_assertion(identity, unix_ms, valid_for_s, stratum, source):
 
 
 def load_identity(path):
+    """Load the authority key, or create one -- but never silently replace it.
+
+    Every node that trusts this authority was provisioned with its identity
+    hash out of band. Generating a fresh key because the existing file could
+    not be read would not fail: it would succeed, announce under a hash nobody
+    trusts, and require re-provisioning the entire fleet to undo. So an
+    unreadable file is a hard stop, not a reason to start over.
+    """
     if os.path.isfile(path):
         identity = RNS.Identity.from_file(path)
-        if identity is not None:
-            return identity, False
+        if identity is None:
+            raise SystemExit(
+                "could not load the authority identity from %s.\n"
+                "Refusing to generate a new one: every node provisioned with the "
+                "old hash would stop trusting this authority. Restore the file "
+                "from backup, or move it aside deliberately to start over."
+                % path)
+        return identity, False
+
     identity = RNS.Identity()
     identity.to_file(path)
+    # A private key written under a permissive umask is readable by other local
+    # users, and this one is the whole trust anchor for the mesh.
+    try:
+        os.chmod(path, 0o600)
+    except OSError as error:
+        raise SystemExit("wrote %s but could not restrict its permissions: %s"
+                         % (path, error))
     return identity, True
 
 
@@ -107,6 +130,10 @@ def main():
 
     print("time authority %s" % identity.hash.hex())
     print("  identity file : %s%s" % (args.identity, " (created)" if created else ""))
+    mode = stat.S_IMODE(os.stat(args.identity).st_mode)
+    if mode & 0o077:
+        print("  WARNING: %s is mode %04o -- readable by other local users"
+              % (args.identity, mode))
     print("  destination   : %s" % destination.hash.hex())
     print("  stratum %d, source %s, valid for %ds, every %.0fs"
           % (args.stratum, args.source, args.valid_for, args.interval))
