@@ -98,8 +98,14 @@
 #define PROV_GENERAL_GPIO1           7
 // Destination hash of the node this one asks for UTC. Empty disables it.
 #define PROV_GENERAL_TIME_PEER       8
-// Identity hashes permitted to assert time. Empty = trust any IFAC peer.
+// Identity hashes permitted to assert time. Empty = trust any IFAC peer for the
+// solicited path, and nobody at all for the broadcast one -- see TimeBeacon.h.
 #define PROV_GENERAL_TIME_AUTHORITIES 9
+// Whether this node originates signed time assertions. Only a node with a
+// credible clock of its own has any business doing so.
+#define PROV_GENERAL_TIME_BEACON      10
+// Seconds between assertions. Zero keeps the compiled-in cadence.
+#define PROV_GENERAL_TIME_BEACON_SECS 11
 
 #define PROV_METRICS_TRANS_ID   1
 #define PROV_METRICS_PROBE_DST  2

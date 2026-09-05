@@ -23,6 +23,9 @@
 #include <microReticulum/Identity.h>
 #include <microReticulum/Utilities/OS.h>
 #include <microReticulum/Bytes.h>
+// The clock page reports how time is being distributed, not only what it says.
+#include "TimeSync.h"
+#include "TimeBeacon.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #endif
@@ -328,6 +331,29 @@ RNS::Bytes serve_page(
         content << "corrects it.`\n";
       }
       content << "\n";
+      // Distribution, not just the value. A node that is hearing assertions but
+      // refusing them looks exactly like one that is hearing nothing, and the
+      // difference is the whole diagnosis: no authority provisioned, a key that
+      // does not match, or a relay sitting on stale assertions.
+      {
+        const TimeBeaconStats& tb = time_beacon_stats();
+        content << ">> Signed assertions\n";
+        content << "Authorities : " << std::to_string(time_sync_authorities.size()) << "\n";
+        content << "Originating : " << (time_beacon_enabled ? "yes" : "no");
+        if (time_beacon_enabled) {
+          content << " (" << std::to_string(tb.emitted) << " emitted, every "
+                  << std::to_string(time_beacon_interval_s) << " s)";
+        }
+        content << "\n";
+        content << "Heard       : " << std::to_string(tb.heard) << "\n";
+        content << "Verified    : " << std::to_string(tb.verified) << "\n";
+        content << "Adopted     : " << std::to_string(tb.adopted) << "\n";
+        content << "Refused     : " << std::to_string(tb.refused_unlisted) << " not an authority, "
+                << std::to_string(tb.refused_signature) << " bad signature, "
+                << std::to_string(tb.refused_stale) << " stale, "
+                << std::to_string(tb.refused_rules) << " unsafe\n";
+        content << "\n";
+      }
       content << ">> Clock-domain check\n";
       content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";
       content << "Reload this page: both clocks must advance normally. Adopting UTC must not reset links or make monotonic time jump.\n";

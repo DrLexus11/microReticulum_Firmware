@@ -70,6 +70,7 @@ uint32_t lxmf_announces_any();
 #include "Utilities.h"
 #include "WallTime.h"
 #include "TimeSync.h"
+#include "TimeBeacon.h"
 #if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
 #include "esp_cpu.h"
 #endif
@@ -1759,6 +1760,12 @@ printf("[init] op_mode: %U\n", op_mode);
         }
       }
 #endif // URTN_STATS_PAGES
+
+      // Time distribution. The listening half costs nothing and is always on,
+      // because a node that cannot originate time is exactly the node that
+      // needs to hear it. The originating half only exists on a node that has
+      // been provisioned as an authority.
+      time_beacon_begin();
 
 #if defined(RRC_HUB)
       // RRC is a separate Reticulum service from NomadNet pages and LXMF.
@@ -4131,6 +4138,7 @@ void loop() {
   #endif
   #ifdef HAS_RNS
     time_sync_loop();
+    time_beacon_loop();
   #endif
 
   #if HAS_INPUT

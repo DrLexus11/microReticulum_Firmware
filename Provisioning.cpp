@@ -121,6 +121,9 @@ extern const char* boot_reset_reason;
 // does not depend on that header's ordering relative to the RNS types.
 extern RNS::Bytes time_sync_peer_hash;
 extern std::vector<RNS::Bytes> time_sync_authorities;
+// Defined in TimeBeacon.h, declared here for the same reason.
+extern bool time_beacon_enabled;
+extern uint32_t time_beacon_interval_s;
 extern bool boot_rail_lost;
 extern uint32_t boot_prev_uptime;
 extern uint32_t boot_count;
@@ -480,6 +483,18 @@ static void register_provisioning_namespaces() {
         FF_LIVE_APPLY, std::vector<RNS::Bytes>(), 16, 8,
         [](const Value& v) { time_sync_authorities = v.as_bytes_list(); return true; },
         []() { return time_sync_authorities; })
+      // Reboot required: the destination an authority announces under is
+      // created once, at startup, from the transport identity.
+      .field_bool("Time Beacon", PROV_GENERAL_TIME_BEACON, FF_REBOOT_REQUIRED,
+        time_beacon_enabled,
+        [](const Value& v) { time_beacon_enabled = v.as_bool(); return true; },
+        []() { return time_beacon_enabled; })
+      .field_int("Time Beacon Interval (s)", PROV_GENERAL_TIME_BEACON_SECS,
+        FF_LIVE_APPLY, time_beacon_interval_s, 60, 86400,
+        [](const Value& v) {
+          time_beacon_interval_s = static_cast<uint32_t>(v.as_int()); return true;
+        },
+        []() { return static_cast<fint_t>(time_beacon_interval_s); })
       .end();
 
 #else
