@@ -181,10 +181,16 @@ def boot_usb_jtag_app(env):
     physical S1 press -- which is exactly the manual step native USB is
     supposed to remove.
 
-    While the ROM owns the USB endpoint, RTS drives EN and DTR drives IO0, so
-    holding IO0 high and pulsing EN boots the application. Once the app is
-    running it presents its own CDC and those lines become ordinary signals,
-    which is why this has to happen here and cannot be repeated later.
+    While the ROM owns the USB endpoint, RTS drives EN and DTR drives IO0, and
+    both are inverted: asserting DTR pulls IO0 *low*, which is the downloader.
+    Booting the application therefore means de-asserting DTR -- IO0 high --
+    and pulsing EN. Asserting it instead resets straight back into the ROM,
+    which is what happened here until the board was measured: esptool could
+    still connect with --before no_reset afterwards, proving the downloader
+    had never been left.
+
+    Once the app is running it presents its own CDC and the polarity no longer
+    applies, which is why this has to happen here and cannot be repeated later.
     """
     try:
         if env.GetProjectOption("custom_usb_jtag_reset") not in ("yes", "true", "1"):
@@ -200,10 +206,10 @@ def boot_usb_jtag_app(env):
         port = serial.Serial(baudrate=115200, timeout=0.3,
                              dsrdtr=False, rtscts=False)
         port.port = port_path
-        port.dtr = True          # IO0 high: boot the app, not the downloader
+        port.dtr = False         # IO0 high: boot the app, not the downloader
         port.rts = False
         port.open()
-        port.dtr = True
+        port.dtr = False         # hold IO0 high across the whole pulse
         port.rts = True          # EN low: reset
         time.sleep(0.2)
         port.rts = False         # release EN
