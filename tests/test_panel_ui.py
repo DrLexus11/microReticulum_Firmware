@@ -60,10 +60,49 @@ class PanelLayoutTests(unittest.TestCase):
                 "rows at y=%d and y=%d overlap: a %dpx glyph needs %dpx"
                 % (above, below, CELL_HEIGHT, CELL_HEIGHT))
 
-    def test_the_rule_sits_between_the_header_and_the_body(self):
-        rule = define(self.ui, "UI_Y_RULE")
-        self.assertGreater(rule, define(self.ui, "UI_Y_IFACE"))
-        self.assertLess(rule, define(self.ui, "UI_Y_BODY0"))
+    def test_the_design_rules_are_all_present_and_in_order(self):
+        # The design carries four: under the identity row, under the badge row,
+        # between the two columns, and above the footer. They are what stop six
+        # rows of 6px text reading as a wall, and three of them were missing.
+        title = define(self.ui, "UI_Y_TITLE")
+        top = define(self.ui, "UI_Y_RULE_TOP")
+        iface = define(self.ui, "UI_Y_IFACE")
+        mid = define(self.ui, "UI_Y_RULE_MID")
+        body0 = define(self.ui, "UI_Y_BODY0")
+        bot = define(self.ui, "UI_Y_RULE_BOT")
+        foot = define(self.ui, "UI_Y_FOOT")
+        self.assertLess(title, top)
+        self.assertLess(top, iface)
+        self.assertLess(iface, mid)
+        self.assertLess(mid, body0)
+        self.assertLess(define(self.ui, "UI_Y_BODY3"), bot)
+        self.assertLess(bot, foot)
+        # And the vertical one between the columns.
+        split = define(self.ui, "UI_X_SPLIT")
+        self.assertLess(define(self.ui, "UI_X_LEFT_END"), split)
+        self.assertLess(split, define(self.ui, "UI_X_RIGHT"))
+        self.assertIn("drawFastVLine(UI_X_SPLIT", self.ui)
+
+    def test_every_interface_badge_is_always_drawn(self):
+        # A badge that disappears when its hardware is absent reads as a
+        # rendering fault. Absent is struck through instead, so the row never
+        # shifts and "not fitted" is visibly different from "fitted and down".
+        main = self.ui[self.ui.index("inline void ui_draw_main("):
+                       self.ui.index("// --- pages 2-4")]
+        for badge in ('"LR"', '"BT"', '"WF"', '"EN"'):
+            self.assertIn(badge, main)
+        self.assertNotIn("if (s.lora_present)", main)
+        self.assertIn("UI_BADGE_ABSENT", self.ui)
+
+    def test_the_feature_badges_are_always_drawn(self):
+        main = self.ui[self.ui.index("inline void ui_draw_main("):
+                       self.ui.index("// --- pages 2-4")]
+        self.assertIn('"RRC"', main)
+        self.assertIn('"PR"', main)
+
+    def test_the_page_hint_does_not_take_footer_space(self):
+        # 128x64 has no room for a legend telling you the buttons exist.
+        self.assertNotIn("<P|N>", self.ui)
 
     def test_the_body_columns_do_not_collide(self):
         # The left column holds the mesh counts, the right this board's own
@@ -86,6 +125,15 @@ class PanelLayoutTests(unittest.TestCase):
             badge_px + clock_px, PANEL_WIDTH,
             "the interface row overflows: %dpx of badges plus %dpx of clock "
             "exceeds %dpx" % (badge_px, clock_px, PANEL_WIDTH))
+
+    def test_trouble_inverts_the_whole_footer(self):
+        # The one thing on this panel readable across a room without reading
+        # it: a white bar along the bottom means go and look.
+        main = self.ui[self.ui.index("inline void ui_draw_main("):
+                       self.ui.index("// --- pages 2-4")]
+        self.assertIn("const bool trouble", main)
+        self.assertIn("fillRect(0, UI_Y_RULE_BOT + 1", main)
+        self.assertIn("SSD1306_BLACK", main)
 
     def test_an_inactive_badge_is_not_boxed(self):
         # Boxing the inactive badges too made the row read as one blob on

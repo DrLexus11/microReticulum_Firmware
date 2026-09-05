@@ -3,18 +3,16 @@
 // Replaces the inherited RNode screen on boards that have one of our panels.
 // That screen was built for a handheld modem -- signal bars, a waterfall, a
 // Bluetooth pairing hint -- and says almost nothing about the thing this
-// hardware actually is, which is a node in a mesh. This says what the mesh
-// looks like from here.
+// hardware actually is, which is a node in a mesh.
 //
-// Two departures from the design mockup, both deliberate:
+// The design's rules are load-bearing and are followed: one under the identity
+// row, one under the badge row, one between the two key/value columns, and one
+// above the footer. They are what stop six rows of 6px text reading as a wall.
 //
-//   * The hero render shows roughly two and a half times the text that fits at
-//     128x64. The design's own 1:1 block is the buildable one and is what this
-//     follows.
-//   * `[LR][BT][WF][EN]` plus the clock is 23 characters on a 21-character
-//     line. Drawing the badges as filled rectangles rather than bracket
-//     characters fits, and is closer to the "inverted white boxes" the design
-//     asks for anyway.
+// One departure, measured on hardware: the design's bracketed badges
+// (`[LR][BT][WF][EN]`) plus the clock come to 23 characters on a 21-character
+// line. Badges are drawn as fills instead, which is what "inverted white boxes
+// indicate active broadcast" asks for anyway.
 #pragma once
 
 #include "NodeStatus.h"
@@ -26,21 +24,40 @@
 #include <Adafruit_SSD1306.h>
 
 // The built-in 5x7 glyph in a 6x8 cell: 21 columns, 8 rows. Org_01 is smaller
-// and fits more, but this panel is read across a room, not held.
+// and would fit more, but this panel is read across a room, not held.
 #define UI_COL 6
 #define UI_ROW 8
 
-// Rows are placed by hand rather than by a loop: the header pair is tighter
-// than the body so the body gets the space, and a uniform grid wastes the two
-// pixels that make the difference between six body rows and seven.
-#define UI_Y_TITLE   0
-#define UI_Y_IFACE   9
-#define UI_Y_RULE   18
-#define UI_Y_BODY0  21
-#define UI_Y_BODY1  30
-#define UI_Y_BODY2  39
-#define UI_Y_BODY3  48
-#define UI_Y_FOOT   56
+// Rows and rules, hand-placed: the rules cost three scanlines that a uniform
+// grid would have spent on padding.
+#define UI_Y_TITLE      0
+#define UI_Y_RULE_TOP   8
+#define UI_Y_IFACE     10
+#define UI_Y_RULE_MID  18
+#define UI_Y_BODY0     20
+#define UI_Y_BODY1     28
+#define UI_Y_BODY2     36
+#define UI_Y_BODY3     44
+#define UI_Y_RULE_BOT  53
+#define UI_Y_FOOT      55
+
+// The vertical rule and the two columns it separates.
+#define UI_X_SPLIT     63
+#define UI_X_LEFT_END  60
+#define UI_X_RIGHT     67
+
+// Three states, because "no LoRa fitted" and "LoRa fitted and dead" are
+// different problems, and neither of them is "LoRa working".
+enum UiBadgeState : uint8_t {
+  UI_BADGE_ABSENT = 0,
+  UI_BADGE_IDLE = 1,
+  UI_BADGE_ACTIVE = 2,
+};
+
+inline UiBadgeState ui_badge_state(bool present, bool active) {
+  if (!present) return UI_BADGE_ABSENT;
+  return active ? UI_BADGE_ACTIVE : UI_BADGE_IDLE;
+}
 
 // Format an uptime into at most six characters. Days matter once there are
 // any; below that, minutes do.
@@ -57,65 +74,82 @@ inline void ui_format_uptime(char* out, size_t size, uint32_t seconds) {
   }
 }
 
-// A badge: text on an inverted block when active, plain text when merely
-// present. Absent hardware is not drawn at all -- a board with no LoRa fitted
-// should not show a dead LoRa badge, because nothing is wrong with it.
-// Returns the x to continue from.
-inline int ui_badge(Adafruit_SSD1306& d, int x, int y, const char* text, bool active) {
+// Draws one badge, returning the x to continue from.
+//
+// Only the active state is boxed. Outlining the idle ones too was tried and
+// reverted: on the panel an outlined badge between two filled ones has its
+// borders touching their fills, and the three read as a single blob.
+inline int ui_badge(Adafruit_SSD1306& d, int x, int y, const char* text,
+                    UiBadgeState state) {
   const int width = (int)strlen(text) * UI_COL + 1;
-  if (active) {
+  if (state == UI_BADGE_ACTIVE) {
     d.fillRect(x, y - 1, width, UI_ROW + 1, SSD1306_WHITE);
     d.setTextColor(SSD1306_BLACK);
   } else {
-    // Plain text, no outline. Boxing the inactive ones too made the row read
-    // as a single blob on hardware -- an outlined badge between two inverted
-    // ones has borders touching its neighbours' fills, and at a glance the
-    // three merge. The design asks for inverted boxes to mark what is active;
-    // everything else is just a label.
     d.setTextColor(SSD1306_WHITE);
   }
   d.setCursor(x + 1, y);
   d.print(text);
   d.setTextColor(SSD1306_WHITE);
+  if (state == UI_BADGE_ABSENT) {
+    // Struck through. The badge still occupies its place so the row never
+    // shifts, but the hardware behind it is not there -- a badge that simply
+    // vanishes reads as a rendering fault.
+    d.drawFastHLine(x, y + 3, width, SSD1306_WHITE);
+  }
   return x + width + 4;
 }
 
-inline void ui_right_text(Adafruit_SSD1306& d, int y, const char* text) {
-  const int width = (int)strlen(text) * UI_COL;
-  d.setCursor(d.width() - width, y);
+inline void ui_right_text(Adafruit_SSD1306& d, int right_edge, int y, const char* text) {
+  d.setCursor(right_edge - (int)strlen(text) * UI_COL, y);
   d.print(text);
+}
+
+// A label on the left of a column with its value hard against the right, which
+// is what makes a column of numbers scannable rather than merely present.
+inline void ui_pair(Adafruit_SSD1306& d, int x, int right_edge, int y,
+                    const char* label, const char* value) {
+  d.setCursor(x, y);
+  d.print(label);
+  ui_right_text(d, right_edge, y, value);
 }
 
 // --- page 1: main status -----------------------------------------------------
 
 inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t page) {
   char buf[24];
-
-  // Title row. The node name is the one string an operator uses to tell two
-  // boards apart, so it gets the left edge and is truncated rather than
-  // wrapped.
-  d.setCursor(0, UI_Y_TITLE);
-  const int name_room = 13;   // leaves room for the badges and the page counter
-  snprintf(buf, sizeof(buf), "%.*s", name_room, s.name && s.name[0] ? s.name : "UNNAMED");
-  d.print(buf);
+  char value[12];
 
   snprintf(buf, sizeof(buf), "%u/%u", (unsigned)(page + 1), (unsigned)NAV_PAGE_COUNT);
-  ui_right_text(d, UI_Y_TITLE, buf);
+  ui_right_text(d, d.width(), UI_Y_TITLE, buf);
 
-  // Service badges sit just left of the page counter.
-  int bx = d.width() - (int)strlen(buf) * UI_COL - 2;
-  if (s.propagation) { bx -= (2 * UI_COL + 3); ui_badge(d, bx, UI_Y_TITLE, "PR", true); }
-  if (s.rrc_hub)     { bx -= (3 * UI_COL + 3); ui_badge(d, bx, UI_Y_TITLE, "RRC", true); }
+  // Service badges, always drawn: whether a feature is off is information, and
+  // a row whose contents move about is harder to read than one that does not.
+  int bx = d.width() - (int)strlen(buf) * UI_COL - 4;
+  bx -= (2 * UI_COL + 1);
+  ui_badge(d, bx, UI_Y_TITLE, "PR", ui_badge_state(true, s.propagation));
+  bx -= (3 * UI_COL + 1) + 3;
+  ui_badge(d, bx, UI_Y_TITLE, "RRC", ui_badge_state(true, s.rrc_hub));
 
-  // Interface row.
+  const int name_columns = (bx - 2) / UI_COL;
+  snprintf(buf, sizeof(buf), "%.*s", name_columns > 0 ? name_columns : 1,
+           s.name && s.name[0] ? s.name : "UNNAMED");
+  d.setCursor(0, UI_Y_TITLE);
+  d.print(buf);
+
+  d.drawFastHLine(0, UI_Y_RULE_TOP, d.width(), SSD1306_WHITE);
+
+  // Interface row. Every badge is always drawn, LoRa included on a board that
+  // has none.
   int ix = 0;
-  if (s.lora_present)   ix = ui_badge(d, ix, UI_Y_IFACE, "LR", s.lora_active);
-  if (s.ble_present)    ix = ui_badge(d, ix, UI_Y_IFACE, "BT", s.ble_active);
-  if (s.wifi_present)   ix = ui_badge(d, ix, UI_Y_IFACE, "WF", s.wifi_active);
-  if (s.espnow_present) ix = ui_badge(d, ix, UI_Y_IFACE, "EN", s.espnow_active);
+  ix = ui_badge(d, ix, UI_Y_IFACE, "LR", ui_badge_state(s.lora_present, s.lora_active));
+  ix = ui_badge(d, ix, UI_Y_IFACE, "BT", ui_badge_state(s.ble_present, s.ble_active));
+  ix = ui_badge(d, ix, UI_Y_IFACE, "WF", ui_badge_state(s.wifi_present, s.wifi_active));
+  ix = ui_badge(d, ix, UI_Y_IFACE, "EN", ui_badge_state(s.espnow_present, s.espnow_active));
+  (void)ix;
 
-  // Network time, or an honest absence. A clock that silently shows uptime
-  // where UTC belongs is worse than one that admits it has none.
+  // Network time, or an honest absence. A clock quietly showing uptime where
+  // UTC belongs is worse than one that admits it has none.
   if (s.time_known) {
     const time_t seconds = (time_t)(s.unix_ms / 1000ULL);
     struct tm utc {};
@@ -127,48 +161,60 @@ inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t p
   } else {
     snprintf(buf, sizeof(buf), "NO UTC");
   }
-  ui_right_text(d, UI_Y_IFACE, buf);
+  ui_right_text(d, d.width(), UI_Y_IFACE, buf);
 
-  d.drawFastHLine(0, UI_Y_RULE, d.width(), SSD1306_WHITE);
+  d.drawFastHLine(0, UI_Y_RULE_MID, d.width(), SSD1306_WHITE);
 
-  // Body: the mesh on the left, this board's own history on the right. The
-  // census counts can be short once its table fills, and says so with a '+'
-  // rather than quietly reporting a number it knows is wrong.
+  // The mesh on the left, this board's own history on the right, with the rule
+  // between them that makes two columns two columns.
+  d.drawFastVLine(UI_X_SPLIT, UI_Y_RULE_MID + 1,
+                  UI_Y_RULE_BOT - UI_Y_RULE_MID - 1, SSD1306_WHITE);
+
+  // A '+' where the census table has filled: the count has stopped rising, and
+  // saying so beats reporting a number known to be short.
   const char* more = s.census_full ? "+" : "";
-  d.setCursor(0, UI_Y_BODY0);
-  d.printf("P:%u%s", (unsigned)s.peers, more);
-  d.setCursor(0, UI_Y_BODY1);
-  d.printf("N:%u", (unsigned)s.nodes);
-  d.setCursor(0, UI_Y_BODY2);
-  d.printf("R:%u%s", (unsigned)s.relays, more);
-  d.setCursor(0, UI_Y_BODY3);
-  d.printf("NOM:%u%s", (unsigned)s.nomad, more);
+  snprintf(value, sizeof(value), "%u%s", (unsigned)s.peers, more);
+  ui_pair(d, 0, UI_X_LEFT_END, UI_Y_BODY0, "PEERS", value);
+  snprintf(value, sizeof(value), "%u", (unsigned)s.nodes);
+  ui_pair(d, 0, UI_X_LEFT_END, UI_Y_BODY1, "NODES", value);
+  snprintf(value, sizeof(value), "%u%s", (unsigned)s.relays, more);
+  ui_pair(d, 0, UI_X_LEFT_END, UI_Y_BODY2, "RELAY", value);
+  snprintf(value, sizeof(value), "%u%s", (unsigned)s.nomad, more);
+  ui_pair(d, 0, UI_X_LEFT_END, UI_Y_BODY3, "NOMAD", value);
 
-  const int right = 64;
-  char uptime[8];
+  char uptime[10];
   ui_format_uptime(uptime, sizeof(uptime), s.uptime_s);
-  d.setCursor(right, UI_Y_BODY0);
-  d.printf("UP:%s", uptime);
-  d.setCursor(right, UI_Y_BODY1);
-  d.printf("BOOT:%lu", (unsigned long)s.boots);
-  d.setCursor(right, UI_Y_BODY2);
-  d.printf("CR:%lu", (unsigned long)s.crashes);
-  d.setCursor(right, UI_Y_BODY3);
-  d.printf("PN:%lu", (unsigned long)s.panics);
+  ui_pair(d, UI_X_RIGHT, d.width(), UI_Y_BODY0, "UP", uptime);
+  snprintf(value, sizeof(value), "%lu", (unsigned long)s.boots);
+  ui_pair(d, UI_X_RIGHT, d.width(), UI_Y_BODY1, "BOOT", value);
+  snprintf(value, sizeof(value), "%lu", (unsigned long)s.crashes);
+  ui_pair(d, UI_X_RIGHT, d.width(), UI_Y_BODY2, "CRASH", value);
+  snprintf(value, sizeof(value), "%lu", (unsigned long)s.panics);
+  ui_pair(d, UI_X_RIGHT, d.width(), UI_Y_BODY3, "PANIC", value);
 
-  // Footer. Interface health, not traffic: a quiet mesh at 04:00 is not a
-  // fault, and a panel that cries wolf overnight gets ignored by morning.
-  char foot[12];
-  if (s.interfaces_ok) {
-    snprintf(foot, sizeof(foot), "IF OK");
-  } else {
-    snprintf(foot, sizeof(foot), "IF:%s", s.down_interface ? s.down_interface : "??");
+  d.drawFastHLine(0, UI_Y_RULE_BOT, d.width(), SSD1306_WHITE);
+
+  // Health bar.
+  //
+  // The whole strip inverts when something is wrong, which is the one thing on
+  // this panel that is readable from across a room without reading it: a white
+  // bar along the bottom means go and look. "IF:WF MESH ON" said as much in
+  // two half-sentences that had to be parsed first.
+  const bool trouble = !s.mesh_on || !s.interfaces_ok;
+  if (trouble) {
+    d.fillRect(0, UI_Y_RULE_BOT + 1, d.width(), d.height() - UI_Y_RULE_BOT - 1,
+               SSD1306_WHITE);
+    d.setTextColor(SSD1306_BLACK);
   }
   d.setCursor(0, UI_Y_FOOT);
-  d.print(foot);
-  d.setCursor(6 * UI_COL, UI_Y_FOOT);
-  d.print(s.mesh_on ? "MESH ON" : "MESH --");
-  ui_right_text(d, UI_Y_FOOT, "<P|N>");
+  d.print(s.mesh_on ? "MESH ON" : "NO MESH");
+  if (s.interfaces_ok) {
+    ui_right_text(d, d.width(), UI_Y_FOOT, "ALL OK");
+  } else {
+    snprintf(buf, sizeof(buf), "%s DOWN", s.down_interface ? s.down_interface : "IF");
+    ui_right_text(d, d.width(), UI_Y_FOOT, buf);
+  }
+  d.setTextColor(SSD1306_WHITE);
 }
 
 // --- pages 2-4 ---------------------------------------------------------------
@@ -177,62 +223,64 @@ inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t p
 // titles the design gives them, built from data that already exists, and are
 // meant to be replaced once the rest is drawn rather than defended.
 
-inline void ui_draw_placeholder(Adafruit_SSD1306& d, const NodeStatusView& s,
-                                uint8_t page, const char* title) {
-  char buf[24];
+inline void ui_draw_header(Adafruit_SSD1306& d, uint8_t page, const char* title) {
+  char buf[12];
   d.setCursor(0, UI_Y_TITLE);
   d.print(title);
   snprintf(buf, sizeof(buf), "%u/%u", (unsigned)(page + 1), (unsigned)NAV_PAGE_COUNT);
-  ui_right_text(d, UI_Y_TITLE, buf);
-  d.drawFastHLine(0, UI_Y_RULE, d.width(), SSD1306_WHITE);
-  (void)s;
+  ui_right_text(d, d.width(), UI_Y_TITLE, buf);
+  d.drawFastHLine(0, UI_Y_RULE_TOP, d.width(), SSD1306_WHITE);
+}
+
+inline void ui_draw_footer(Adafruit_SSD1306& d, const char* text) {
+  d.drawFastHLine(0, UI_Y_RULE_BOT, d.width(), SSD1306_WHITE);
+  d.setCursor(0, UI_Y_FOOT);
+  d.print(text);
 }
 
 inline void ui_draw_rrc(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t page) {
-  ui_draw_placeholder(d, s, page, "RRC HUB");
-  d.setCursor(0, UI_Y_BODY0);
-  d.print(s.rrc_hub ? "HUB: RUNNING" : "HUB: OFF");
-  d.setCursor(0, UI_Y_BODY1);
-  d.print(s.propagation ? "PROP: ON" : "PROP: OFF");
-  d.setCursor(0, UI_Y_FOOT);
-  d.print("NOT YET DESIGNED");
+  ui_draw_header(d, page, "RRC HUB");
+  ui_pair(d, 0, d.width(), UI_Y_BODY0, "HUB", s.rrc_hub ? "RUNNING" : "OFF");
+  ui_pair(d, 0, d.width(), UI_Y_BODY1, "PROPAGATION", s.propagation ? "ON" : "OFF");
+  ui_draw_footer(d, "NOT YET DESIGNED");
 }
 
 inline void ui_draw_peers(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t page) {
-  ui_draw_placeholder(d, s, page, "PEERS/SITES");
-  d.setCursor(0, UI_Y_BODY0);
-  d.printf("PEERS   %u", (unsigned)s.peers);
-  d.setCursor(0, UI_Y_BODY1);
-  d.printf("RELAYS  %u", (unsigned)s.relays);
-  d.setCursor(0, UI_Y_BODY2);
-  d.printf("NOMAD   %u", (unsigned)s.nomad);
-  d.setCursor(0, UI_Y_BODY3);
-  d.printf("PATHS   %u", (unsigned)s.nodes);
-  d.setCursor(0, UI_Y_FOOT);
-  d.print(s.census_full ? "CENSUS FULL" : "NOT YET DESIGNED");
+  char value[12];
+  ui_draw_header(d, page, "PEERS / SITES");
+  snprintf(value, sizeof(value), "%u", (unsigned)s.peers);
+  ui_pair(d, 0, d.width(), UI_Y_BODY0, "PEERS", value);
+  snprintf(value, sizeof(value), "%u", (unsigned)s.relays);
+  ui_pair(d, 0, d.width(), UI_Y_BODY1, "RELAYS", value);
+  snprintf(value, sizeof(value), "%u", (unsigned)s.nomad);
+  ui_pair(d, 0, d.width(), UI_Y_BODY2, "NOMAD SITES", value);
+  snprintf(value, sizeof(value), "%u", (unsigned)s.nodes);
+  ui_pair(d, 0, d.width(), UI_Y_BODY3, "PATHS KNOWN", value);
+  ui_draw_footer(d, s.census_full ? "CENSUS TABLE FULL" : "SEEN SINCE BOOT");
 }
 
 inline void ui_draw_interfaces(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t page) {
-  ui_draw_placeholder(d, s, page, "INTERFACES");
-  int y = UI_Y_BODY0;
-  if (s.lora_present)   { d.setCursor(0, y); d.printf("LORA    %s", s.lora_active ? "UP" : "DOWN"); y += 9; }
-  if (s.ble_present)    { d.setCursor(0, y); d.printf("BLE     %s", s.ble_active ? "UP" : "DOWN"); y += 9; }
-  if (s.wifi_present)   { d.setCursor(0, y); d.printf("WIFI    %s", s.wifi_active ? "UP" : "DOWN"); y += 9; }
-  if (s.espnow_present) { d.setCursor(0, y); d.printf("ESPNOW  %s", s.espnow_active ? "UP" : "IDLE"); y += 9; }
-  d.setCursor(0, UI_Y_FOOT);
-  if (s.time_known) d.printf("UTC STRATUM %u", (unsigned)s.stratum);
-  else              d.print("UTC UNKNOWN");
+  ui_draw_header(d, page, "INTERFACES");
+  const char* absent = "NOT FITTED";
+  ui_pair(d, 0, d.width(), UI_Y_BODY0, "LORA",
+          s.lora_present ? (s.lora_active ? "UP" : "DOWN") : absent);
+  ui_pair(d, 0, d.width(), UI_Y_BODY1, "BLE",
+          s.ble_present ? (s.ble_active ? "UP" : "DOWN") : absent);
+  ui_pair(d, 0, d.width(), UI_Y_BODY2, "WIFI",
+          s.wifi_present ? (s.wifi_active ? "UP" : "DOWN") : absent);
+  ui_pair(d, 0, d.width(), UI_Y_BODY3, "ESP-NOW",
+          s.espnow_present ? (s.espnow_active ? "PEERED" : "ALONE") : absent);
+  if (s.relaying)        ui_draw_footer(d, "RELAYING FOR OTHERS");
+  else if (s.time_known) ui_draw_footer(d, "UTC OK");
+  else                   ui_draw_footer(d, "NO UTC");
 }
 
-// --- entry point -------------------------------------------------------------
-
-// Dump the framebuffer so a panel can be reviewed without being looked at.
+// --- framebuffer dump --------------------------------------------------------
 //
 // Iterating on a 128x64 layout otherwise means asking someone to lean over the
-// bench and describe it, which is slow and lossy. This prints the 1024-byte
-// buffer as hex between markers; tools/panel_render.py turns that back into a
-// PNG. Flag-gated and off by default -- it writes to the same serial line the
-// KISS host uses.
+// bench and describe it. This prints the 1024-byte buffer as hex between
+// markers; tools/panel_render.py turns it back into a picture. Flag-gated and
+// off by default -- it writes to the serial line the KISS host uses.
 #if defined(NODE_PANEL_DUMP)
 #ifndef NODE_PANEL_DUMP_MS
 #define NODE_PANEL_DUMP_MS 10000UL
@@ -242,14 +290,17 @@ inline void display_ui_dump(Adafruit_SSD1306& d) {
   if (millis() - last_dump < NODE_PANEL_DUMP_MS) return;
   last_dump = millis();
   const NodeStatusView st = node_status();
-  Serial.printf("[panel] lora=%d/%d ble=%d/%d wifi=%d/%d espnow=%d/%d down=%s ok=%d mesh=%d\n",
+  Serial.printf("\n[panel] lora=%d/%d ble=%d/%d wifi=%d/%d espnow=%d/%d "
+                "down=%s ok=%d mesh=%d peers=%u nodes=%u relays=%u nomad=%u\n",
                 st.lora_present, st.lora_active, st.ble_present, st.ble_active,
                 st.wifi_present, st.wifi_active, st.espnow_present, st.espnow_active,
-                st.down_interface ? st.down_interface : "-", st.interfaces_ok, st.mesh_on);
+                st.down_interface ? st.down_interface : "-", st.interfaces_ok,
+                st.mesh_on, (unsigned)st.peers, (unsigned)st.nodes,
+                (unsigned)st.relays, (unsigned)st.nomad);
   const uint8_t* buffer = d.getBuffer();
   if (buffer == nullptr) return;
   const size_t length = ((size_t)d.width() * (size_t)d.height()) / 8;
-  Serial.printf("\n[panel] %ux%u begin\n", (unsigned)d.width(), (unsigned)d.height());
+  Serial.printf("[panel] %ux%u begin\n", (unsigned)d.width(), (unsigned)d.height());
   for (size_t i = 0; i < length; ++i) {
     Serial.printf("%02x", buffer[i]);
     if ((i % 32) == 31) Serial.print('\n');
@@ -259,6 +310,8 @@ inline void display_ui_dump(Adafruit_SSD1306& d) {
 #else
 inline void display_ui_dump(Adafruit_SSD1306&) {}
 #endif
+
+// --- entry point -------------------------------------------------------------
 
 inline void display_ui_render(Adafruit_SSD1306& d) {
   const NodeStatusView s = node_status();
