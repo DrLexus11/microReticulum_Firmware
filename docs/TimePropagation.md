@@ -8,7 +8,9 @@ clock plumbing is already built and shipping on `feature/wall-time` -- a separat
 wall clock that never disturbs Transport's timers, persistence, provenance, and
 the safety rules. What is missing is **distribution**.
 
-Status: design. Written 2026-09-04 from what the bench taught us.
+Status: **steps 1-5 implemented and hardware-verified**, 2026-09-05.
+Written 2026-09-04 from what the bench taught us; the results below are
+measured, not projected.
 
 ---
 
@@ -151,7 +153,7 @@ rather than serving a plausible number.
 4. **Periodic signed announce and relay.** Cheap, needs no trust in relays, and
    turns time into a property of being near an authority.
 5. **Authority daemon** on Vox and the deck: NTP or GNSS in, signed assertions
-   out. Off-device, ordinary Python.
+   out. Off-device, ordinary Python. `tools/time_authority.py`.
 
 Steps 1 and 2 are worth doing regardless of TAK. Step 3 is the one that removes
 the manual CLI. Nothing here needs a hardware change: an RTC would only shorten
@@ -165,3 +167,72 @@ the bootstrap window, and it cannot originate time.
 - **No clock discipline or slewing.** We step forward under bounds. Sub-second
   accuracy is not required by anything we serve; minutes are the scale that
   matters for expiry and staleness.
+
+---
+
+## What steps 4 and 5 turned out to be
+
+**The carrier is an announce, and that was the whole design.** An authority owns
+a destination on `rnstransport.time.assertion` and announces it with the
+assertion as app data. Reticulum's existing machinery then does distribution,
+hop counting and deduplication, and every relay in between is untrusted by
+construction. No flooding protocol of our own, no relay state, no new packet
+type.
+
+Two consequences worth stating, because they simplify the format the design
+sketched above:
+
+- **No second signature layer is needed on this carrier.** A Reticulum announce
+  signs `destination_hash || public_key || name_hash || random_hash || ratchet
+  || app_data`, and Transport validates it before a handler ever sees it. The
+  assertion still carries its own Ed25519 signature over a domain-separated,
+  fixed-width message, because that is what makes it portable to a carrier that
+  is not an announce -- but on this one it is belt and braces, not the only
+  belt.
+- **No `authority` field on the wire.** The announce cryptographically binds the
+  identity that signed it, so a field naming the authority could only ever
+  agree or disagree with something already proven. It goes back in the day an
+  assertion travels over something other than an announce.
+
+### A library defect this exposed
+
+microReticulum only calls `Identity::remember()` for a destination it does not
+already know -- a deliberate divergence from Python, to spare the flash -- and
+announce handlers were being handed `Identity::recall_app_data()`. So a handler
+saw whatever the **first** announce from a destination ever carried, and never
+anything after it. Time beacons would have delivered one timestamp forever:
+a permanent replay, built in.
+
+The same defect means a node that changes its name is invisible to every peer
+that already knew it, which is worth knowing independently of time.
+
+Fixed by handing handlers the app data parsed from the announce in front of
+them (`Identity::announce_app_data`), falling back to the cache. The storage
+policy is untouched, so the flash-wear reasoning still holds.
+
+### Bench results, 2026-09-05
+
+One deck authority at stratum 1 (`tools/time_authority.py`, NTP), one relay
+(Rev 1, Wi-Fi + LoRa), one receiver (IMPR-RAD-01-REV2-2, LoRa only, no Wi-Fi
+credentials, two hops from the deck).
+
+| what was proven | evidence |
+|---|---|
+| solicited path works unattended on a fresh node | `[timesync] adopted UTC 1788592170500 ms from peer at stratum 1 (now 2)` |
+| assertions cross an untrusted relay | `Heard: 3  Verified: 3` on a node with no route of its own to the authority |
+| agreement refreshes confidence without adopting | `Verified: 34 s ago` while `Adopted: 0` |
+| a listen-only node with only a restored clock corrects itself | `[timebeacon] adopted UTC 1788592757819 ms from authority <5b197a1c413f8ab9> at stratum 1`, recovering 5m28s of drift with **no time peer configured and no link opened** |
+| provenance stays honest | the page reports `Source: signed-beacon`, never `ntp` |
+| an unprovisioned signer is refused | `Refused: 1 not an authority` after emitting from a fresh identity |
+
+That fourth row is the one that matters. It is the OZD-01 case: a node that is
+unreachable, that no console and no link can get to, and whose OLED shows an
+uptime counter where a clock should be. It can now be told the time by
+something it merely overhears, and cannot be lied to by whatever carried it.
+
+### What is still not solved
+
+A node with **no** clock at all still cannot distinguish a live assertion from
+a recording -- only the nonce challenge can, and that needs a link. Such a node
+bootstraps to "probably right" and says so. Anti-rollback keeps a replay from
+ever moving it backwards, and the first real assertion after that fixes it.
