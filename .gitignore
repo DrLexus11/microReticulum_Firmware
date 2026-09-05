@@ -19,3 +19,7 @@ docker/workspace/*
 # PlatformIO leaves the Arduino preprocessor output beside the sketch
 RNode_Firmware.ino.cpp
 bench-runs/
+
+# Standalone bring-up sketches under tools/ are their own PlatformIO
+# projects; the root .pio/* rule does not reach their build output.
+tools/*/.pio/
