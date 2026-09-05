@@ -55,13 +55,24 @@ def kiss_frame(command, payload=b""):
 
 class KissProvisioner:
     def __init__(self, port, boot_wait=4.0, timeout=6.0, usb_jtag=False):
-        # On a board reached through the ESP32-S3's native USB-Serial/JTAG,
-        # RTS drives EN and DTR drives IO0. pyserial asserts both by default,
-        # which holds such a board in reset -- it answers nothing and looks
-        # dead. Measured on the second Rev 2 (N16R2, 303a:1001): DTR asserted
-        # keeps IO0 high for a normal boot, RTS deasserted releases EN, and any
-        # other combination either resets it or drops it into the ROM
-        # downloader. Boards behind a USB-serial bridge keep the old defaults.
+        # The ESP32-S3's native USB-Serial/JTAG gives these two lines opposite
+        # meanings depending on who owns the endpoint, which is worth stating
+        # plainly because it reads like a contradiction against
+        # tools/usb_jtag_boot.py:
+        #
+        #   ROM owns it   -- RTS drives EN, DTR drives IO0, both inverted. This
+        #                    is the strapping regime, and asserting DTR there
+        #                    selects the downloader.
+        #   The app owns it -- the lines are ordinary CDC signals, and DTR is
+        #                    the host-present indication the firmware's CDC
+        #                    waits on before it will transmit.
+        #
+        # Provisioning always talks to the running application, so DTR must be
+        # asserted here. Measured on the second Rev 2 (N16R2, 303a:1001):
+        # dtr=True answers immediately, dtr=False times out with the board
+        # perfectly healthy. RTS stays deasserted either way -- this never
+        # issues a reset, which is why the strapping regime does not apply.
+        # Boards behind a USB-serial bridge keep the old defaults.
         if usb_jtag:
             self.serial = serial.Serial(baudrate=115200, timeout=0.1,
                                         dsrdtr=False, rtscts=False)

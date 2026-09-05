@@ -2,12 +2,20 @@
 """Start the application on a board reached over the ESP32-S3 native USB.
 
 An ESP32-S3 that presents its own USB-Serial/JTAG (303a:1001) exposes reset and
-boot strapping on the CDC control lines: RTS drives EN, DTR drives IO0, and
-both are inverted. Any serial tool that opens the port with DTR asserted --
-which is the pyserial default -- therefore pulls IO0 low and drops the board
-into the ROM downloader. It then answers nothing: rnodeconf reports "did not
-respond", provisioning times out, and the board looks bricked while being
-perfectly healthy.
+boot strapping on the CDC control lines. Opening the port can therefore leave
+the board in the ROM downloader rather than the application, and it then
+answers nothing: rnodeconf reports "did not respond", provisioning times out,
+and the board looks bricked while being perfectly healthy.
+
+The sequence below is the one that was measured to recover it, repeatedly, on
+the second Rev 2 (N16R2). Deliberately stated as a measurement rather than a
+polarity rule: the strapping behaviour depends on the open transition and on
+whether the ROM or the application owns the endpoint, and a tidy story about
+which line means what did not survive contact with the board. What does hold:
+
+  - this sequence starts the application from the downloader;
+  - tools/ifac/provision.py must open with DTR asserted, or the running
+    application stops answering and ends up back in the downloader.
 
 This walks it back out without touching the board:
 

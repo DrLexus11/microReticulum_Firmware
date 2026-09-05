@@ -181,16 +181,17 @@ def boot_usb_jtag_app(env):
     physical S1 press -- which is exactly the manual step native USB is
     supposed to remove.
 
-    While the ROM owns the USB endpoint, RTS drives EN and DTR drives IO0, and
-    both are inverted: asserting DTR pulls IO0 *low*, which is the downloader.
-    Booting the application therefore means de-asserting DTR -- IO0 high --
-    and pulsing EN. Asserting it instead resets straight back into the ROM,
-    which is what happened here until the board was measured: esptool could
-    still connect with --before no_reset afterwards, proving the downloader
-    had never been left.
+    The sequence below -- DTR deasserted, pulse RTS -- is the one measured to
+    start the application after an upload, verified across repeated flashes of
+    the second Rev 2 (N16R2). The previous sequence asserted DTR instead, and
+    esptool could still connect with --before no_reset afterwards, proving the
+    downloader had never been left.
 
-    Once the app is running it presents its own CDC and the polarity no longer
-    applies, which is why this has to happen here and cannot be repeated later.
+    Stated as a measurement, not as a rule about which line drives what: the
+    behaviour depends on the open transition and on whether the ROM or the
+    application owns the endpoint. Note that tools/ifac/provision.py, which
+    talks to the *running* application, requires the opposite DTR state --
+    see the note there. Same two lines, different owner, different meaning.
     """
     try:
         if env.GetProjectOption("custom_usb_jtag_reset") not in ("yes", "true", "1"):
