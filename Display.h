@@ -197,6 +197,10 @@ int p_ad_y = 0;
 int p_as_x = 0;
 int p_as_y = 0;
 
+#if defined(NODE_PANEL_UI)
+#include "DisplayUI.h"
+#endif
+
 GFXcanvas1 stat_area(64, 64);
 GFXcanvas1 disp_area(64, 64);
 
@@ -1217,8 +1221,16 @@ void update_display(bool blank = false) {
           display.fillScreen(SSD1306_WHITE);
         #endif
 
-        update_stat_area();
-        update_disp_area();
+        #if defined(NODE_PANEL_UI)
+          // Our panel, not the inherited RNode screen. The two 64x64 canvases
+          // the latter composites are not allocated in this build, so this
+          // draws straight into the SSD1306 buffer -- one less kilobyte on a
+          // board with no PSRAM.
+          display_ui_render(display);
+        #else
+          update_stat_area();
+          update_disp_area();
+        #endif
       }
       
       #if BOARD_MODEL == BOARD_TECHO
