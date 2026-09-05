@@ -187,6 +187,17 @@ NodeStatusView node_status() {
   s.time_known = OS::wall_time_known();
   s.stratum = OS::wall_time_stratum();
   s.unix_ms = OS::wall_time_millis();
+  switch (OS::wall_time_source()) {
+    case OS::WallTimeSource::NTP:                  s.time_source = "NTP"; break;
+    case OS::WallTimeSource::GNSS:                 s.time_source = "GPS"; break;
+    case OS::WallTimeSource::RTC:                  s.time_source = "RTC"; break;
+    case OS::WallTimeSource::SIGNED_BEACON:        s.time_source = "BCN"; break;
+    case OS::WallTimeSource::AUTHENTICATED_CLIENT: s.time_source = "PER"; break;
+    // Restored from storage and never confirmed since: a lower bound, not a
+    // measurement. Worth flagging on the panel rather than dressing up as UTC.
+    case OS::WallTimeSource::PERSISTED:            s.time_source = "OLD"; break;
+    default:                                       s.time_source = ""; break;
+  }
 
   const NodeCensus& c = node_census();
   s.peers = c.counts[NODE_CENSUS_PEER];

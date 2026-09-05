@@ -27,12 +27,27 @@ def source(name):
         return handle.read()
 
 
-def define(text, name):
-    match = re.search(r"^#define\s+%s\s+(-?\d+)\s*$" % re.escape(name), text,
+def define(text, name, _seen=None):
+    """Resolve a #define to a number, following simple arithmetic on other
+    defines. The layout constants are expressed in terms of each other -- the
+    column gutters are the split minus a margin -- so reading only integer
+    literals would mean the tests could not see them at all."""
+    match = re.search(r"^#define\s+%s\s+(.+?)\s*$" % re.escape(name), text,
                       re.MULTILINE)
     if match is None:
         raise AssertionError("no #define for %s" % name)
-    return int(match.group(1))
+    expression = match.group(1)
+    _seen = set(_seen or ())
+    if name in _seen:
+        raise AssertionError("%s is defined in terms of itself" % name)
+    _seen.add(name)
+    for symbol in sorted(set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expression)),
+                         key=len, reverse=True):
+        expression = expression.replace(
+            symbol, str(define(text, symbol, _seen)))
+    if not re.fullmatch(r"[-+*/()\d\s]+", expression):
+        raise AssertionError("%s is not arithmetic: %s" % (name, match.group(1)))
+    return int(eval(expression))  # noqa: S307 - arithmetic only, checked above
 
 
 class PanelLayoutTests(unittest.TestCase):
@@ -103,6 +118,29 @@ class PanelLayoutTests(unittest.TestCase):
     def test_the_page_hint_does_not_take_footer_space(self):
         # 128x64 has no room for a legend telling you the buttons exist.
         self.assertNotIn("<P|N>", self.ui)
+
+    def test_content_is_inset_from_the_panel_edges(self):
+        # The design insets its content rather than running text against the
+        # glass, and it is most of what stops the panel looking poured in.
+        margin = define(self.ui, "UI_MARGIN")
+        self.assertGreater(margin, 0)
+        self.assertEqual(define(self.ui, "UI_X_LEFT"), margin)
+        self.assertEqual(define(self.ui, "UI_X_RIGHT_EDGE"), PANEL_WIDTH - margin)
+
+    def test_badges_clear_the_rules_above_and_below(self):
+        # A fill that butts against both rules merges with them into a band.
+        top = define(self.ui, "UI_Y_RULE_TOP")
+        row = define(self.ui, "UI_Y_IFACE")
+        bottom = define(self.ui, "UI_Y_RULE_MID")
+        height = define(self.ui, "UI_BADGE_H")
+        self.assertGreater(row, top, "the badge fill touches the rule above")
+        self.assertLess(row + height, bottom,
+                        "the badge fill touches the rule below")
+
+    def test_the_columns_are_padded_off_the_vertical_rule(self):
+        split = define(self.ui, "UI_X_SPLIT")
+        self.assertLess(define(self.ui, "UI_X_LEFT_END"), split)
+        self.assertGreater(define(self.ui, "UI_X_RIGHT"), split)
 
     def test_the_body_columns_do_not_collide(self):
         # The left column holds the mesh counts, the right this board's own

@@ -118,6 +118,10 @@ struct NodeStatusView {
   bool time_known = false;
   uint8_t stratum = 0;
   uint64_t unix_ms = 0;
+  // Where the clock came from, as a three-character tag for the panel. A time
+  // that is right and a time that is merely restored look identical otherwise,
+  // and only one of them should be trusted.
+  const char* time_source = "";
 
   uint16_t peers = 0;
   uint16_t nodes = 0;
