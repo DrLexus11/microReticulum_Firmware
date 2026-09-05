@@ -142,9 +142,21 @@ class ObservabilityTests(unittest.TestCase):
         # A node hearing assertions and refusing them looks exactly like one
         # hearing nothing, and the difference is the whole diagnosis.
         pages = source("Pages.h")
-        for field in ("Authorities", "Heard", "Verified", "Adopted",
-                      "not an authority", "bad signature", "stale"):
+        # Terse on purpose: this page is rendered into a string and then
+        # encrypted, and on a board at ten percent free heap the verbose
+        # version of this block is what pushed a request for it into an
+        # out-of-memory abort. The facts survive; the prose did not.
+        for field in ("Auth/emit", "H/V/A", "Refused"):
             self.assertIn(field, pages)
+
+    def test_a_page_is_never_worth_the_node(self):
+        # A failed `new` inside Cryptography::HMAC throws bad_alloc with
+        # nothing to catch it, so the node aborts mid-reply. Below the floor
+        # it answers with the one fact that matters instead.
+        pages = source("Pages.h")
+        self.assertIn("PAGE_MIN_FREE_HEAP", pages)
+        self.assertIn("ESP.getFreeHeap() < PAGE_MIN_FREE_HEAP", pages)
+        self.assertIn("LOW MEMORY", pages)
 
     def test_a_stalled_time_client_says_so(self):
         # Both of these paths returned silently, which made a client that never

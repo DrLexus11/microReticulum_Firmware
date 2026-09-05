@@ -182,6 +182,13 @@ void add_interface_details(RNS::Bytes& content, const RNS::Interface& interface)
 // msgpack-encoded bytes — Link::handle_request splices it verbatim into
 // the response envelope (Link.cpp:994). Python RNS auto-encodes
 // arbitrary return values; in C++ we encode manually here.
+// Below this much free heap, pages are refused rather than attempted. A fetch
+// costs roughly seven kilobytes transiently on the OZD fixture, which sits at
+// twenty-two free; the floor leaves room for the reply that says so.
+#ifndef PAGE_MIN_FREE_HEAP
+#define PAGE_MIN_FREE_HEAP 14336
+#endif
+
 RNS::Bytes serve_page(
 	const RNS::Bytes& path,
 	const RNS::Bytes& data,
@@ -190,6 +197,33 @@ RNS::Bytes serve_page(
 	const RNS::Identity& remote_identity,
 	double requested_at
 ) {
+
+#if defined(ESP32)
+	// Building a page and encrypting the reply needs several kilobytes of
+	// contiguous heap. On a board already down to ten percent free, that
+	// allocation is the one that fails -- and a failed `new` inside
+	// Cryptography::HMAC throws bad_alloc with nothing to catch it, so the
+	// node calls abort() and reboots. Measured on the OZD fixture: a request
+	// for /page/time.mu killed it, min-free having fallen to 14.9 KB.
+	//
+	// A diagnostics page is not worth a node. Below the floor it says so in
+	// a handful of bytes and stays up, which is also the more useful answer:
+	// "this node is nearly out of memory" is exactly what the operator needed
+	// to know, and it arrives instead of a reboot loop.
+	if (ESP.getFreeHeap() < PAGE_MIN_FREE_HEAP) {
+		std::string terse = "> LOW MEMORY\n\nFree heap: ";
+		terse += std::to_string(ESP.getFreeHeap());
+		terse += " bytes\nLargest  : ";
+		terse += std::to_string(ESP.getMaxAllocHeap());
+		terse += " bytes\n\nPages are not served below ";
+		terse += std::to_string((unsigned)PAGE_MIN_FREE_HEAP);
+		terse += " bytes: rendering one costs more than that and the node\n";
+		terse += "would abort mid-reply rather than answer.\n";
+		MsgPack::Packer packer;
+		packer.packBinary((const uint8_t*)terse.data(), terse.size());
+		return RNS::Bytes(packer.data(), packer.size());
+	}
+#endif
 
 	std::string category;
 	{
@@ -337,22 +371,20 @@ RNS::Bytes serve_page(
       // does not match, or a relay sitting on stale assertions.
       {
         const TimeBeaconStats& tb = time_beacon_stats();
-        content << ">> Signed assertions\n";
-        content << "Authorities : " << std::to_string(time_sync_authorities.size()) << "\n";
-        content << "Originating : " << (time_beacon_enabled ? "yes" : "no");
-        if (time_beacon_enabled) {
-          content << " (" << std::to_string(tb.emitted) << " emitted, every "
-                  << std::to_string(time_beacon_interval_s) << " s)";
-        }
-        content << "\n";
-        content << "Heard       : " << std::to_string(tb.heard) << "\n";
-        content << "Verified    : " << std::to_string(tb.verified) << "\n";
-        content << "Adopted     : " << std::to_string(tb.adopted) << "\n";
-        content << "Refused     : " << std::to_string(tb.refused_unlisted) << " not an authority, "
-                << std::to_string(tb.refused_signature) << " bad signature, "
-                << std::to_string(tb.refused_stale) << " stale, "
-                << std::to_string(tb.refused_rules) << " unsafe\n";
-        content << "\n";
+        // Deliberately terse. This page is rendered into a std::string and
+        // then encrypted, and on a board at ten percent free heap the length
+        // of it is not cosmetic -- the verbose version of this block is what
+        // pushed a request for this very page into an out-of-memory abort.
+        content << ">> Assertions\n";
+        content << "Auth/emit : " << std::to_string(time_sync_authorities.size())
+                << "/" << std::to_string(tb.emitted) << "\n";
+        content << "H/V/A     : " << std::to_string(tb.heard) << "/"
+                << std::to_string(tb.verified) << "/"
+                << std::to_string(tb.adopted) << "\n";
+        content << "Refused   : " << std::to_string(tb.refused_unlisted) << "u/"
+                << std::to_string(tb.refused_signature) << "s/"
+                << std::to_string(tb.refused_stale) << "t/"
+                << std::to_string(tb.refused_rules) << "r\n";
       }
       content << ">> Clock-domain check\n";
       content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";
