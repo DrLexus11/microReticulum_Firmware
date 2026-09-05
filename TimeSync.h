@@ -21,6 +21,7 @@
 
 #include <MsgPack.h>
 #include <microReticulum/Cryptography/Random.h>
+#include "NodeStatus.h"
 
 #ifndef TIME_SYNC_POLL_MS
 #define TIME_SYNC_POLL_MS 60000UL
@@ -197,6 +198,7 @@ inline void time_sync_response(const RNS::Bytes& response) {
 
   if (result == OS::WallTimeResult::ACCEPTED) {
     st.adoptions++;
+    node_time_confirm("PER");
     printf("[timesync] adopted UTC %llu ms from peer at stratum %u (now %u)\n",
            (unsigned long long)unix_ms, (unsigned)peer_stratum,
            (unsigned)OS::wall_time_stratum());
@@ -208,6 +210,7 @@ inline void time_sync_response(const RNS::Bytes& response) {
   // rather than counting it as a failure.
   if (result == OS::WallTimeResult::BACKWARDS) {
     OS::note_wall_time_verified();
+    node_time_confirm("PER");
     time_sync_finish(nullptr);
     return;
   }

@@ -219,8 +219,16 @@ NodeStatusView node_status() {
   s.time_known = OS::wall_time_known();
   s.stratum = OS::wall_time_stratum();
   s.unix_ms = OS::wall_time_millis();
+  // Current means "a trusted source has confirmed this recently", not "it did
+  // not come from disk". A restored clock an authority agreed with an hour ago
+  // is a better clock than one adopted from a peer last week.
+  const uint64_t now_ms = OS::monotonic_time_millis();
+  const bool confirmed =
+      node_time_confirmed_at != 0 && now_ms >= node_time_confirmed_at &&
+      (now_ms - node_time_confirmed_at) < NODE_TIME_CONFIRM_WINDOW_MS;
   s.time_current = s.time_known &&
-                   OS::wall_time_source() != OS::WallTimeSource::PERSISTED;
+                   (OS::wall_time_source() != OS::WallTimeSource::PERSISTED ||
+                    confirmed);
   switch (OS::wall_time_source()) {
     case OS::WallTimeSource::NTP:                  s.time_source = "NTP"; break;
     case OS::WallTimeSource::GNSS:                 s.time_source = "GPS"; break;
@@ -231,6 +239,12 @@ NodeStatusView node_status() {
     // measurement. Worth flagging on the panel rather than dressing up as UTC.
     case OS::WallTimeSource::PERSISTED:            s.time_source = "OLD"; break;
     default:                                       s.time_source = ""; break;
+  }
+  // A restored clock that has been confirmed is labelled by whoever confirmed
+  // it, not "OLD" -- the label should say what is true now.
+  if (confirmed && OS::wall_time_source() == OS::WallTimeSource::PERSISTED &&
+      node_time_confirmed_by != nullptr) {
+    s.time_source = node_time_confirmed_by;
   }
 
   const NodeCensus& c = node_census();

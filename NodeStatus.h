@@ -103,6 +103,31 @@ inline void node_census_record(NodeCensusKind kind, const uint8_t* hash, size_t 
 inline uint32_t node_crash_count = 0;   // watchdog or brownout
 inline uint32_t node_panic_count = 0;   // firmware exception
 
+// --- confirmation ------------------------------------------------------------
+//
+// A clock restored from storage that an authority has since agreed with is no
+// longer merely a lower bound -- it has been checked. But the library records
+// only *when* it was last verified, not by whom, and it cannot change the
+// provenance on the agreement path: adopt_wall_time returns BACKWARDS when
+// there is nothing to apply, so the source stays PERSISTED forever.
+//
+// Observed on the bench: an assertion from Columba reached the node, the node
+// verified it, and the panel went on showing uptime because it keys off
+// provenance. So the firmware records the confirmation itself.
+#ifndef NODE_TIME_CONFIRM_WINDOW_MS
+#define NODE_TIME_CONFIRM_WINDOW_MS 7200000ULL   // matches a beacon's validity
+#endif
+
+inline const char* node_time_confirmed_by = nullptr;
+inline uint64_t node_time_confirmed_at = 0;
+
+// Called by whichever path heard a trusted source agree with us, whether or
+// not the clock actually moved.
+inline void node_time_confirm(const char* source) {
+  node_time_confirmed_by = source;
+  node_time_confirmed_at = RNS::Utilities::OS::monotonic_time_millis();
+}
+
 // --- the gathered view -------------------------------------------------------
 
 struct NodeStatusView {
