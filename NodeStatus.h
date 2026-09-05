@@ -50,7 +50,13 @@ enum NodeCensusKind : uint8_t {
   NODE_CENSUS_PEER = 0,
   NODE_CENSUS_RELAY = 1,
   NODE_CENSUS_NOMAD = 2,
-  NODE_CENSUS_KINDS = 3,
+  // Distinct *identities* heard announcing, whatever they announced. This is
+  // the one that means "nodes": the path table counts destinations, and every
+  // node announces several of them -- transport, probe, management, nomadnet,
+  // lxmf delivery, propagation -- so its size reads four to eight times the
+  // number of actual devices. Sixteen paths on the bench is four boards.
+  NODE_CENSUS_NODE = 3,
+  NODE_CENSUS_KINDS = 4,
 };
 
 #ifndef NODE_CENSUS_CAPACITY
@@ -61,7 +67,7 @@ struct NodeCensus {
   uint32_t prefix[NODE_CENSUS_CAPACITY];
   uint8_t kind[NODE_CENSUS_CAPACITY];
   uint16_t used = 0;
-  uint16_t counts[NODE_CENSUS_KINDS] = {0, 0, 0};
+  uint16_t counts[NODE_CENSUS_KINDS] = {0, 0, 0, 0};
   // Non-zero once the table is full: the counts have stopped rising and the
   // panel should say so rather than report a number it knows is short.
   uint16_t overflowed = 0;
@@ -124,7 +130,11 @@ struct NodeStatusView {
   const char* time_source = "";
 
   uint16_t peers = 0;
+  // Distinct identities heard, not path-table entries. See NODE_CENSUS_NODE.
   uint16_t nodes = 0;
+  // Path-table size: destinations reachable, several per node. Kept for the
+  // interfaces page, where "paths" is what it is called.
+  uint16_t paths = 0;
   uint16_t relays = 0;
   uint16_t nomad = 0;
   bool census_full = false;

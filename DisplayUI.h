@@ -203,7 +203,7 @@ inline void ui_draw_main(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t p
   const char* more = s.census_full ? "+" : "";
   snprintf(value, sizeof(value), "%u%s", (unsigned)s.peers, more);
   ui_pair(d, UI_X_LEFT, UI_X_LEFT_END, UI_Y_BODY0, "PEERS", value);
-  snprintf(value, sizeof(value), "%u", (unsigned)s.nodes);
+  snprintf(value, sizeof(value), "%u%s", (unsigned)s.nodes, more);
   ui_pair(d, UI_X_LEFT, UI_X_LEFT_END, UI_Y_BODY1, "NODES", value);
   snprintf(value, sizeof(value), "%u%s", (unsigned)s.relays, more);
   ui_pair(d, UI_X_LEFT, UI_X_LEFT_END, UI_Y_BODY2, "RELAY", value);
@@ -282,7 +282,7 @@ inline void ui_draw_peers(Adafruit_SSD1306& d, const NodeStatusView& s, uint8_t 
   ui_pair(d, UI_X_LEFT, UI_X_RIGHT_EDGE, UI_Y_BODY1, "RELAYS", value);
   snprintf(value, sizeof(value), "%u", (unsigned)s.nomad);
   ui_pair(d, UI_X_LEFT, UI_X_RIGHT_EDGE, UI_Y_BODY2, "NOMAD SITES", value);
-  snprintf(value, sizeof(value), "%u", (unsigned)s.nodes);
+  snprintf(value, sizeof(value), "%u", (unsigned)s.paths);
   ui_pair(d, UI_X_LEFT, UI_X_RIGHT_EDGE, UI_Y_BODY3, "PATHS KNOWN", value);
   ui_draw_footer(d, s.census_full ? "CENSUS TABLE FULL" : "SEEN SINCE BOOT");
 }

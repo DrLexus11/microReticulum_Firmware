@@ -204,7 +204,21 @@ class PanelSemanticsTests(unittest.TestCase):
         # which is always on a board with no modem fitted. Gating the mesh
         # indicator on it reported MESH -- on a node with 17 paths and two
         # live radios.
-        self.assertIn("s.mesh_on = any_radio && (s.nodes > 0)", self.status)
+        self.assertIn("s.mesh_on = any_radio && (s.paths > 0)", self.status)
+
+    def test_nodes_counts_identities_not_destinations(self):
+        # Every node announces several destinations -- transport, probe,
+        # management, nomadnet, lxmf delivery, propagation -- so the path table
+        # reads four to eight times the number of actual devices. Sixteen paths
+        # on the bench was four boards, under a label that said NODES.
+        self.assertIn("s.nodes = c.counts[NODE_CENSUS_NODE]", self.status)
+        self.assertIn("s.paths = (uint16_t)RNS::Transport::new_path_table().size()",
+                      self.status)
+        header = source("NodeStatus.h")
+        self.assertIn("NODE_CENSUS_NODE", header)
+        # Keyed on the identity, or one node announcing six destinations counts
+        # as six nodes.
+        self.assertIn("announced_identity.hash()", self.status)
         self.assertIn("s.relaying", self.status)
 
     def test_absent_hardware_is_not_reported_as_down(self):

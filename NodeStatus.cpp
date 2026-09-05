@@ -118,7 +118,26 @@ class CensusHandler : public RNS::AnnounceHandler {
 
 }  // namespace
 
+// Counts one entry per distinct announcing identity, regardless of aspect.
+// The others key on the destination hash; this one has to key on the identity,
+// or a single node announcing six destinations would count as six nodes.
+class NodeCountHandler : public RNS::AnnounceHandler {
+ public:
+  NodeCountHandler() : RNS::AnnounceHandler(nullptr) {}
+  void received_announce(const RNS::Bytes& destination_hash,
+                         const RNS::Identity& announced_identity,
+                         const RNS::Bytes& app_data) override {
+    (void)destination_hash;
+    (void)app_data;
+    if (!announced_identity) return;
+    const RNS::Bytes hash = announced_identity.hash();
+    node_census_record(NODE_CENSUS_NODE, hash.data(), hash.size());
+  }
+};
+
 void node_census_begin() {
+  static RNS::HAnnounceHandler nodes(new NodeCountHandler());
+  RNS::Transport::register_announce_handler(nodes);
   static RNS::HAnnounceHandler peers(
       new CensusHandler("lxmf.delivery", NODE_CENSUS_PEER));
   static RNS::HAnnounceHandler relays(
@@ -204,7 +223,8 @@ NodeStatusView node_status() {
   s.relays = c.counts[NODE_CENSUS_RELAY];
   s.nomad = c.counts[NODE_CENSUS_NOMAD];
   s.census_full = (c.overflowed > 0);
-  s.nodes = (uint16_t)RNS::Transport::new_path_table().size();
+  s.nodes = c.counts[NODE_CENSUS_NODE];
+  s.paths = (uint16_t)RNS::Transport::new_path_table().size();
 
   s.uptime_s = node_uptime_seconds();
 #if MCU_VARIANT == MCU_ESP32
@@ -233,7 +253,12 @@ NodeStatusView node_status() {
   //
   // Relaying is a separate fact and belongs on the interfaces page, not here.
   const bool any_radio = s.lora_active || s.ble_active || s.espnow_active || s.wifi_active;
-  s.mesh_on = any_radio && (s.nodes > 0);
+  // Paths, not nodes. "Somewhere to reach" is a route in the table; the node
+  // count is now distinct identities heard announcing since boot, which is
+  // legitimately zero for the first announce interval after a restart. Gating
+  // the mesh indicator on it made a freshly booted, correctly peered board
+  // report NO MESH for minutes.
+  s.mesh_on = any_radio && (s.paths > 0);
   s.relaying = (op_mode == MODE_TNC) && RNS::Reticulum::transport_enabled();
 
   return s;
