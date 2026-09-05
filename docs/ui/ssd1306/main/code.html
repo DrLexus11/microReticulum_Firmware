@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reticulum OLED 128x64 UI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+  <style>
+    /* 1-bit OLED pixel rendering font */
+    .font-oled {
+      font-family: 'Share Tech Mono', monospace;
+      letter-spacing: -0.02em;
+    }
+    .font-pixel {
+      font-family: 'VT323', monospace;
+      image-rendering: pixelated;
+    }
+    /* Simulate crisp OLED subpixel grid / monochrome 1-bit glow */
+    .oled-screen {
+      width: 128px;
+      height: 64px;
+      background-color: #000000;
+      color: #ffffff;
+      box-shadow: 0 0 20px rgba(255,255,255,0.06);
+      image-rendering: pixelated;
+    }
+    /* Scaled hardware preview */
+    .pixel-perfect {
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+    }
+    /* Active indicator tag */
+    .inv-tag {
+      background-color: #ffffff;
+      color: #000000;
+    }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col items-center justify-center p-4 selection:bg-white selection:text-black">
+
+  <div class="max-w-xl w-full flex flex-col items-center gap-6">
+    <!-- Header info -->
+    <div class="text-center">
+      <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-zinc-800 bg-zinc-900 text-xs text-zinc-400 mb-2 font-mono">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        0.96" SSD1306 / SH1106 OLED (128×64 Monochrome)
+      </div>
+      <h1 class="text-xl font-bold tracking-tight text-white font-mono">RETICULUM MESH NODE // BOOT MAIN</h1>
+      <p class="text-xs text-zinc-400 font-mono mt-0.5">Navigation: [BTN1 &lt; PREV] · [BTN2 NEXT &gt;] | Page 1/4</p>
+    </div>
+
+    <!-- Realistic Hardware Mockup Chassis -->
+    <div class="bg-gradient-to-b from-zinc-900 via-zinc-900 to-black p-6 rounded-2xl border border-zinc-800 shadow-2xl relative w-full flex flex-col items-center">
+      <!-- Hardware screws & accents -->
+      <div class="absolute top-3 left-3 w-2 h-2 rounded-full border border-zinc-700 bg-zinc-800 flex items-center justify-center"><div class="w-1 h-0.5 bg-zinc-600"></div></div>
+      <div class="absolute top-3 right-3 w-2 h-2 rounded-full border border-zinc-700 bg-zinc-800 flex items-center justify-center"><div class="w-1 h-0.5 bg-zinc-600"></div></div>
+      <div class="absolute bottom-3 left-3 w-2 h-2 rounded-full border border-zinc-700 bg-zinc-800 flex items-center justify-center"><div class="w-1 h-0.5 bg-zinc-600"></div></div>
+      <div class="absolute bottom-3 right-3 w-2 h-2 rounded-full border border-zinc-700 bg-zinc-800 flex items-center justify-center"><div class="w-1 h-0.5 bg-zinc-600"></div></div>
+
+      <div class="w-full flex items-center justify-between mb-3 px-2 font-mono text-[10px] text-zinc-500 uppercase tracking-wider">
+        <span>RNS-NODE-01</span>
+        <span class="text-zinc-600">FW v0.7.4-mesh</span>
+        <span>1-BIT DISPLAY</span>
+      </div>
+
+      <!-- OLED Glass Bezel -->
+      <div class="bg-black p-3.5 rounded-lg border-2 border-zinc-800 ring-1 ring-zinc-700/50 shadow-inner flex flex-col items-center relative">
+        <!-- Glass reflections subtle -->
+        <div class="absolute inset-0 bg-gradient-to-tr from-transparent via-white/[0.02] to-transparent pointer-events-none rounded-lg"></div>
+
+        <!-- 4X Scaled 128x64 display (renders 512px x 256px for clear readability on screen) -->
+        <div class="relative overflow-hidden border border-zinc-900" style="width: 512px; height: 256px; transform-origin: top center;">
+          
+          <!-- Inner Exact 128x64 UI scaled 4x using CSS transform -->
+          <div class="oled-screen font-oled select-none absolute top-0 left-0" style="width: 128px; height: 64px; transform: scale(4); transform-origin: 0 0; line-height: 1;">
+            
+            <!-- HEADER LINE (Y: 0..9px) : Node Name + Capabilities + Page Indicator -->
+            <div class="w-full h-[10px] border-b border-white flex items-center justify-between px-[2px] text-[7px] leading-none bg-black">
+              <!-- Node Name -->
+              <div class="flex items-center gap-[2px] truncate max-w-[66px]">
+                <span class="font-bold tracking-tight text-[7px]">#KILO-09</span>
+              </div>
+
+              <!-- Capabilities Flags (RRC hub, Propagation PR) -->
+              <div class="flex items-center gap-[2px]">
+                <span class="inv-tag px-[2px] py-[0.5px] font-bold text-[6px] tracking-tighter" title="RRC Hub ON">RRC</span>
+                <span class="inv-tag px-[2px] py-[0.5px] font-bold text-[6px] tracking-tighter" title="Propagation Storage Node">PR</span>
+                <span class="text-[6.5px] text-white tracking-tighter ml-[1px]">1/4</span>
+              </div>
+            </div>
+
+            <!-- ROW 2: ACTIVE INTERFACES BAR (Y: 10..18px) -->
+            <!-- LoRA, BLE, WiFi 2.4G, ESP-NOW with clear TX/RX active states -->
+            <div class="w-full h-[9px] border-b border-white/40 flex items-center justify-between px-[2px] text-[6.5px] leading-none">
+              <!-- Interface badges: Inverted = broadcasting/active, Outline/plain = disabled/idle -->
+              <div class="flex items-center gap-[2.5px] tracking-tight">
+                <!-- LoRA: Active -->
+                <span class="inv-tag font-bold px-[1px] text-[6px]">LR</span>
+                <!-- BLE: Active -->
+                <span class="inv-tag font-bold px-[1px] text-[6px]">BT</span>
+                <!-- WiFi 2.4G: Active -->
+                <span class="inv-tag font-bold px-[1px] text-[6px]">WF</span>
+                <!-- ESP-NOW: Active -->
+                <span class="inv-tag font-bold px-[1px] text-[6px]">EN</span>
+              </div>
+              <!-- Network Time (NTC Synced) -->
+              <div class="flex items-center gap-[1px] text-[6.5px] font-mono">
+                <span class="text-[5.5px]">NTC</span>
+                <span class="font-bold">14:28z</span>
+              </div>
+            </div>
+
+            <!-- ROW 3 & 4: MAIN METRICS GRID (Y: 19..53px) -->
+            <div class="w-full h-[35px] grid grid-cols-2 divide-x divide-white/40 px-[2px] py-[1.5px] leading-none">
+              
+              <!-- Left Column: Mesh Peer & Routing Stats -->
+              <div class="flex flex-col justify-between pr-[2px] text-[6.5px]">
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">PEERS</span>
+                  <span class="font-bold text-[7px]">18</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">NODES</span>
+                  <span class="font-bold text-[7px]">42</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">RELAY</span>
+                  <span class="font-bold text-[7px]">07</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">NOMAD</span>
+                  <span class="font-bold text-[7px]">03</span>
+                </div>
+              </div>
+
+              <!-- Right Column: System Telemetry & Fault Counters -->
+              <div class="flex flex-col justify-between pl-[2.5px] text-[6.5px]">
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">UPTIME</span>
+                  <span class="font-mono text-[6.5px]">4d18h</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">BOOTS</span>
+                  <span class="font-bold text-[7px]">12</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">CRASH</span>
+                  <span class="font-bold text-[7px]">0</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80">PANIC</span>
+                  <span class="font-bold text-[7px]">0</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ROW 5: FOOTER STATUS BAR (Y: 54..63px) -->
+            <!-- Real-time link status & 2-button navigation prompt -->
+            <div class="w-full h-[10px] border-t border-white flex items-center justify-between px-[2px] text-[6px] bg-black">
+              <!-- Traffic / Link signal sparkline or active status -->
+              <div class="flex items-center gap-[2px]">
+                <span class="w-[3px] h-[3px] bg-white inline-block"></span>
+                <span class="tracking-tight text-[6px]">RX/TX OK · MESH ON</span>
+              </div>
+              
+              <!-- Hardware button prompts for the current 2-button setup -->
+              <div class="flex items-center gap-[3px] font-bold text-[6px]">
+                <span>&lt;PREV</span>
+                <span class="text-white/60">|</span>
+                <span>NEXT&gt;</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Physical Hardware Buttons -->
+      <div class="w-full mt-5 flex items-center justify-between px-8">
+        <!-- Button 1: PREV -->
+        <div class="flex flex-col items-center gap-1.5">
+          <button class="w-14 h-9 bg-zinc-800 active:bg-zinc-700 hover:bg-zinc-750 rounded border-2 border-zinc-700 shadow-md flex items-center justify-center transition-all group">
+            <span class="w-3 h-3 border-t-2 border-l-2 border-zinc-400 rotate-[-45deg] group-hover:border-white transition-colors"></span>
+          </button>
+          <span class="text-[10px] font-mono text-zinc-400 uppercase tracking-widest font-semibold">[BTN 1] PREV</span>
+        </div>
+
+        <div class="flex flex-col items-center text-center">
+          <div class="w-2 h-2 rounded-full bg-emerald-500/80 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+          <span class="text-[9px] font-mono text-zinc-500 mt-1 uppercase">SYNCED</span>
+        </div>
+
+        <!-- Button 2: NEXT -->
+        <div class="flex flex-col items-center gap-1.5">
+          <button class="w-14 h-9 bg-zinc-800 active:bg-zinc-700 hover:bg-zinc-750 rounded border-2 border-zinc-700 shadow-md flex items-center justify-center transition-all group">
+            <span class="w-3 h-3 border-t-2 border-r-2 border-zinc-400 rotate-[45deg] group-hover:border-white transition-colors"></span>
+          </button>
+          <span class="text-[10px] font-mono text-zinc-400 uppercase tracking-widest font-semibold">NEXT [BTN 2]</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Design Specification & 1:1 Pixel Reference Card -->
+    <div class="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 font-mono text-xs text-zinc-300 space-y-3">
+      <div class="flex items-center justify-between border-b border-zinc-800 pb-2">
+        <span class="text-white font-bold">1:1 ACTUAL RESOLUTION (128×64px Native Preview)</span>
+        <span class="text-[10px] text-zinc-500">Scale: 100%</span>
+      </div>
+
+      <div class="flex items-center gap-5">
+        <!-- Real size 128x64 box -->
+        <div class="oled-screen border border-zinc-700 relative overflow-hidden shrink-0" style="width: 128px; height: 64px;">
+          <!-- Exact unscaled native pixels representation -->
+          <div class="w-full h-full flex flex-col justify-between p-[1px] text-[5.5px] leading-tight select-none">
+            <div class="flex justify-between border-b border-white pb-[1px]">
+              <span class="font-bold">#KILO-09</span>
+              <div><span class="inv-tag px-[1px]">RRC</span> <span class="inv-tag px-[1px]">PR</span> 1/4</div>
+            </div>
+            <div class="flex justify-between text-[5px] border-b border-white/40 pb-[0.5px]">
+              <span>[LR][BT][WF][EN]</span>
+              <span>14:28z</span>
+            </div>
+            <div class="grid grid-cols-2 gap-x-1 text-[5px]">
+              <div>P:18 N:42 R:07</div>
+              <div>UP:4d18h B:12</div>
+              <div>NOMAD:03</div>
+              <div>CR:0 PN:0</div>
+            </div>
+            <div class="flex justify-between border-t border-white pt-[0.5px] text-[5px]">
+              <span>RX/TX OK</span>
+              <span>&lt;P | N&gt;</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="text-[11px] text-zinc-400 space-y-1">
+          <p><strong class="text-white">Active Interfaces:</strong> Inverted white boxes indicate active broadcast: <span class="text-white font-mono font-bold">LR</span> (LoRa), <span class="text-white font-mono font-bold">BT</span> (BLE), <span class="text-white font-mono font-bold">WF</span> (WiFi 2.4GHz), <span class="text-white font-mono font-bold">EN</span> (ESP-NOW).</p>
+          <p><strong class="text-white">Caps / Services:</strong> <span class="text-white font-mono font-bold">RRC</span> (Group Chat Hub active), <span class="text-white font-mono font-bold">PR</span> (Propagation store-and-forward active).</p>
+          <p><strong class="text-white">Telemetry & Mesh:</strong> Peers (18), Nodes (42), Relays (07), Nomad Sites (03) | Boots (12), Crashes (0), Panics (0), Uptime & Network Time (NTC).</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scalable 4-Button Architecture Preview Roadmap -->
+    <div class="w-full bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-4 font-mono text-xs text-zinc-400">
+      <div class="flex items-center gap-2 text-white font-semibold mb-1">
+        <svg class="w-4 h-4 text-zinc-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        Multi-Page Architecture (Forward / Back Navigation)
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-[11px]">
+        <div class="p-2 rounded bg-zinc-800/80 border border-white/20 text-white font-medium">
+          <div class="text-white/60 text-[9px]">PAGE 1 (CURRENT)</div>
+          MAIN STATUS / METRICS
+        </div>
+        <div class="p-2 rounded bg-zinc-950/60 border border-zinc-800">
+          <div class="text-zinc-500 text-[9px]">PAGE 2</div>
+          RRC CHAT HUB
+        </div>
+        <div class="p-2 rounded bg-zinc-950/60 border border-zinc-800">
+          <div class="text-zinc-500 text-[9px]">PAGE 3</div>
+          PEERS & NOMAD SITES
+        </div>
+        <div class="p-2 rounded bg-zinc-950/60 border border-zinc-800">
+          <div class="text-zinc-500 text-[9px]">PAGE 4</div>
+          INTERFACES & CONFIG
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
