@@ -54,8 +54,23 @@ def kiss_frame(command, payload=b""):
 
 
 class KissProvisioner:
-    def __init__(self, port, boot_wait=4.0, timeout=6.0):
-        self.serial = serial.Serial(port, 115200, timeout=0.1)
+    def __init__(self, port, boot_wait=4.0, timeout=6.0, usb_jtag=False):
+        # On a board reached through the ESP32-S3's native USB-Serial/JTAG,
+        # RTS drives EN and DTR drives IO0. pyserial asserts both by default,
+        # which holds such a board in reset -- it answers nothing and looks
+        # dead. Measured on the second Rev 2 (N16R2, 303a:1001): DTR asserted
+        # keeps IO0 high for a normal boot, RTS deasserted releases EN, and any
+        # other combination either resets it or drops it into the ROM
+        # downloader. Boards behind a USB-serial bridge keep the old defaults.
+        if usb_jtag:
+            self.serial = serial.Serial(baudrate=115200, timeout=0.1,
+                                        dsrdtr=False, rtscts=False)
+            self.serial.port = port
+            self.serial.dtr = True
+            self.serial.rts = False
+            self.serial.open()
+        else:
+            self.serial = serial.Serial(port, 115200, timeout=0.1)
         self.timeout = timeout
         self.sequence = 1
         ready_at = time.monotonic() + boot_wait
@@ -429,6 +444,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="board serial device")
     parser.add_argument("--boot-wait", type=float, default=4.0)
+    parser.add_argument("--usb-jtag", action="store_true",
+                        help="board is on the ESP32-S3 native USB-Serial/JTAG, "
+                             "where RTS drives EN -- asserting it, as pyserial "
+                             "does by default, holds the board in reset")
     sub = parser.add_subparsers(dest="action", required=True)
 
     enable = sub.add_parser("enable", help="stage and commit protected operation")
@@ -464,7 +483,8 @@ def main():
                             "node -- including supplying it UTC via /time")
     args = parser.parse_args()
 
-    client = KissProvisioner(args.port, boot_wait=args.boot_wait)
+    client = KissProvisioner(args.port, boot_wait=args.boot_wait,
+                             usb_jtag=args.usb_jtag)
     try:
         if args.action == "schema":
             selected = (available_ifac_schemas(client)
