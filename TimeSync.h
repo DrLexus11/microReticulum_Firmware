@@ -20,6 +20,7 @@
 #if defined(HAS_RNS)
 
 #include <MsgPack.h>
+#include <microReticulum/Cryptography/Random.h>
 
 #ifndef TIME_SYNC_POLL_MS
 #define TIME_SYNC_POLL_MS 60000UL
@@ -55,6 +56,11 @@ struct TimeSyncState {
   RNS::Link link = {RNS::Type::NONE};
   uint64_t nonce = 0;
   RNS::Bytes peer_identity_hash;
+  // The identity this exchange was actually opened against. "Time Peer" is
+  // live-applied, so re-recalling from the global at verification time can
+  // check the signature against a different peer than the one that answered --
+  // and reject a perfectly good response as a forgery.
+  RNS::Identity peer_identity = {RNS::Type::NONE};
   bool active = false;
   // Callbacks run inside the link and resource machinery, so they must not
   // tear the link down -- destroying the object the callback is executing
@@ -94,6 +100,7 @@ inline void time_sync_release() {
   TimeSyncState& st = time_sync_state();
   if (st.link) st.link.teardown();
   st.link = RNS::Link(RNS::Type::NONE);
+  st.peer_identity = RNS::Identity(RNS::Type::NONE);
   st.active = false;
   st.finished = false;
   if (st.finish_reason != nullptr) printf("[timesync] %s\n", st.finish_reason);
@@ -157,13 +164,12 @@ inline void time_sync_response(const RNS::Bytes& response) {
       time_sync_finish("authority did not sign our nonce");
       return;
     }
-    RNS::Identity peer_identity = RNS::Identity::recall(time_sync_peer_hash);
     uint8_t message[17];
     for (uint8_t i = 0; i < 8; ++i) message[i]     = (uint8_t)(echoed_nonce >> (56 - 8 * i));
     for (uint8_t i = 0; i < 8; ++i) message[8 + i] = (uint8_t)(unix_ms >> (56 - 8 * i));
     message[16] = peer_stratum;
-    if (!peer_identity ||
-        !peer_identity.validate(signature, RNS::Bytes(message, sizeof(message)))) {
+    if (!st.peer_identity ||
+        !st.peer_identity.validate(signature, RNS::Bytes(message, sizeof(message)))) {
       st.refusals++;
       time_sync_finish("time assertion failed signature check");
       return;
@@ -301,9 +307,19 @@ inline void time_sync_loop() {
   RNS::Destination peer_mgmt(peer_identity, RNS::Type::Destination::OUT,
                              RNS::Type::Destination::SINGLE,
                              RNS::Type::Transport::APP_NAME, "remote.management");
-  st.nonce = ((uint64_t)esp_random() << 32) | (uint64_t)esp_random();
+  // The library's RNG rather than esp_random(): this header compiles under
+  // HAS_RNS on every board, including the nRF52 ones that have no ESP-IDF, and
+  // a nonce that an attacker can predict is a replayable one. Not
+  // Cryptography::randomnum(), which assembles its 32 bits from byte zero four
+  // times over and therefore yields eight bits of entropy.
+  const RNS::Bytes nonce_bytes = RNS::Cryptography::random(8);
+  st.nonce = 0;
+  for (uint8_t i = 0; i < 8; ++i) {
+    st.nonce = (st.nonce << 8) | (uint64_t)nonce_bytes.data()[i];
+  }
   if (st.nonce == 0) st.nonce = 1;   // zero means "unsigned" on the wire
   st.peer_identity_hash = peer_identity.hash();
+  st.peer_identity = peer_identity;
   st.active = true;
   st.started = now;
   st.attempts++;

@@ -117,17 +117,21 @@ uint32_t lxmf_sync_last_outcome();
 // with Bluetooth -- nesting them there compiled on the RAD boards and broke
 // every board without a Bluetooth stack.
 extern const char* boot_reset_reason;
-// Defined in TimeSync.h. Declared rather than included so this translation unit
-// does not depend on that header's ordering relative to the RNS types.
-extern RNS::Bytes time_sync_peer_hash;
-extern std::vector<RNS::Bytes> time_sync_authorities;
-// Defined in TimeBeacon.h, declared here for the same reason.
-extern bool time_beacon_enabled;
-extern uint32_t time_beacon_interval_s;
 extern bool boot_rail_lost;
 extern uint32_t boot_prev_uptime;
 extern uint32_t boot_count;
 #endif
+
+// Defined in TimeSync.h and TimeBeacon.h. Declared rather than included so this
+// translation unit does not depend on those headers' ordering relative to the
+// RNS types -- and declared OUTSIDE the ESP32 guard above, because the fields
+// that use them are registered under URTN_STATS_PAGES, which is not ESP32-only.
+// Nesting them in that guard compiled on the RAD boards and broke every nRF52
+// board, which is exactly what the note above already warns about.
+extern RNS::Bytes time_sync_peer_hash;
+extern std::vector<RNS::Bytes> time_sync_authorities;
+extern bool time_beacon_enabled;
+extern uint32_t time_beacon_interval_s;
 #include "RadioPresets.h"
 #include "WebSocketConsole.h"
 

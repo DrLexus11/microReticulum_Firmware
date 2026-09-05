@@ -1410,6 +1410,11 @@ void setup() {
       microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
       if (bl) {
         char line[96];
+        // The rail-loss distinction comes from RTC_NOINIT memory, which only
+        // the ESP32 build has; the globals holding it are defined inside that
+        // same guard. Using them unconditionally here is what broke every
+        // nRF52 board.
+#if MCU_VARIANT == MCU_ESP32
         if (boot_rail_lost) {
           snprintf(line, sizeof(line), "boot reason=%s prev=hw-reset\n",
                    boot_reset_reason);
@@ -1417,6 +1422,9 @@ void setup() {
           snprintf(line, sizeof(line), "boot reason=%s prev=%lus\n",
                    boot_reset_reason, (unsigned long)boot_prev_uptime);
         }
+#else
+        snprintf(line, sizeof(line), "boot reason=%s\n", boot_reset_reason);
+#endif
         bl.write(line);
         bl.close();
       }

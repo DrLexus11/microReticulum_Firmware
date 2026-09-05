@@ -12,6 +12,11 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def strip_comments(text):
+    """Drop // comments so an assertion about the code cannot match prose."""
+    return "\n".join(line.split("//")[0] for line in text.splitlines())
+
+
 def source(name):
     with open(os.path.join(ROOT, name), encoding="utf-8") as handle:
         return handle.read()
@@ -56,8 +61,33 @@ class TimeSyncTests(unittest.TestCase):
         # node that needs the answer.
         sync = source("TimeSync.h")
         self.assertIn("echoed_nonce != st.nonce", sync)
-        self.assertIn("st.nonce = ((uint64_t)esp_random()", sync)
+        # Drawn from the library's CSPRNG, and all eight bytes of it. The
+        # previous assertion pinned the literal esp_random() call, which made
+        # this test a lock on one MCU's API rather than on the property that
+        # matters -- and the header compiles under HAS_RNS on nRF52 too, where
+        # esp_random does not exist.
+        self.assertIn("RNS::Cryptography::random(8)", sync)
+        # Comments stripped: the code must not call these, but the note above
+        # the call names them to explain why not.
+        code = strip_comments(sync)
+        self.assertNotIn("esp_random", code)
+        # Not randomnum(): it builds its 32 bits out of byte zero four times
+        # over, so it yields eight bits of entropy, and a guessable nonce is a
+        # replayable one.
+        self.assertNotIn("randomnum", code)
         self.assertIn("if (st.nonce == 0) st.nonce = 1", sync)
+
+    def test_verification_uses_the_identity_the_link_was_opened_against(self):
+        # "Time Peer" is live-applied, so re-recalling the identity from the
+        # global at verification time can check the signature against a
+        # different peer than the one that answered, and reject a valid
+        # response as a forgery.
+        sync = source("TimeSync.h")
+        self.assertIn("st.peer_identity = peer_identity", sync)
+        self.assertIn("st.peer_identity.validate(signature", sync)
+        response = sync[sync.index("inline void time_sync_response("):
+                        sync.index("inline void time_sync_link_established(")]
+        self.assertNotIn("Identity::recall(time_sync_peer_hash)", response)
 
     def test_authorities_are_opt_in_but_binding_once_set(self):
         # Empty means IFAC-membership trust, which is the v1 behaviour, so
@@ -67,7 +97,7 @@ class TimeSyncTests(unittest.TestCase):
         self.assertIn("if (!time_sync_authorities.empty())", sync)
         self.assertIn("peer is not a time authority", sync)
         self.assertIn("time assertion failed signature check", sync)
-        self.assertIn("peer_identity.validate(signature", sync)
+        self.assertIn("st.peer_identity.validate(signature", sync)
 
     def test_the_peer_is_configurable_not_compiled_in(self):
         provisioning = source("Provisioning.cpp")
