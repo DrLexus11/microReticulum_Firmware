@@ -66,8 +66,8 @@ fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 # terminal, which is not hypothetical: a false positive here made start_ots
 # return early and skip the config repair, so the real failure stayed hidden
 # behind "already running". Match the full executable path, and exclude this
-# script's own process group.
-pid_of() { pgrep -f "$1" 2>/dev/null | grep -v "^$$\$" | head -1; }
+# script's own PID.
+pid_of() { pgrep -f "$1" 2>/dev/null | grep -Fvx -- "$$" | head -1; }
 
 port_busy() { ss -ltnu 2>/dev/null | grep -q ":$1 "; }
 
@@ -252,7 +252,7 @@ start_ots_services() {
 
 start_gateway() {
     local mode="$1"
-    if [ -n "$(pid_of 'cot_gateway.py')" ]; then
+    if [ -n "$(pid_of "$REPO/tools/cot_gateway.py")" ]; then
         say "gateway: already running"
         return 0
     fi

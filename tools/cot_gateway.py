@@ -148,7 +148,9 @@ def build_cot(fix, uid, callsign, stale_seconds, received_at=None):
             track["course"] = "%.1f" % (fix.course_ddeg / 10.0)
         ET.SubElement(detail, "track", track)
     if fix.sats:
-        ET.SubElement(detail, "uid", {"Droid": callsign})
+        # Custom metadata for consumers that understand our position reports.
+        # Zero means unreported; it must not claim a measured count of zero.
+        ET.SubElement(detail, "_microreticulum", {"satellites": str(fix.sats)})
 
     return b'<?xml version="1.0" standalone="yes"?>' + ET.tostring(event, encoding="utf-8")
 

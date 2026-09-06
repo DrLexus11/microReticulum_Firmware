@@ -340,6 +340,8 @@ inline void position_report_loop() {
   // twenty bytes would be the most expensive thing the node does, and a
   // position report needs neither a session nor a reply. A single packet to a
   // SINGLE destination is already encrypted to the gateway's identity.
+  // microReticulum accepts one dot-joined aspects string; this expands to
+  // rnstransport.position.report, matching Python's ("position", "report").
   RNS::Destination gateway(gateway_identity,
                            RNS::Type::Destination::OUT,
                            RNS::Type::Destination::SINGLE,

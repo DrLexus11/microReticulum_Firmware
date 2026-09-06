@@ -78,6 +78,17 @@ class UnknownsTests(unittest.TestCase):
         event = event_for(codec.PositionFix(lat_e7=1, lon_e7=1))
         self.assertIsNone(event.find("detail/track"))
 
+    def test_satellite_count_survives_wire_to_cot(self):
+        fix = codec.decode(codec.encode(codec.PositionFix(
+            lat_e7=1, lon_e7=1, sats=12)))
+        event = event_for(fix)
+        self.assertEqual(event.find("detail/_microreticulum").get("satellites"), "12")
+        self.assertIsNone(event.find("detail/uid"))
+
+    def test_unreported_satellite_count_is_omitted(self):
+        event = event_for(codec.PositionFix(lat_e7=1, lon_e7=1))
+        self.assertIsNone(event.find("detail/_microreticulum"))
+
     def test_a_course_of_due_north_is_still_reported(self):
         # Zero degrees is a heading, and it must not be mistaken for absence.
         fix = codec.PositionFix(lat_e7=1, lon_e7=1, course_known=True, course_ddeg=0)
