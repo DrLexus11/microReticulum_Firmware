@@ -148,6 +148,35 @@ class CoverageTests(unittest.TestCase):
         self.assertLess(wipe.index("printf("), wipe.index("node_remove_store"))
 
 
+class SizingTests(unittest.TestCase):
+    """A cap the heap cannot reach does not bound anything."""
+
+    def _ozd_flags(self):
+        with open(os.path.join(ROOT, "platformio.ini"), encoding="utf-8") as h:
+            text = h.read()
+        start = text.index("[env:ozdisan-esp32-espnow]")
+        end = text.index("[env:", start + 1)
+        return text[start:end]
+
+    def test_the_ozd_path_table_fits_the_heap_it_has(self):
+        # The plain-ESP32 tier default is 500, inherited by board class. This
+        # fixture runs NimBLE, Wi-Fi and ESP-NOW at once and lives on about
+        # 23 KB; a path entry carries its announce, so 500 of them cannot fit.
+        # OZD-01 filled its path store until start() could not load the index.
+        flags = self._ozd_flags()
+        match = re.search(r"-DURTN_PATH_TABLE_MAX_RECS=(\d+)", flags)
+        self.assertIsNotNone(match, "the OZD env must cap the path table")
+        self.assertLessEqual(int(match.group(1)), 100)
+
+    def test_the_ozd_caps_are_of_a_piece(self):
+        # The pool, the census and the provisioning schema were all trimmed for
+        # this fixture. A cap left at its tier default is the one that bites.
+        flags = self._ozd_flags()
+        for flag in ("-DRNS_HEAP_POOL_BUFFER_SIZE=", "-DNODE_CENSUS_CAPACITY=",
+                     "-DURTN_PATH_TABLE_MAX_RECS="):
+            self.assertIn(flag, flags)
+
+
 class ConsoleTests(unittest.TestCase):
     """The serial console is the only diagnostic channel a fielded node has."""
 
