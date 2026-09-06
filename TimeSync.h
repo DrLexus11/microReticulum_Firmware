@@ -21,6 +21,7 @@
 
 #include <MsgPack.h>
 #include <microReticulum/Cryptography/Random.h>
+#include "NodeStatus.h"
 
 #ifndef TIME_SYNC_POLL_MS
 #define TIME_SYNC_POLL_MS 60000UL
@@ -197,6 +198,7 @@ inline void time_sync_response(const RNS::Bytes& response) {
 
   if (result == OS::WallTimeResult::ACCEPTED) {
     st.adoptions++;
+    node_time_confirm("PER");
     printf("[timesync] adopted UTC %llu ms from peer at stratum %u (now %u)\n",
            (unsigned long long)unix_ms, (unsigned)peer_stratum,
            (unsigned)OS::wall_time_stratum());
@@ -208,6 +210,14 @@ inline void time_sync_response(const RNS::Bytes& response) {
   // rather than counting it as a failure.
   if (result == OS::WallTimeResult::BACKWARDS) {
     OS::note_wall_time_verified();
+    node_time_confirm("PER");
+    time_sync_finish(nullptr);
+    return;
+  }
+  if (result == OS::WallTimeResult::WORSE_STRATUM) {
+    // We solicited this and the peer answered honestly with a clock further
+    // from a reference than ours. That is a completed exchange, not a refusal,
+    // and it must not confirm our clock either.
     time_sync_finish(nullptr);
     return;
   }
@@ -323,7 +333,13 @@ inline void time_sync_loop() {
   st.active = true;
   st.started = now;
   st.attempts++;
-  printf("[timesync] soliciting UTC from <%s> (attempt %u)\n",
+  // "attempt" belongs to a node that does not have a clock yet. Once one has
+  // been adopted these are routine re-checks on the poll interval, and calling
+  // the next one "attempt 3" sends whoever reads the log looking for a failure
+  // that is not there -- observed on OZD-01, which logged it immediately after
+  // "adopted UTC ... at stratum 1".
+  printf("[timesync] %s UTC from <%s> (%u since boot)\n",
+         st.adoptions > 0 ? "re-checking" : "soliciting",
          time_sync_peer_hash.toHex().substr(0, 16).c_str(),
          (unsigned)st.attempts);
   st.link = RNS::Link(peer_mgmt, time_sync_link_established,

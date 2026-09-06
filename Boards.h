@@ -195,6 +195,8 @@
   #define HAS_NP false
   #define HAS_EEPROM false
   #define HAS_INPUT false
+  // Two page-navigation buttons for a panel. See Nav.h.
+  #define HAS_NAV_BUTTONS false
   #define HAS_SLEEP false
   #define HAS_LORA_PA false
   #define HAS_LORA_LNA false
@@ -641,6 +643,19 @@
       #define HAS_BLE false
       #define I2C_SDA 5
       #define I2C_SCL 4
+
+      // Two buttons on the breadboard, for sweeping between display pages.
+      // GPIO32/33 carry no boot-strapping role on the ESP32, are input-capable
+      // with internal pull-ups, and are clear of the I2C pair and the SSD1306
+      // reset line above. Wire each button between the pin and ground; no
+      // external resistor is needed.
+      //
+      // Deliberately not pin_btn_usr1: that name is upstream's single-button
+      // path, which HAS_INPUT also wires to a quick-reset console behaviour
+      // this board does not want. See Nav.h.
+      #define HAS_NAV_BUTTONS true
+      const int pin_nav_prev = 32;
+      const int pin_nav_next = 33;
 
       // Keep the legacy pin symbols valid for generic status/LED code. No
       // modem driver is compiled and none of these values is driven.

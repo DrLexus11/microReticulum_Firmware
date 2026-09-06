@@ -71,6 +71,8 @@ uint32_t lxmf_announces_any();
 #include "WallTime.h"
 #include "TimeSync.h"
 #include "TimeBeacon.h"
+#include "NodeStatus.h"
+#include "Nav.h"
 #if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
 #include "esp_cpu.h"
 #endif
@@ -1161,6 +1163,11 @@ void setup() {
 
     display_unblank();
     disp_ready = display_init();
+    nav_init();
+    // Say so either way. A panel that stays dark is otherwise indistinguishable
+    // from a panel drawing the wrong thing, and the I2C probe is the only place
+    // that knows which.
+    printf("[panel] display %s\r\n", disp_ready ? "ready" : "NOT ready");
     update_display();
     RNS_HEAP_PROBE("post-display-init");
   #endif
@@ -1402,6 +1409,11 @@ void setup() {
     // and esp_reset_reason() then reports POWERON. This file keeps the history:
     // repeated BROWNOUT entries mean a power-margin problem, PANIC means a
     // crash, SW means something called ESP.restart() (RNS_LOW_MEMORY_REBOOT).
+    // Tally this restart if it was an abnormal one. The bootlog below keeps the
+    // narrative and is truncated at 4 KB; these are the running totals, which
+    // must not be lost to a rotation.
+    node_restart_counts_record_boot();
+
     {
       const char* bootlog = "./bootlog.txt";
       if (filesystem.exists(bootlog) && filesystem.size(bootlog) > 4096) {
@@ -1652,6 +1664,13 @@ printf("[init] op_mode: %U\n", op_mode);
         INFO("Not in TNC mode, transport will be disabled");
         reticulum.transport_enabled(false);
       }
+      // Transport reads the path, known-destination and hashlist stores into
+      // RAM as the first thing start() does, and a store large enough to
+      // exhaust the heap takes the node down before it can ever be told to
+      // drop it. Three faulted boots in a row is that node.
+      if (node_caches_are_suspect()) {
+        node_clear_persisted_caches();
+      }
       RNS_HEAP_PROBE("pre-reticulum-start");
       reticulum.start();
       RNS_HEAP_PROBE("post-reticulum-start");
@@ -1774,6 +1793,10 @@ printf("[init] op_mode: %U\n", op_mode);
       // needs to hear it. The originating half only exists on a node that has
       // been provisioned as an authority.
       time_beacon_begin();
+
+      // Counts distinct destinations by announce aspect, for the panel and for
+      // anything else that wants to know what the mesh looks like from here.
+      node_census_begin();
 
 #if defined(RRC_HUB)
       // RRC is a separate Reticulum service from NomadNet pages and LXMF.
@@ -4147,6 +4170,9 @@ void loop() {
   #ifdef HAS_RNS
     time_sync_loop();
     time_beacon_loop();
+    nav_read();
+    // A boot that has lasted this long is a boot, whatever the last one did.
+    node_boot_mark_healthy();
   #endif
 
   #if HAS_INPUT

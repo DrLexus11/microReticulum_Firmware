@@ -25,6 +25,7 @@
 #if defined(HAS_RNS)
 
 #include <MsgPack.h>
+#include "NodeStatus.h"
 
 // The aspect an authority announces under. The filter an announce handler is
 // matched against is the full expanded name, app name included.
@@ -82,6 +83,11 @@ struct TimeBeaconStats {
   uint32_t refused_signature = 0;
   uint32_t refused_stale = 0;  // older than one we already accepted, or expired
   uint32_t refused_rules = 0;  // the library's safety rules said no
+  // Not a refusal. The authority's own clock is further from a real reference
+  // than ours, so there is nothing to take -- counting it beside a bad
+  // signature would read as "this node is being lied to" on a mesh that is
+  // working exactly as designed, with a stratum-3 node hearing a stratum-4 one.
+  uint32_t declined_stratum = 0;
   uint64_t highest_asserted_ms = 0;
   uint32_t last_emit = 0;
   uint32_t emit_jitter = 0;
@@ -194,6 +200,7 @@ inline void time_beacon_apply(const RNS::Identity& announced_identity,
     // Not a refusal: the authority agrees with us, which is worth recording as
     // a successful check rather than counted as a failure.
     OS::note_wall_time_verified();
+    node_time_confirm("BCN");
     return;
   }
 
@@ -204,6 +211,7 @@ inline void time_beacon_apply(const RNS::Identity& announced_identity,
       (uint8_t)(stratum + 1));
   if (result == OS::WallTimeResult::ACCEPTED) {
     st.adopted++;
+    node_time_confirm("BCN");
     printf("[timebeacon] adopted UTC %llu ms from authority <%s> at stratum %u "
            "(now %u)\n", (unsigned long long)unix_ms,
            announced_identity.hash().toHex().substr(0, 16).c_str(),
@@ -211,7 +219,17 @@ inline void time_beacon_apply(const RNS::Identity& announced_identity,
     return;
   }
   if (result == OS::WallTimeResult::BACKWARDS) {
+    // Agreement, not failure: the authority checked and there was nothing
+    // worth applying. The clock is confirmed even though it did not move.
     OS::note_wall_time_verified();
+    node_time_confirm("BCN");
+    return;
+  }
+  if (result == OS::WallTimeResult::WORSE_STRATUM) {
+    // Nothing is wrong here, and nothing is confirmed either: a source further
+    // from a reference than we are agreeing with us is not evidence, so the
+    // verification timestamp is deliberately left alone.
+    st.declined_stratum++;
     return;
   }
   st.refused_rules++;

@@ -81,3 +81,62 @@ change a measurement or removed.
 
 The PSRAM change removed the fragmentation mechanism that could be measured; it
 does not prove that was the only one.
+
+## The persisted store index loads unbounded, then prunes
+
+`microStore::BasicFileStore::init()` (in `attermann/microStore`,
+`include/microStore/FileStore.h`) does this, in order:
+
+```cpp
+if (!load_index()) rebuild_index_from_segments();
+sweep();
+size_t pruned = prune_index_to_max_recs();
+```
+
+`load_index()` replays the entire on-flash index into a RAM `unordered_map`.
+Only after that is the map cut down to `max_recs` -- 50 for the packet
+hashlist. So the peak RAM cost is the size of the store's *history*, not its
+configured maximum, and a node that has been up for days pays it at
+`Reticulum::start()` before anything else has run.
+
+OZD-01 hit the ceiling on 2026-09-06: `Reticulum::start()` needs about 15 KB
+with empty stores and had 37 KB, and its accumulated path, known-destination
+and hashlist stores took the rest. The failing allocation was 32 bytes inside
+`sweep()`, which throws `std::bad_alloc` from a container with nothing to catch
+it -- `__cxa_allocate_exception` then could not allocate either, so it went
+straight to `std::terminate`. Eleven aborts in eighty seconds, and the board
+read the same store again on every one.
+
+`sweep()` makes it worse than it needs to be:
+
+```cpp
+std::vector<KeyType, KTSAlloc> evict(kts_alloc);
+evict.reserve(_index.size());
+for (auto& kv : _index) if (kv.second.timestamp > current_time) evict.push_back(kv.first);
+for (auto& key : evict) _index.erase(key);
+```
+
+Every evicted key is *copied* into a second container before anything is
+erased, so the moment of peak memory is the one where the store is already too
+big. It needs no allocation at all:
+
+```cpp
+for (auto it = _index.begin(); it != _index.end(); ) {
+    if (it->second.timestamp > current_time) { it = _index.erase(it); ++evicted; }
+    else ++it;
+}
+```
+
+And a clockless node evicts everything on every boot regardless: `sweep()`
+drops records timestamped in the future, `microStore::time()` on a node with no
+wall clock is uptime plus a persisted offset, and a fresh boot's uptime is
+lower than the one the records were written at. So the board with no time
+source -- the one least able to spare the RAM -- takes the whole-store path
+every time.
+
+Worked around in this repo, not fixed: `node_clear_persisted_caches()` deletes
+all three stores after `NODE_CACHE_WIPE_FAULTS` consecutive faulted boots, so
+the node recovers on its own instead of looping forever. It still pays the
+airtime to relearn every path. Closing this properly means a fork of
+microStore: bound the index at load, drop the copy in `sweep()`, and stop
+treating a clockless node's uptime as a wall clock.

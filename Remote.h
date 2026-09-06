@@ -32,6 +32,14 @@
 #endif
 
 #define WIFI_UPDATE_INTERVAL_MS 500
+// The status poll runs twice a second. Printing every poll means two lines a
+// second forever on any board that never connects -- and on a fielded node the
+// console is the only diagnostic channel there is, so a station that is merely
+// absent buries everything else that happens. Report changes, and repeat an
+// unchanged status only this often so a stuck one is still visible.
+#ifndef WIFI_STATUS_REPORT_MS
+#define WIFI_STATUS_REPORT_MS 60000UL
+#endif
 #define WR_SOCKET_TIMEOUT 6
 // How long a *connected* client may go without sending readable bytes before
 // the listener reclaims its slot.
@@ -559,8 +567,19 @@ uint8_t wifi_remote_read() {
 void wifi_remote_write(uint8_t byte) { if (connection) { connection.write(byte); } }
 
 void wifi_update_status() {
+  const wl_status_t previous = wr_wifi_status;
   wr_wifi_status = WiFi.status();
-  printf("[WiFi] status: %d\n", wr_wifi_status);
+  {
+    static uint32_t last_report_ms = 0;
+    static bool reported = false;
+    const uint32_t now = millis();
+    if (!reported || wr_wifi_status != previous ||
+        (uint32_t)(now - last_report_ms) >= WIFI_STATUS_REPORT_MS) {
+      printf("[WiFi] status: %d\n", wr_wifi_status);
+      last_report_ms = now;
+      reported = true;
+    }
+  }
   if (wr_wifi_status == WL_CONNECTED) {
     wr_device_ip = WiFi.localIP();
     if (wifi_initialized && wireless_kiss_policy_ready && wireless_kiss_allowed &&
