@@ -13,25 +13,32 @@ from them.
     off  size  field
     0    1     version
     1    1     flags
-    2    4     lat_e7       int32 BE   degrees x 1e7, positive north
-    6    4     lon_e7       int32 BE   degrees x 1e7, positive east
-    10   4     fix_unix_s   uint32 BE  seconds; 0 = the source had no clock
-    14   1     accuracy_m   uint8      0 unreported, 1..254 m, 255 = over
+    2    4     sender_id    uint32 BE  four bytes of the sender's identity hash
+    6    4     lat_e7       int32 BE   degrees x 1e7, positive north
+    10   4     lon_e7       int32 BE   degrees x 1e7, positive east
+    14   4     fix_unix_s   uint32 BE  seconds; 0 = the source had no clock
+    18   1     accuracy_m   uint8      0 unreported, 1..254 m, 255 = over
     -- then, in flag order, only what is present --
     +2         alt_m        int16 BE   metres HAE          FLAG_ALT
     +1         course       uint8      2-degree units      FLAG_COURSE
     +1         speed        uint8      half-metre/s units  FLAG_SPEED
     +1         sats         uint8                          FLAG_SATS
 
-Fifteen bytes minimum, twenty full, against roughly seven hundred for the CoT
-XML that comes out of the gateway.
+Nineteen bytes minimum, twenty-four full, against roughly seven hundred for the
+CoT XML that comes out of the gateway.
+
+Version 2 added sender_id, and version 1 is refused rather than accepted without
+one. A Reticulum packet to a SINGLE destination carries no sender, so a v1
+report cannot be attributed to anybody, and a gateway that accepted it would
+give every report its own track -- which is what two live reports from one phone
+did on 2026-09-06.
 """
 
 import struct
 
-WIRE_VERSION = 1
-WIRE_BASE_LEN = 15
-WIRE_MAX_LEN = 20
+WIRE_VERSION = 2
+WIRE_BASE_LEN = 19
+WIRE_MAX_LEN = 24
 
 FLAG_ALT = 0x01
 FLAG_COURSE = 0x02
@@ -42,12 +49,14 @@ FLAG_SATS = 0x08
 class PositionFix:
     """Mirrors NodePositionFix, minus the fields that never go on the wire."""
 
-    __slots__ = ("lat_e7", "lon_e7", "fix_unix_s", "accuracy_m", "alt_known",
-                 "alt_m", "course_known", "course_ddeg", "speed_cms", "sats")
+    __slots__ = ("sender_id", "lat_e7", "lon_e7", "fix_unix_s", "accuracy_m",
+                 "alt_known", "alt_m", "course_known", "course_ddeg",
+                 "speed_cms", "sats")
 
     def __init__(self, lat_e7=0, lon_e7=0, fix_unix_s=0, accuracy_m=0,
                  alt_known=False, alt_m=0, course_known=False, course_ddeg=0,
-                 speed_cms=0, sats=0):
+                 speed_cms=0, sats=0, sender_id=0):
+        self.sender_id = sender_id
         self.lat_e7 = lat_e7
         self.lon_e7 = lon_e7
         self.fix_unix_s = fix_unix_s
@@ -68,8 +77,8 @@ class PositionFix:
         return self.lon_e7 / 1e7
 
     def __repr__(self):
-        return ("PositionFix(lat=%.7f, lon=%.7f, alt=%s, acc=%s, t=%d)"
-                % (self.lat, self.lon,
+        return ("PositionFix(from=%08x, lat=%.7f, lon=%.7f, alt=%s, acc=%s, t=%d)"
+                % (self.sender_id, self.lat, self.lon,
                    self.alt_m if self.alt_known else None,
                    self.accuracy_m or None, self.fix_unix_s))
 
@@ -93,8 +102,8 @@ def encode(fix):
     if fix.accuracy_m > 254:
         accuracy = 255
 
-    out = struct.pack(">BBiiIB", WIRE_VERSION, flags, fix.lat_e7, fix.lon_e7,
-                      fix.fix_unix_s, accuracy)
+    out = struct.pack(">BBIiiIB", WIRE_VERSION, flags, fix.sender_id,
+                      fix.lat_e7, fix.lon_e7, fix.fix_unix_s, accuracy)
     if flags & FLAG_ALT:
         out += struct.pack(">h", fix.alt_m)
     if flags & FLAG_COURSE:
@@ -114,13 +123,13 @@ def decode(data):
     thing that happens, not an exception."""
     if data is None or len(data) < WIRE_BASE_LEN:
         return None
-    version, flags, lat_e7, lon_e7, secs, accuracy = struct.unpack(
-        ">BBiiIB", data[:WIRE_BASE_LEN])
+    version, flags, sender_id, lat_e7, lon_e7, secs, accuracy = struct.unpack(
+        ">BBIiiIB", data[:WIRE_BASE_LEN])
     if version != WIRE_VERSION:
         return None
 
-    fix = PositionFix(lat_e7=lat_e7, lon_e7=lon_e7, fix_unix_s=secs,
-                      accuracy_m=accuracy)
+    fix = PositionFix(sender_id=sender_id, lat_e7=lat_e7, lon_e7=lon_e7,
+                      fix_unix_s=secs, accuracy_m=accuracy)
     at = WIRE_BASE_LEN
     if flags & FLAG_ALT:
         if at + 2 > len(data):

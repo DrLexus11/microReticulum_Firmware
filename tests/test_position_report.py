@@ -72,8 +72,8 @@ class WireAgreementTests(unittest.TestCase):
                              "POSITION_FLAG_%s disagrees" % name)
 
     def test_the_base_length_is_what_the_fields_add_up_to(self):
-        # version + flags + lat + lon + time + accuracy
-        self.assertEqual(self.codec.WIRE_BASE_LEN, 1 + 1 + 4 + 4 + 4 + 1)
+        # version + flags + sender + lat + lon + time + accuracy
+        self.assertEqual(self.codec.WIRE_BASE_LEN, 1 + 1 + 4 + 4 + 4 + 4 + 1)
 
     def test_the_full_report_stays_inside_the_airtime_budget(self):
         # §2: a compact position of about 25 bytes is 44 ms on air and 820
@@ -175,9 +175,59 @@ class RoundTripTests(unittest.TestCase):
         # lat then lon then time then accuracy, each MSB first.
         order = [m for m in re.findall(r">> 24|>> 16|>> 8", enc)]
         self.assertEqual(order[:3], [">> 24", ">> 16", ">> 8"])
-        self.assertEqual(enc.count(">> 24"), 3)   # lat, lon, secs
+        self.assertEqual(enc.count(">> 24"), 4)   # sender, lat, lon, secs
         codec = load_codec()
-        self.assertEqual(struct.calcsize(">BBiiIB"), codec.WIRE_BASE_LEN)
+        self.assertEqual(struct.calcsize(">BBIiiIB"), codec.WIRE_BASE_LEN)
+
+
+class SenderIdentityTests(unittest.TestCase):
+    """A report nobody can attribute is a track nobody can follow."""
+
+    def setUp(self):
+        self.codec = load_codec()
+        self.header = source("PositionReport.h")
+
+    def test_the_sender_survives_the_round_trip(self):
+        fix = self.codec.PositionFix(sender_id=0xDEADBEEF, lat_e7=1, lon_e7=1)
+        back = self.codec.decode(self.codec.encode(fix))
+        self.assertEqual(back.sender_id, 0xDEADBEEF)
+
+    def test_the_high_bit_is_not_lost_to_a_signed_read(self):
+        # Four bytes of a hash are as likely as not to have the top bit set,
+        # and reading them signed would make two senders collide on one track
+        # about half the time.
+        fix = self.codec.PositionFix(sender_id=0xFFFFFFFF, lat_e7=1, lon_e7=1)
+        back = self.codec.decode(self.codec.encode(fix))
+        self.assertEqual(back.sender_id, 0xFFFFFFFF)
+
+    def test_version_one_is_refused_rather_than_read_anonymously(self):
+        # A v1 report has no sender, so accepting it would put every report on
+        # its own track -- the exact failure v2 exists to fix.
+        fix = self.codec.PositionFix(sender_id=1, lat_e7=1, lon_e7=1)
+        raw = bytearray(self.codec.encode(fix))
+        raw[0] = 1
+        self.assertIsNone(self.codec.decode(bytes(raw)))
+
+    def test_the_firmware_stamps_its_own_identity(self):
+        # The fix is a measurement and does not know whose it is; the send path
+        # does, and takes it there so a relayed report keeps the identity of
+        # whoever observed it.
+        loop = self.header[self.header.index("inline void position_report_loop("):]
+        self.assertIn("RNS::Transport::identity().hash()", loop)
+        self.assertIn("outgoing.sender_id", loop)
+
+    def test_the_gateway_tracks_by_sender_not_by_packet(self):
+        # The bug this whole version exists for: a packet hash differs every
+        # time, so a uid built from one spawns a new marker per report.
+        gw = source("tools/cot_gateway.py")
+        on_packet = gw[gw.index("def _on_packet"):]
+        self.assertIn('uid = "urtn-%08x" % fix.sender_id', on_packet)
+        self.assertNotIn("packet.get_hash()", on_packet)
+
+    def test_the_sender_costs_little_enough_to_be_worth_it(self):
+        # Still comfortably inside the §2 budget after the addition.
+        self.assertLessEqual(self.codec.WIRE_MAX_LEN, 25)
+        self.assertEqual(self.codec.WIRE_MAX_LEN - self.codec.WIRE_BASE_LEN, 5)
 
 
 class SendPathTests(unittest.TestCase):

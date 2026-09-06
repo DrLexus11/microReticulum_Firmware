@@ -97,6 +97,19 @@ struct NodePositionFix {
 
   uint8_t sats = 0;            // 0 when the source does not report it
 
+  // Who this fix is about. Four bytes of the reporting node's identity hash,
+  // zero when unknown.
+  //
+  // It has to travel with the fix because nothing else carries it: a Reticulum
+  // packet to a SINGLE destination is anonymous by construction, so a receiver
+  // has no way to tell two senders apart. Without this every report is a new
+  // track, and a map fills with one person's ghosts -- which is exactly what
+  // the first two live reports did on 2026-09-06.
+  //
+  // An identifier, not an authentication. These packets are unsigned, so this
+  // says which track a report belongs to and nothing about who wrote it.
+  uint32_t sender_id = 0;
+
   // When the fix was taken, by the source's own clock. Zero means the source
   // had no clock -- which is a real case for a bare GNSS module before its
   // first time solution, and for this node generally. Never substitute our

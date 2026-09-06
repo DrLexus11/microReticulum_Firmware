@@ -56,21 +56,30 @@
 //   off  size  field
 //   0    1     version
 //   1    1     flags
-//   2    4     lat_e7       int32   degrees x 1e7, positive north
-//   6    4     lon_e7       int32   degrees x 1e7, positive east
-//   10   4     fix_unix_s   uint32  seconds; 0 when the source had no clock
-//   14   1     accuracy_m   uint8   0 unreported, 1..254 metres, 255 = over
+//   2    4     sender_id    uint32  four bytes of the sender's identity hash
+//   6    4     lat_e7       int32   degrees x 1e7, positive north
+//   10   4     lon_e7       int32   degrees x 1e7, positive east
+//   14   4     fix_unix_s   uint32  seconds; 0 when the source had no clock
+//   18   1     accuracy_m   uint8   0 unreported, 1..254 metres, 255 = over
 //   -- then, in flag order, only what is present --
 //   +2         alt_m        int16   metres HAE          FLAG_ALT
 //   +1         course       uint8   2-degree units      FLAG_COURSE
 //   +1         speed        uint8   half-metre/s units  FLAG_SPEED
 //   +1         sats         uint8                       FLAG_SATS
 //
-// Fifteen bytes minimum, twenty full. Against ~700 for the XML that comes out
-// of the gateway at the other end.
-#define POSITION_WIRE_VERSION 1
-#define POSITION_WIRE_BASE_LEN 15
-#define POSITION_WIRE_MAX_LEN 20
+// Nineteen bytes minimum, twenty-four full. Against ~700 for the XML that comes
+// out of the gateway at the other end.
+//
+// Version 2 added sender_id, and version 1 is refused rather than accepted
+// without one. A Reticulum packet to a SINGLE destination is anonymous by
+// construction, so a v1 report cannot be attributed to anybody -- and a
+// receiver that accepted it would put every report on its own track. Measured
+// on 2026-09-06: two reports from one phone arrived as two separate tracks.
+// Nothing is deployed on v1 outside this bench, so there is nothing to be
+// compatible with and a silent downgrade would only hide the bug.
+#define POSITION_WIRE_VERSION 2
+#define POSITION_WIRE_BASE_LEN 19
+#define POSITION_WIRE_MAX_LEN 24
 
 #define POSITION_FLAG_ALT    0x01
 #define POSITION_FLAG_COURSE 0x02
@@ -93,10 +102,13 @@ inline size_t position_report_encode(const NodePositionFix& fix,
   const uint32_t lat = (uint32_t)fix.lat_e7;
   const uint32_t lon = (uint32_t)fix.lon_e7;
   const uint32_t secs = (uint32_t)(fix.fix_unix_ms / 1000ULL);
+  const uint32_t sender = fix.sender_id;
 
   size_t at = 0;
   out[at++] = POSITION_WIRE_VERSION;
   out[at++] = flags;
+  out[at++] = (uint8_t)(sender >> 24); out[at++] = (uint8_t)(sender >> 16);
+  out[at++] = (uint8_t)(sender >> 8);  out[at++] = (uint8_t)(sender);
   out[at++] = (uint8_t)(lat >> 24); out[at++] = (uint8_t)(lat >> 16);
   out[at++] = (uint8_t)(lat >> 8);  out[at++] = (uint8_t)(lat);
   out[at++] = (uint8_t)(lon >> 24); out[at++] = (uint8_t)(lon >> 16);
@@ -144,14 +156,16 @@ inline bool position_report_decode(const uint8_t* in, size_t len,
 
   const uint8_t flags = in[1];
   out = NodePositionFix{};
-  out.lat_e7 = (int32_t)(((uint32_t)in[2] << 24) | ((uint32_t)in[3] << 16) |
-                         ((uint32_t)in[4] << 8) | (uint32_t)in[5]);
-  out.lon_e7 = (int32_t)(((uint32_t)in[6] << 24) | ((uint32_t)in[7] << 16) |
+  out.sender_id = ((uint32_t)in[2] << 24) | ((uint32_t)in[3] << 16) |
+                  ((uint32_t)in[4] << 8) | (uint32_t)in[5];
+  out.lat_e7 = (int32_t)(((uint32_t)in[6] << 24) | ((uint32_t)in[7] << 16) |
                          ((uint32_t)in[8] << 8) | (uint32_t)in[9]);
-  const uint32_t secs = ((uint32_t)in[10] << 24) | ((uint32_t)in[11] << 16) |
-                        ((uint32_t)in[12] << 8) | (uint32_t)in[13];
+  out.lon_e7 = (int32_t)(((uint32_t)in[10] << 24) | ((uint32_t)in[11] << 16) |
+                         ((uint32_t)in[12] << 8) | (uint32_t)in[13]);
+  const uint32_t secs = ((uint32_t)in[14] << 24) | ((uint32_t)in[15] << 16) |
+                        ((uint32_t)in[16] << 8) | (uint32_t)in[17];
   out.fix_unix_ms = (uint64_t)secs * 1000ULL;
-  out.accuracy_m = in[14];
+  out.accuracy_m = in[18];
 
   size_t at = POSITION_WIRE_BASE_LEN;
   if (flags & POSITION_FLAG_ALT) {
@@ -302,8 +316,20 @@ inline void position_report_loop() {
   }
   st.reported_waiting = false;
 
+  // The fix is a measurement and does not know whose it is; the send path
+  // does. Four bytes of the transport identity hash, taken here rather than
+  // stored on the fix so a relayed report keeps the identity of whoever
+  // actually observed it.
+  NodePositionFix outgoing = fix;
+  const RNS::Bytes self = RNS::Transport::identity().hash();
+  if (self.size() >= 4) {
+    const uint8_t* h = self.data();
+    outgoing.sender_id = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) |
+                         ((uint32_t)h[2] << 8) | (uint32_t)h[3];
+  }
+
   uint8_t wire[POSITION_WIRE_MAX_LEN];
-  const size_t len = position_report_encode(fix, wire, sizeof(wire));
+  const size_t len = position_report_encode(outgoing, wire, sizeof(wire));
   if (len == 0) { st.failures++; return; }
 
   // A Packet, not a Link.
