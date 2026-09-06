@@ -189,6 +189,13 @@ class ObservabilityTests(unittest.TestCase):
         self.assertNotIn("note_wall_time_verified", sbranch)
         self.assertNotIn("node_time_confirm", sbranch)
 
+    def test_a_routine_recheck_is_not_reported_as_an_attempt(self):
+        # st.attempts never resets, so after a successful adoption the next
+        # poll logged "attempt 3" -- a working clock described as a third try.
+        sync = source("TimeSync.h")
+        self.assertIn("st.adoptions > 0 ? \"re-checking\" : \"soliciting\"", sync)
+        self.assertNotIn("(attempt %u)", sync)
+
     def test_a_stalled_time_client_says_so(self):
         # Both of these paths returned silently, which made a client that never
         # got anywhere indistinguishable from one that was never configured.

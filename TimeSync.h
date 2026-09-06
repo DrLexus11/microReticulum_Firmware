@@ -333,7 +333,13 @@ inline void time_sync_loop() {
   st.active = true;
   st.started = now;
   st.attempts++;
-  printf("[timesync] soliciting UTC from <%s> (attempt %u)\n",
+  // "attempt" belongs to a node that does not have a clock yet. Once one has
+  // been adopted these are routine re-checks on the poll interval, and calling
+  // the next one "attempt 3" sends whoever reads the log looking for a failure
+  // that is not there -- observed on OZD-01, which logged it immediately after
+  // "adopted UTC ... at stratum 1".
+  printf("[timesync] %s UTC from <%s> (%u since boot)\n",
+         st.adoptions > 0 ? "re-checking" : "soliciting",
          time_sync_peer_hash.toHex().substr(0, 16).c_str(),
          (unsigned)st.attempts);
   st.link = RNS::Link(peer_mgmt, time_sync_link_established,
