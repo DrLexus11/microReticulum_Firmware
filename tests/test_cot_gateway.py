@@ -169,19 +169,41 @@ class ProducerTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 gateway.parse_host_port(bad)
 
+    def _gateway_source(self):
+        with open(os.path.join(ROOT, "tools", "cot_gateway.py"),
+                  encoding="utf-8") as handle:
+            return handle.read()
+
     def test_a_dead_server_does_not_stop_the_others(self):
         # Reports keep arriving from the mesh whatever a server is doing, and
         # one unreachable target must not cost the rest of them.
-        source = open(os.path.join(ROOT, "tools", "cot_gateway.py"),
-                      encoding="utf-8")
-        try:
-            text = source.read()
-        finally:
-            source.close()
-        send = text[text.index("    def send(self, payload):"):]
-        send = send[:send.index("\n\nclass ")]
+        text = self._gateway_source()
+        fanout = text[text.index("class CotFanout:"):]
+        send = fanout[fanout.index("    def send(self, payload):"):]
         self.assertIn("for target in self._forward:", send)
+        self.assertIn("for forwarder in self._forward_tcp:", send)
         self.assertIn("except OSError as error:", send)
+
+    def test_the_tcp_forwarder_reconnects_without_stalling(self):
+        # A server that is down should cost one attempt every few seconds, not
+        # one per report, and never a stall: the mesh keeps delivering whatever
+        # the far end is doing.
+        text = self._gateway_source()
+        fwd = text[text.index("class TcpForwarder:"):text.index("class CotFanout:")]
+        self.assertIn("RECONNECT_INTERVAL_S", fwd)
+        self.assertIn("now - self._last_attempt < self.RECONNECT_INTERVAL_S", fwd)
+        # A failed send drops the socket so the next one reconnects, rather
+        # than writing into a half-closed connection for ever.
+        self.assertIn("self._socket = None", fwd)
+        self.assertIn("timeout=5", fwd)
+
+    def test_tcp_is_preferred_because_udp_fails_silently(self):
+        # OTS documents a UDP CoT port and 1.7.13 does not bind one, and a UDP
+        # send into a dead server succeeds regardless -- the two reasons this
+        # exists.
+        text = self._gateway_source()
+        self.assertIn("--forward-tcp", text)
+        self.assertIn("succeeds silently", text)
 
     def test_the_documented_target_is_the_one_ots_listens_on(self):
         # OTS_UDP_PORT defaults to 8087 in OpenTAKServer's defaultconfig.

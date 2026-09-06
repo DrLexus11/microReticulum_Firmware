@@ -14,13 +14,19 @@ paste it into Columba's Position Reporting card) and reports start arriving.
 Three outputs, and which you want depends on whether a TAK server is in the
 picture.
 
-  * **--forward host:port** sends each event to a TAK server as a CoT producer.
-    This is the right shape when one exists: OpenTAKServer takes CoT on UDP
-    8087, and then it -- not this -- serves EUDs on 8088/8089 and draws its own
-    map. Two things both trying to be the server is the arrangement to avoid.
+  * **--forward-tcp host:port** streams each event to a TAK server. This is the
+    right shape when one exists: the server -- not this -- serves EUDs and
+    draws its own map, and two things both trying to be the server is the
+    arrangement to avoid.
 
-        opentakserver &
-        python tools/cot_gateway.py --forward 127.0.0.1:8087 --no-tcp
+        impr-tak start
+        python tools/cot_gateway.py --forward-tcp 127.0.0.1:8088 --no-tcp
+
+    TCP rather than the UDP port OpenTAKServer documents, because 1.7.13 does
+    not actually bind one; its eud_handler holds 8088. TCP is the better
+    channel anyway, since a UDP send into a dead server succeeds silently.
+
+  * **--forward host:port** does the same over UDP, for a server that wants it.
 
   * **TCP** on 8087, for ATAK connecting straight to this with no server at all.
     Every connected client gets every event. Fine for a bench check; note it
@@ -147,6 +153,57 @@ def build_cot(fix, uid, callsign, stale_seconds, received_at=None):
     return b'<?xml version="1.0" standalone="yes"?>' + ET.tostring(event, encoding="utf-8")
 
 
+class TcpForwarder:
+    """A CoT feed into a TAK server over TCP, reconnecting as needed.
+
+    TCP rather than UDP because that is what is actually listening: OTS
+    documents a UDP CoT port and does not bind one, while its eud_handler holds
+    8088 open. It is also the better channel -- a UDP send to a dead server
+    succeeds silently, and this at least fails where somebody can see it.
+
+    Reconnection is rate-limited. A server that is down should cost one attempt
+    every few seconds, not one per report, and never a stall: reports keep
+    arriving from the mesh whatever the far end is doing.
+    """
+
+    RECONNECT_INTERVAL_S = 5.0
+
+    def __init__(self, target):
+        self.target = target
+        self._socket = None
+        self._last_attempt = 0.0
+
+    def _connect(self):
+        now = time.time()
+        if now - self._last_attempt < self.RECONNECT_INTERVAL_S:
+            return None
+        self._last_attempt = now
+        try:
+            sock = socket.create_connection(self.target, timeout=5)
+            sock.settimeout(5)
+            print("[cot] connected to %s:%d" % self.target)
+            return sock
+        except OSError as error:
+            print("[cot] cannot reach %s:%d (%s)" % (self.target + (error,)))
+            return None
+
+    def send(self, payload):
+        if self._socket is None:
+            self._socket = self._connect()
+        if self._socket is None:
+            return
+        try:
+            self._socket.sendall(payload + b"\n")
+        except OSError as error:
+            print("[cot] send to %s:%d failed (%s); will reconnect"
+                  % (self.target + (error,)))
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+            self._socket = None
+
+
 class CotFanout:
     """Everything that wants CoT, fed from one place.
 
@@ -154,7 +211,8 @@ class CotFanout:
     so a failed write costs that client and nothing else.
     """
 
-    def __init__(self, tcp_port=None, multicast=None, forward=(), verbose=False):
+    def __init__(self, tcp_port=None, multicast=None, forward=(),
+                 forward_tcp=(), verbose=False):
         self.verbose = verbose
         self._clients = []
         self._lock = threading.Lock()
@@ -164,6 +222,7 @@ class CotFanout:
         # listening on a LAN, the other hands events to a server that owns
         # distribution from there.
         self._forward = list(forward)
+        self._forward_tcp = [TcpForwarder(target) for target in forward_tcp]
         self._udp = None
         if multicast or self._forward:
             self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -204,6 +263,9 @@ class CotFanout:
                 # way, and the log is where an operator finds out.
                 print("[cot] forward to %s:%d failed: %s" % (target + (error,)))
 
+        for forwarder in self._forward_tcp:
+            forwarder.send(payload)
+
         with self._lock:
             clients = list(self._clients)
         for client in clients:
@@ -229,6 +291,7 @@ class PositionGateway:
             multicast=None if args.no_multicast else (args.multicast_group,
                                                       args.multicast_port),
             forward=[parse_host_port(target) for target in args.forward],
+            forward_tcp=[parse_host_port(target) for target in args.forward_tcp],
             verbose=args.verbose,
         )
         self.seen = {}
@@ -319,6 +382,10 @@ def main():
                         metavar="HOST:PORT",
                         help="send CoT to a TAK server as a producer, repeatable; "
                              "OpenTAKServer listens on UDP 8087")
+    parser.add_argument("--forward-tcp", action="append", default=[],
+                        metavar="HOST:PORT",
+                        help="stream CoT to a TAK server over TCP, repeatable; "
+                             "OpenTAKServer's eud_handler listens on 8088")
     parser.add_argument("--callsign-prefix", default="RAD-")
     # Long enough that a missed report does not blink the marker off the map,
     # short enough that a node which stopped reporting stops being believed.
