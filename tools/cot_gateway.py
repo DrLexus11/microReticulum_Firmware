@@ -285,6 +285,15 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    # This is a daemon, and a daemon's output is always redirected somewhere.
+    # Python block-buffers a redirected stdout, so without this the startup
+    # banner -- including the destination hash nobody can proceed without --
+    # sits invisible in a buffer until the process exits or 8 KB accumulate.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
+
     if RNS is None:
         raise SystemExit("RNS is not installed in this interpreter.\n"
                          "Try: pip install rns")
