@@ -129,6 +129,7 @@ extern uint32_t boot_count;
 // Nesting them in that guard compiled on the RAD boards and broke every nRF52
 // board, which is exactly what the note above already warns about.
 extern RNS::Bytes time_sync_peer_hash;
+extern RNS::Bytes position_gateway_hash;
 extern std::vector<RNS::Bytes> time_sync_authorities;
 extern bool time_beacon_enabled;
 extern uint32_t time_beacon_interval_s;
@@ -493,6 +494,10 @@ static void register_provisioning_namespaces() {
         time_beacon_enabled,
         [](const Value& v) { time_beacon_enabled = v.as_bool(); return true; },
         []() { return time_beacon_enabled; })
+      .field_bytes("Position Gateway", PROV_GENERAL_POSITION_GATEWAY,
+        FF_LIVE_APPLY, RNS::Provisioning::fbytes_t(), 16,
+        [](const Value& v) { position_gateway_hash = v.as_bytes(); return true; },
+        []() { return RNS::Provisioning::fbytes_t(position_gateway_hash); })
       .field_int("Time Beacon Interval (s)", PROV_GENERAL_TIME_BEACON_SECS,
         FF_LIVE_APPLY, time_beacon_interval_s, 60, 86400,
         [](const Value& v) {

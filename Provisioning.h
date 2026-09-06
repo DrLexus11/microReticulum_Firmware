@@ -106,6 +106,10 @@
 #define PROV_GENERAL_TIME_BEACON      10
 // Seconds between assertions. Zero keeps the compiled-in cadence.
 #define PROV_GENERAL_TIME_BEACON_SECS 11
+// Destination hash of the CoT gateway this node reports position to. Empty
+// disables reporting, which is the default: a node that has not been told
+// where to send its position must not guess.
+#define PROV_GENERAL_POSITION_GATEWAY 12
 
 #define PROV_METRICS_TRANS_ID   1
 #define PROV_METRICS_PROBE_DST  2

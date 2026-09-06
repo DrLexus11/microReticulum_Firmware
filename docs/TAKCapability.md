@@ -172,12 +172,12 @@ Renumbered 2026-09-06. The two GNSS steps that led this list are now
 [`OnboardGNSS.md`](OnboardGNSS.md); what is left is TAK proper, and none of it
 waits on hardware.
 
-1. **A position source interface.** One small seam: a source supplies a fix,
+1. **A position source interface.** *(built)* One small seam: a source supplies a fix,
    the firmware does not care where it came from. The phone supplies it now
    through Columba; the GP-02 supplies it later without changing anything
    downstream. Building this first is what keeps the module off the critical
    path instead of merely postponing it.
-2. **Compact position encoding** and a unicast send path to a fixed gateway
+2. **Compact position encoding** *(built)* and a unicast send path to a fixed gateway
    destination. Moderate; the destination and codec patterns already exist from
    RRC and LXMF. §3 explains why this is unicast to a stationary gateway rather
    than a broadcast.
@@ -192,5 +192,11 @@ waits on hardware.
    regulatory constraint that will apply is on gain.
 
 Steps 1 and 2 are source-agnostic and safe to build before the budget question
-is settled. Steps 3 to 5 commit to the position budget in §2, and that should be
+is settled, and are done: `Position.h` is the seam, `PositionReport.h` the codec
+and send path, and `tools/position_codec.py` the same wire format in Python for
+the gateway to decode with. Twenty bytes at full extent against roughly seven
+hundred for the XML, and a report is a single encrypted packet to a stationary
+gateway rather than a Link -- Link establishment measured about eight kilobytes
+of transient heap on the OZD fixture, which would have made the routing more
+expensive than the payload all over again. Steps 3 to 5 commit to the position budget in §2, and that should be
 agreed as a product constraint rather than discovered in an exercise.
