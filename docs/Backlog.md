@@ -188,3 +188,27 @@ Two things stop a phone acting as the command post's way onto the mesh:
 `enable_transport = No` in the config it generates, and no UI for adding a
 TCPServerInterface on a chosen address. Both are needed for the Tailscale arm
 of the field exercise. Scheduled as PR 3.
+
+## OpenTAKServer's web map cannot show any EUD
+
+`models/EUD.py` in OTS 1.7.13 returns a hardcoded null for the position its own
+map reads:
+
+```python
+"last_point": None,  # Setting to None for now since it can cause a huge overhead
+                     # when an EUD has lots of points in the DB
+```
+
+`/api/map_state` therefore reports every EUD with `"last_point": null`, and the
+web map draws nothing — for our gateway's tracks and for a directly connected
+ATAK alike. Confirmed 2026-09-06 with both present in the database: 2 EUDs, 26
+points, 28 CoT events, correct coordinates and callsigns, and an empty map.
+
+Nothing to fix on our side, and their tradeoff to make. Noted so the next
+person to open that map does not spend an evening on the feed.
+
+ATAK draws the same tracks correctly from the CoT stream, whether pointed at
+the gateway directly on 8087 or at OTS on 8088, so this costs the deck's own
+map view and nothing else. It becomes worth revisiting if the deck ever needs
+a display of its own -- at which point the options are a patched `to_json`, a
+query against `/api/point`, or our own small map over the database.
