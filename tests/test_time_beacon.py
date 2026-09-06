@@ -149,13 +149,36 @@ class ObservabilityTests(unittest.TestCase):
         for field in ("Auth/emit", "H/V/A", "Refused"):
             self.assertIn(field, pages)
 
+    def test_the_guard_checks_contiguous_memory_not_only_free(self):
+        # The allocation that fails is one contiguous buffer, and free heap
+        # says nothing about whether one exists. OZD-01 measured 23536 free
+        # with a largest block of 12276: a free-heap floor of 14336 would have
+        # admitted a request needing more contiguous memory than existed.
+        pages = source("Pages.h")
+        self.assertIn("PAGE_MIN_LARGEST_BLOCK", pages)
+        self.assertIn("largest < PAGE_MIN_LARGEST_BLOCK", pages)
+
+    def test_the_low_memory_reply_does_not_allocate_to_say_so(self):
+        # A guard against bad_alloc that can throw bad_alloc protects nothing,
+        # and it runs only on a board already chosen for being out of memory.
+        pages = source("Pages.h")
+        start = pages.index("PAGE_MIN_LARGEST_BLOCK) {")
+        branch = pages[start:pages.index("#endif", start)]
+        # Comments here name what was removed, so check the code, not the prose.
+        code = "\n".join(line.split("//")[0]
+                         for line in branch.splitlines())
+        for allocating in ("std::string", "std::to_string", "MsgPack::Packer"):
+            self.assertNotIn(allocating, code)
+        self.assertIn("char reply[", branch)
+        self.assertIn("snprintf(", branch)
+
     def test_a_page_is_never_worth_the_node(self):
         # A failed `new` inside Cryptography::HMAC throws bad_alloc with
         # nothing to catch it, so the node aborts mid-reply. Below the floor
         # it answers with the one fact that matters instead.
         pages = source("Pages.h")
         self.assertIn("PAGE_MIN_FREE_HEAP", pages)
-        self.assertIn("ESP.getFreeHeap() < PAGE_MIN_FREE_HEAP", pages)
+        self.assertIn("free_heap < PAGE_MIN_FREE_HEAP", pages)
         self.assertIn("LOW MEMORY", pages)
 
     def test_a_better_clock_is_not_reported_as_a_refusal(self):

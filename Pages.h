@@ -188,6 +188,15 @@ void add_interface_details(RNS::Bytes& content, const RNS::Interface& interface)
 #ifndef PAGE_MIN_FREE_HEAP
 #define PAGE_MIN_FREE_HEAP 14336
 #endif
+// Free heap is not the whole question. The allocation that fails is a single
+// contiguous buffer, and free heap says nothing about whether one exists:
+// OZD-01 measured 23536 free with a largest block of 12276 on 2026-09-06, so a
+// free-heap check alone would have admitted a request that needed more
+// contiguous memory than the board could offer anywhere. Set above the ~7 KB a
+// fetch costs transiently, and below the block a healthy fixture reports.
+#ifndef PAGE_MIN_LARGEST_BLOCK
+#define PAGE_MIN_LARGEST_BLOCK 8192
+#endif
 
 RNS::Bytes serve_page(
 	const RNS::Bytes& path,
@@ -210,18 +219,35 @@ RNS::Bytes serve_page(
 	// a handful of bytes and stays up, which is also the more useful answer:
 	// "this node is nearly out of memory" is exactly what the operator needed
 	// to know, and it arrives instead of a reboot loop.
-	if (ESP.getFreeHeap() < PAGE_MIN_FREE_HEAP) {
-		std::string terse = "> LOW MEMORY\n\nFree heap: ";
-		terse += std::to_string(ESP.getFreeHeap());
-		terse += " bytes\nLargest  : ";
-		terse += std::to_string(ESP.getMaxAllocHeap());
-		terse += " bytes\n\nPages are not served below ";
-		terse += std::to_string((unsigned)PAGE_MIN_FREE_HEAP);
-		terse += " bytes: rendering one costs more than that and the node\n";
-		terse += "would abort mid-reply rather than answer.\n";
-		MsgPack::Packer packer;
-		packer.packBinary((const uint8_t*)terse.data(), terse.size());
-		return RNS::Bytes(packer.data(), packer.size());
+	const uint32_t free_heap = ESP.getFreeHeap();
+	const uint32_t largest = ESP.getMaxAllocHeap();
+	if (free_heap < PAGE_MIN_FREE_HEAP || largest < PAGE_MIN_LARGEST_BLOCK) {
+		// Assembled on the stack. The previous version built this reply with
+		// std::string, six std::to_string temporaries and a MsgPack::Packer,
+		// every one of which allocates -- so the guard against bad_alloc could
+		// itself throw bad_alloc, on a board chosen for being out of memory.
+		// One allocation is unavoidable, in the RNS::Bytes this returns, and
+		// it is small and made once.
+		char reply[224];
+		const int written = snprintf(reply + 2, sizeof(reply) - 2,
+			"> LOW MEMORY\n\nFree heap: %u bytes\nLargest  : %u bytes\n\n"
+			"Pages need %u free and %u contiguous. Rendering one costs more\n"
+			"than is here, and the node would abort mid-reply rather than\n"
+			"answer.\n",
+			(unsigned)free_heap, (unsigned)largest,
+			(unsigned)PAGE_MIN_FREE_HEAP, (unsigned)PAGE_MIN_LARGEST_BLOCK);
+		// msgpack bin8: 0xc4, a one-byte length, then the payload. The body is
+		// well under 256 bytes by construction; snprintf truncates rather than
+		// overruns should that ever stop being true, and the clamp keeps the
+		// declared length honest either way.
+		size_t len = 0;
+		if (written > 0) {
+			len = ((size_t)written < sizeof(reply) - 2) ? (size_t)written
+			                                            : sizeof(reply) - 3;
+		}
+		reply[0] = (char)0xc4;
+		reply[1] = (char)len;
+		return RNS::Bytes((const uint8_t*)reply, len + 2);
 	}
 #endif
 

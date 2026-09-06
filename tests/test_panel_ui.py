@@ -306,5 +306,32 @@ class PanelSemanticsTests(unittest.TestCase):
         self.assertIn("overflowed", record)
 
 
+class ToolPortabilityTests(unittest.TestCase):
+    """These ship with the repo and are run from wherever it was cloned."""
+
+    def test_no_tool_hardcodes_a_checkout_path_on_sys_path(self):
+        # An absolute sys.path entry breaks the tool for anyone who cloned
+        # somewhere else, and does it silently -- the import just fails.
+        for name in ("provision_node.py", "panel_render.py",
+                     "time_authority.py"):
+            path = os.path.join(ROOT, "tools", name)
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            for line in text.splitlines():
+                if "sys.path.insert" in line or "sys.path.append" in line:
+                    self.assertNotIn("/home/", line,
+                                     "%s puts an absolute path on sys.path" % name)
+
+    def test_the_capture_file_is_opened_in_a_with_block(self):
+        # capture() already uses one for the serial port; the --file path
+        # leaked its descriptor if parsing raised.
+        with open(os.path.join(ROOT, "tools", "panel_render.py"),
+                  encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("with open(args.file", text)
+
+
 if __name__ == "__main__":
     unittest.main()

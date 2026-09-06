@@ -122,7 +122,13 @@ def main():
                         help="do not print the frame as text")
     args = parser.parse_args()
 
-    text = capture(args.port, args.seconds) if args.port else open(args.file, encoding="utf-8", errors="replace").read()
+    if args.port:
+        text = capture(args.port, args.seconds)
+    else:
+        # A with-block, like capture() uses for the serial port: the descriptor
+        # is released even if parsing below raises.
+        with open(args.file, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
 
     frames = list(parse_frames(text))
     if not frames:

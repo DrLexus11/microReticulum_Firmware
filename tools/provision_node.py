@@ -36,16 +36,24 @@ credentials), which skips step 3.
 
 import argparse
 import hashlib
+import os
 import sys
 import time
 
-sys.path.insert(0, "/home/deck/projects/microReticulum_Firmware/tools/ifac")
+# Relative to this file, not to one checkout on one machine: the tool is meant
+# to travel with the repo, and an absolute path silently breaks it for anyone
+# who cloned somewhere else.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ifac"))
 
 import serial  # noqa: E402  (after the path insert)
 from RNS.vendor import umsgpack  # noqa: E402
 
 import provision as P  # noqa: E402
 
+# A machine-specific data file rather than part of the repo, so this stays an
+# absolute default and --ifac-backup overrides it. It is only a default: the
+# tool reports what it could not open rather than failing obscurely.
 DEFAULT_BACKUP = "/home/deck/ozd_backup/fs_old/config/ns109.msgpack"
 
 # Provisioning namespace 100, from Provisioning.h.
@@ -69,6 +77,11 @@ DEFAULT_TIME_PEER = "a4f4dbd20b01de2d9b087a8d0afe1880"
 
 
 def load_ifac(path):
+    if not os.path.exists(path):
+        raise SystemExit(
+            "no IFAC backup at %s\n"
+            "Pass --ifac-backup with a board backup holding the LoRa IFAC "
+            "record." % path)
     with open(path, "rb") as handle:
         record = umsgpack.unpackb(handle.read())
     return record[P.FIELD_NETNAME], record[P.FIELD_PASSPHRASE]
