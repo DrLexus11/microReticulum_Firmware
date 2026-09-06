@@ -210,3 +210,42 @@ void node_census_begin();
 
 // Seconds since boot, wrap-corrected.
 uint32_t node_uptime_seconds();
+
+// --- recovering from a boot the caches cause ---------------------------------
+//
+// Transport loads the path, known-destination and packet-hash stores into RAM
+// before anything else in `Reticulum::start()`, and nothing bounds what it
+// reads: the on-flash index is replayed in full, and only then pruned to the
+// configured maximum. A node that has been up for days accumulates enough that
+// the load no longer fits, and the allocation that fails is inside a container
+// -- `std::bad_alloc` with nothing to catch it, so the node aborts, reboots,
+// and reads the same store again. It cannot get out of this on its own, and it
+// happens to exactly the nodes that have been running longest.
+//
+// The stores are caches. Paths are re-announced, destinations are re-heard, the
+// hashlist only suppresses duplicates. Trading all three for a node that boots
+// is not a close call -- a node that meshes slowly still meshes, and one stuck
+// in an abort loop reaches nobody at all.
+#ifndef NODE_CACHE_WIPE_FAULTS
+#define NODE_CACHE_WIPE_FAULTS 3
+#endif
+// How long a boot has to survive before it counts as one, clearing the streak.
+// Well past the store load, and past the first announces.
+#ifndef NODE_BOOT_HEALTHY_S
+#define NODE_BOOT_HEALTHY_S 120
+#endif
+
+// Consecutive boots that ended in a panic, watchdog or brownout with no
+// healthy boot in between. Survives a power cycle: an operator pulling the plug
+// and trying again does not make the store any less poisoned.
+inline uint32_t node_fault_streak = 0;
+
+// True when the streak says this node cannot boot with the caches it has.
+bool node_caches_are_suspect();
+
+// Delete the three persisted Transport caches. Call before Reticulum::start().
+void node_clear_persisted_caches();
+
+// Clear the fault streak once this boot has lasted NODE_BOOT_HEALTHY_S. Cheap
+// to call every loop; writes at most once per boot.
+void node_boot_mark_healthy();

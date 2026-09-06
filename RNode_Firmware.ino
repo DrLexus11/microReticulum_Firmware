@@ -1664,6 +1664,13 @@ printf("[init] op_mode: %U\n", op_mode);
         INFO("Not in TNC mode, transport will be disabled");
         reticulum.transport_enabled(false);
       }
+      // Transport reads the path, known-destination and hashlist stores into
+      // RAM as the first thing start() does, and a store large enough to
+      // exhaust the heap takes the node down before it can ever be told to
+      // drop it. Three faulted boots in a row is that node.
+      if (node_caches_are_suspect()) {
+        node_clear_persisted_caches();
+      }
       RNS_HEAP_PROBE("pre-reticulum-start");
       reticulum.start();
       RNS_HEAP_PROBE("post-reticulum-start");
@@ -4164,6 +4171,8 @@ void loop() {
     time_sync_loop();
     time_beacon_loop();
     nav_read();
+    // A boot that has lasted this long is a boot, whatever the last one did.
+    node_boot_mark_healthy();
   #endif
 
   #if HAS_INPUT

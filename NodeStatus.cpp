@@ -54,10 +54,17 @@ void node_restart_counts_load() {
   if (!filesystem.exists(RESTART_COUNTS_PATH)) return;
   microStore::File f = filesystem.open(RESTART_COUNTS_PATH, microStore::File::ModeRead);
   if (!f) return;
-  uint32_t values[2] = {0, 0};
-  if (f.read((uint8_t*)values, sizeof(values)) == sizeof(values)) {
+  // Two fields historically, three now. A board flashed from the older
+  // firmware has a two-field file and must not lose its counts to a length
+  // check, so the streak simply starts at zero there.
+  uint32_t values[3] = {0, 0, 0};
+  size_t read = f.read((uint8_t*)values, sizeof(values));
+  if (read >= sizeof(uint32_t) * 2) {
     node_crash_count = values[0];
     node_panic_count = values[1];
+  }
+  if (read >= sizeof(values)) {
+    node_fault_streak = values[2];
   }
   f.close();
 }
@@ -65,7 +72,7 @@ void node_restart_counts_load() {
 static void node_restart_counts_store() {
   microStore::File f = filesystem.open(RESTART_COUNTS_PATH, microStore::File::ModeWrite, true);
   if (!f) return;
-  const uint32_t values[2] = {node_crash_count, node_panic_count};
+  const uint32_t values[3] = {node_crash_count, node_panic_count, node_fault_streak};
   f.write((const uint8_t*)values, sizeof(values));
   f.close();
 }
@@ -79,6 +86,7 @@ void node_restart_counts_record_boot() {
   switch (esp_reset_reason()) {
     case ESP_RST_PANIC:
       node_panic_count++;
+      node_fault_streak++;
       changed = true;
       break;
     // A watchdog reset and a brownout are both "it stopped without being
@@ -90,6 +98,7 @@ void node_restart_counts_record_boot() {
     case ESP_RST_WDT:
     case ESP_RST_BROWNOUT:
       node_crash_count++;
+      node_fault_streak++;
       changed = true;
       break;
     default:
@@ -97,6 +106,61 @@ void node_restart_counts_record_boot() {
   }
   if (changed) node_restart_counts_store();
 #endif
+}
+
+// --- recovering from a boot the caches cause ---------------------------------
+
+bool node_caches_are_suspect() {
+  return node_fault_streak >= NODE_CACHE_WIPE_FAULTS;
+}
+
+// Delete a store directory and everything in it. The callback hands back bare
+// basenames, so they are joined before use -- the existing legacy-cleanup walk
+// in setup() learned that the hard way, and a bad join here silently deletes
+// nothing while reporting success.
+static uint16_t node_remove_store(const char* path) {
+  if (!filesystem.isDirectory(path)) return 0;
+  uint16_t removed = 0;
+  filesystem.listDirectory(path, [&](const char* name) -> void {
+    if (name[0] == '.') return;
+    char full[80];
+    snprintf(full, sizeof(full), "%s/%s", path, name);
+    if (filesystem.isDirectory(full)) {
+      if (filesystem.rmdir(full)) removed++;
+    }
+    else if (filesystem.remove(full)) {
+      removed++;
+    }
+  });
+  filesystem.rmdir(path);
+  return removed;
+}
+
+void node_clear_persisted_caches() {
+  // Say so on the console before doing it. If the wipe itself is what kills
+  // the board, the last line out of the port is the one that explains why the
+  // node's paths are gone -- and this runs on a board nobody can log into.
+  printf("[recover] %u consecutive faulted boots: clearing Transport caches\n",
+         (unsigned)node_fault_streak);
+  uint16_t files = 0;
+  files += node_remove_store("./path_store");
+  files += node_remove_store("./known_store");
+  files += node_remove_store("./hashlist_store");
+  printf("[recover] removed %u cache files; paths and peers will be relearned\n",
+         (unsigned)files);
+  // The streak is not cleared here. If the board still cannot boot, the caches
+  // were not the cause, and a false all-clear would hide that on the next
+  // restart -- node_boot_mark_healthy() clears it only once a boot survives.
+}
+
+void node_boot_mark_healthy() {
+  static bool cleared = false;
+  if (cleared || node_fault_streak == 0) return;
+  if (node_uptime_seconds() < NODE_BOOT_HEALTHY_S) return;
+  cleared = true;
+  node_fault_streak = 0;
+  node_restart_counts_store();
+  INFO("Boot survived; abnormal-restart streak cleared");
 }
 
 // --- census handlers ---------------------------------------------------------
