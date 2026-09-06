@@ -212,3 +212,50 @@ gateway rather than a Link -- Link establishment measured about eight kilobytes
 of transient heap on the OZD fixture, which would have made the routing more
 expensive than the payload all over again. Steps 3 to 5 commit to the position budget in §2, and that should be
 agreed as a product constraint rather than discovered in an exercise.
+
+
+---
+
+## 8. What comes after position, in order
+
+§7 delivered one direction: a position leaves a phone and arrives on a map.
+That is not yet a TAK deployment, and the field exercise scoped in
+[`TAKFieldExercise.md`](TAKFieldExercise.md) -- two mobile users, one stationary
+command post, tasking and chat and markers -- needs four more pieces. Each is
+its own PR, and the order is not arbitrary.
+
+**PR 2 — CoT ingestion, the command downlink.** *Next.* The gateway listens for
+CoT from the command post and carries it back into the mesh, so a stationary
+operator can task a node rather than only watch one. Compact on the wire and
+unicast to the addressed node, the same discipline as position. Everything
+arriving is untrusted until verified: a command that moves people is precisely
+the payload worth forging, and the signing path built for the time authority is
+there to be reused. Nothing else on this list is useful without it, which is
+why it is first.
+
+**PR 3 — Field transport.** The outdoor gap. The command post has no radio
+interface of its own -- both its links to the RADs are `UDPInterface` over the
+LAN -- so it needs an `RNodeInterface` on USB. Plus transport mode and a TCP
+interface on Columba, so a phone can bridge a tailnet to LoRa and the command
+post can join the mesh without radio range to it.
+
+**PR 4 — Chat and markers.** LXMF as the carrier, bridged to GeoChat at the
+gateway, and a compact marker encoding beside the position one. Explicitly not
+a raw CoT relay: §2's table applies unchanged to a GeoChat message, and seven
+hundred bytes at 538 ms is sixty-seven messages an hour for the whole channel.
+
+**PR 5 — Voice.** Nothing exists: RRC carries no audio and there is no codec in
+the firmware. Ordinary over IP, a research question over LoRa -- SF7/BW250 is
+10.9 kbps raw before framing, so even Codec2 at 3.2 kbps would take the channel
+and leave nothing for the position reports the map depends on. Measure the
+trade before designing it, and do not let it block the exercise.
+
+Two findings from scoping the exercise are worth repeating here because they
+change what is worth building:
+
+- **iTAK on iOS cannot join the mesh.** Columba is Android only, with no iOS
+  target and no shared module. An iPhone reaches TAK over IP or not at all.
+- **Tailscale is IP.** If the field phones can reach a tailnet they have
+  working internet, and TAK clients then talk natively while Reticulum carries
+  nothing. Useful as a second transport and as the "infrastructure present" arm
+  of a comparison; misleading if it is the only path tested.

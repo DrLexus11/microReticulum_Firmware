@@ -169,3 +169,22 @@ no decision made so far turns on it.
 
 Worth resolving before anyone sizes a fleet close to the limit. The node is the
 one to believe either way, since it is the thing actually transmitting.
+
+
+## The command post has no radio of its own
+
+`~/.reticulum/config` on the deck reaches both RADs over `UDPInterface` to
+192.168.1.x. That is the LAN, and it does not exist outdoors, so the command
+post silently has no path into the mesh the moment it leaves the building.
+
+Needs an `RNodeInterface` on USB serial. Scheduled as PR 3 in
+[`TAKFieldExercise.md`](TAKFieldExercise.md) §4; recorded here because it is a
+live misconfiguration rather than only a future feature, and anyone taking the
+deck outside today would find it the hard way.
+
+## Columba cannot bridge a tailnet to LoRa
+
+Two things stop a phone acting as the command post's way onto the mesh:
+`enable_transport = No` in the config it generates, and no UI for adding a
+TCPServerInterface on a chosen address. Both are needed for the Tailscale arm
+of the field exercise. Scheduled as PR 3.
