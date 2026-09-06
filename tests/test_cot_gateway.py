@@ -157,6 +157,40 @@ class StalenessTests(unittest.TestCase):
         self.assertEqual(event.get("time"), "2026-09-06T12:00:00.000Z")
 
 
+class ProducerTests(unittest.TestCase):
+    """Feeding a TAK server rather than being one."""
+
+    def test_host_port_is_parsed_strictly(self):
+        # Sending CoT where nobody listens looks exactly like sending nothing,
+        # so a malformed target fails at startup rather than at runtime.
+        self.assertEqual(gateway.parse_host_port("127.0.0.1:8087"),
+                         ("127.0.0.1", 8087))
+        for bad in ("127.0.0.1", ":8087", "127.0.0.1:", "127.0.0.1:http"):
+            with self.assertRaises(SystemExit):
+                gateway.parse_host_port(bad)
+
+    def test_a_dead_server_does_not_stop_the_others(self):
+        # Reports keep arriving from the mesh whatever a server is doing, and
+        # one unreachable target must not cost the rest of them.
+        source = open(os.path.join(ROOT, "tools", "cot_gateway.py"),
+                      encoding="utf-8")
+        try:
+            text = source.read()
+        finally:
+            source.close()
+        send = text[text.index("    def send(self, payload):"):]
+        send = send[:send.index("\n\nclass ")]
+        self.assertIn("for target in self._forward:", send)
+        self.assertIn("except OSError as error:", send)
+
+    def test_the_documented_target_is_the_one_ots_listens_on(self):
+        # OTS_UDP_PORT defaults to 8087 in OpenTAKServer's defaultconfig.
+        with open(os.path.join(ROOT, "tools", "cot_gateway.py"),
+                  encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("OpenTAKServer listens on UDP 8087", text)
+
+
 class FormatTests(unittest.TestCase):
     def test_the_event_is_wellformed_cot(self):
         xml = gateway.build_cot(codec.PositionFix(lat_e7=1, lon_e7=1),

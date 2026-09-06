@@ -11,12 +11,22 @@ an ordinary CoT stream on the other. No plugin, no fork, no client work.
 It prints its destination hash on startup. Provision that onto each node (or
 paste it into Columba's Position Reporting card) and reports start arriving.
 
-Two outputs, both optional and both on by default:
+Three outputs, and which you want depends on whether a TAK server is in the
+picture.
 
-  * **TCP** on 8087, the port ATAK uses for a streaming CoT connection. Every
-    connected client gets every event.
-  * **UDP multicast** to 239.2.3.1:6969, which is where ATAK listens for
-    situational awareness on a local network without being configured at all.
+  * **--forward host:port** sends each event to a TAK server as a CoT producer.
+    This is the right shape when one exists: OpenTAKServer takes CoT on UDP
+    8087, and then it -- not this -- serves EUDs on 8088/8089 and draws its own
+    map. Two things both trying to be the server is the arrangement to avoid.
+
+        opentakserver &
+        python tools/cot_gateway.py --forward 127.0.0.1:8087 --no-tcp
+
+  * **TCP** on 8087, for ATAK connecting straight to this with no server at all.
+    Every connected client gets every event. Fine for a bench check; note it
+    collides conceptually, though not on the wire, with OTS's UDP 8087.
+  * **UDP multicast** to 239.2.3.1:6969, where ATAK picks up situational
+    awareness on a local network with no configuration whatsoever.
 
 Why the mesh side is twenty bytes and this side is seven hundred: a CoT event
 is XML, and XML on a LoRa radio is sixty-seven reports an hour across the whole
@@ -59,6 +69,15 @@ DEFAULT_COT_TYPE = "a-f-G-U-C"
 DEFAULT_TCP_PORT = 8087
 DEFAULT_MULTICAST_GROUP = "239.2.3.1"
 DEFAULT_MULTICAST_PORT = 6969
+
+
+def parse_host_port(text):
+    """"host:port" for --forward. Raises rather than guessing a port: sending
+    CoT somewhere nobody is listening looks identical to sending nothing."""
+    host, _, port = text.rpartition(":")
+    if not host or not port.isdigit():
+        raise SystemExit("--forward wants HOST:PORT, got %r" % text)
+    return (host, int(port))
 
 
 def cot_time(when):
@@ -135,13 +154,18 @@ class CotFanout:
     so a failed write costs that client and nothing else.
     """
 
-    def __init__(self, tcp_port=None, multicast=None, verbose=False):
+    def __init__(self, tcp_port=None, multicast=None, forward=(), verbose=False):
         self.verbose = verbose
         self._clients = []
         self._lock = threading.Lock()
         self._multicast = multicast
+        # Unicast CoT to a TAK server. Separate from the multicast socket
+        # because they are different intents: one publishes to whoever is
+        # listening on a LAN, the other hands events to a server that owns
+        # distribution from there.
+        self._forward = list(forward)
         self._udp = None
-        if multicast:
+        if multicast or self._forward:
             self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
         if tcp_port:
@@ -165,11 +189,20 @@ class CotFanout:
                 self._clients.append(client)
 
     def send(self, payload):
-        if self._udp is not None:
+        if self._udp is not None and self._multicast:
             try:
                 self._udp.sendto(payload, self._multicast)
             except OSError as error:
                 print("[cot] multicast send failed: %s" % error)
+
+        for target in self._forward:
+            try:
+                self._udp.sendto(payload, target)
+            except OSError as error:
+                # A server that is down must not stop the others, and must not
+                # stop the gateway: reports keep arriving from the mesh either
+                # way, and the log is where an operator finds out.
+                print("[cot] forward to %s:%d failed: %s" % (target + (error,)))
 
         with self._lock:
             clients = list(self._clients)
@@ -195,6 +228,7 @@ class PositionGateway:
             tcp_port=None if args.no_tcp else args.tcp_port,
             multicast=None if args.no_multicast else (args.multicast_group,
                                                       args.multicast_port),
+            forward=[parse_host_port(target) for target in args.forward],
             verbose=args.verbose,
         )
         self.seen = {}
@@ -241,13 +275,19 @@ class PositionGateway:
             print("[gateway] undecodable report, %d bytes" % len(data))
             return
 
-        # One track per sender, so a node keeps its marker instead of spawning a
-        # new one on every report. Falls back to the packet hash only if there
-        # is no identity, which would make the track useless but visible rather
-        # than silently dropped.
-        source = getattr(packet, "link_id", None) or packet.get_hash()
-        uid = "urtn-" + RNS.hexrep(source, delimit=False)[:16]
-        callsign = self.args.callsign_prefix + uid[-6:]
+        # One track per sender, from the sender_id carried in the report.
+        #
+        # This used to derive the uid from the packet hash, which is different
+        # for every packet -- so every report became a *new* track and a map
+        # filled with one person's ghosts. Two live reports from one phone on
+        # 2026-09-06 arrived as RAD-13aaef and RAD-f80e9a, and that is what put
+        # sender_id on the wire in version 2.
+        #
+        # A Reticulum packet to a SINGLE destination is anonymous by
+        # construction, so the identifier has to travel inside the payload;
+        # there is nothing on the packet to fall back to that would be stable.
+        uid = "urtn-%08x" % fix.sender_id
+        callsign = "%s%06X" % (self.args.callsign_prefix, fix.sender_id & 0xFFFFFF)
 
         payload = build_cot(fix, uid, callsign, self.args.stale_seconds)
         self.fanout.send(payload)
@@ -255,7 +295,7 @@ class PositionGateway:
         first = uid not in self.seen
         self.seen[uid] = time.time()
         print("[gateway] %s %s %.6f,%.6f%s%s" % (
-            "new " if first else "    ", callsign,
+            "new " if first else "move", callsign,
             fix.lat_e7 / 1e7, fix.lon_e7 / 1e7,
             " +/-%dm" % fix.accuracy_m if fix.accuracy_m else "",
             " alt %dm" % fix.alt_m if fix.alt_known else "",
@@ -275,6 +315,10 @@ def main():
     parser.add_argument("--multicast-group", default=DEFAULT_MULTICAST_GROUP)
     parser.add_argument("--multicast-port", type=int, default=DEFAULT_MULTICAST_PORT)
     parser.add_argument("--no-multicast", action="store_true")
+    parser.add_argument("--forward", action="append", default=[],
+                        metavar="HOST:PORT",
+                        help="send CoT to a TAK server as a producer, repeatable; "
+                             "OpenTAKServer listens on UDP 8087")
     parser.add_argument("--callsign-prefix", default="RAD-")
     # Long enough that a missed report does not blink the marker off the map,
     # short enough that a node which stopped reporting stops being believed.
