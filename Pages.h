@@ -385,6 +385,9 @@ RNS::Bytes serve_page(
                 << std::to_string(tb.refused_signature) << "s/"
                 << std::to_string(tb.refused_stale) << "t/"
                 << std::to_string(tb.refused_rules) << "r\n";
+        // Kept apart from the refusals above: this one means the mesh is
+        // working and we are the better clock.
+        content << "Stratum-  : " << std::to_string(tb.declined_stratum) << "\n";
       }
       content << ">> Clock-domain check\n";
       content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";

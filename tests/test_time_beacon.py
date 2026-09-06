@@ -158,6 +158,37 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIn("ESP.getFreeHeap() < PAGE_MIN_FREE_HEAP", pages)
         self.assertIn("LOW MEMORY", pages)
 
+    def test_a_better_clock_is_not_reported_as_a_refusal(self):
+        # WORSE_STRATUM means the mesh is working and we are the better clock.
+        # Counted beside a bad signature it reads as "this node is being lied
+        # to", which is the opposite of what happened.
+        beacon = source("TimeBeacon.h")
+        self.assertIn("declined_stratum", beacon)
+        apply_body = beacon[beacon.index("inline void time_beacon_apply("):
+                            beacon.index("class TimeBeaconAnnounceHandler")]
+        worse = apply_body.index("WallTimeResult::WORSE_STRATUM")
+        rules = apply_body.index("st.refused_rules++")
+        self.assertLess(worse, rules)
+        self.assertIn("declined_stratum", source("Pages.h"))
+
+    def test_a_worse_clock_agreeing_does_not_confirm_ours(self):
+        # BACKWARDS is agreement from a source at least as good as ours, and it
+        # confirms. A worse-stratum source is not evidence of anything, so the
+        # verification timestamp must be left alone.
+        beacon = source("TimeBeacon.h")
+        apply_body = beacon[beacon.index("inline void time_beacon_apply("):
+                            beacon.index("class TimeBeaconAnnounceHandler")]
+        branch = apply_body[apply_body.index("WallTimeResult::WORSE_STRATUM"):
+                            apply_body.index("st.refused_rules++")]
+        self.assertNotIn("note_wall_time_verified", branch)
+        self.assertNotIn("node_time_confirm", branch)
+
+        sync = source("TimeSync.h")
+        sbranch = sync[sync.index("WallTimeResult::WORSE_STRATUM"):
+                       sync.index("st.refusals++")]
+        self.assertNotIn("note_wall_time_verified", sbranch)
+        self.assertNotIn("node_time_confirm", sbranch)
+
     def test_a_stalled_time_client_says_so(self):
         # Both of these paths returned silently, which made a client that never
         # got anywhere indistinguishable from one that was never configured.

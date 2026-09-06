@@ -83,6 +83,11 @@ struct TimeBeaconStats {
   uint32_t refused_signature = 0;
   uint32_t refused_stale = 0;  // older than one we already accepted, or expired
   uint32_t refused_rules = 0;  // the library's safety rules said no
+  // Not a refusal. The authority's own clock is further from a real reference
+  // than ours, so there is nothing to take -- counting it beside a bad
+  // signature would read as "this node is being lied to" on a mesh that is
+  // working exactly as designed, with a stratum-3 node hearing a stratum-4 one.
+  uint32_t declined_stratum = 0;
   uint64_t highest_asserted_ms = 0;
   uint32_t last_emit = 0;
   uint32_t emit_jitter = 0;
@@ -218,6 +223,13 @@ inline void time_beacon_apply(const RNS::Identity& announced_identity,
     // worth applying. The clock is confirmed even though it did not move.
     OS::note_wall_time_verified();
     node_time_confirm("BCN");
+    return;
+  }
+  if (result == OS::WallTimeResult::WORSE_STRATUM) {
+    // Nothing is wrong here, and nothing is confirmed either: a source further
+    // from a reference than we are agreeing with us is not evidence, so the
+    // verification timestamp is deliberately left alone.
+    st.declined_stratum++;
     return;
   }
   st.refused_rules++;

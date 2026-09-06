@@ -214,6 +214,13 @@ inline void time_sync_response(const RNS::Bytes& response) {
     time_sync_finish(nullptr);
     return;
   }
+  if (result == OS::WallTimeResult::WORSE_STRATUM) {
+    // We solicited this and the peer answered honestly with a clock further
+    // from a reference than ours. That is a completed exchange, not a refusal,
+    // and it must not confirm our clock either.
+    time_sync_finish(nullptr);
+    return;
+  }
   st.refusals++;
   time_sync_finish("peer time rejected by the safety rules");
 }
