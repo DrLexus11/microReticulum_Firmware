@@ -129,16 +129,21 @@ matters is the transition, in both directions — everything else is a link test
 
 ## 5. What this defers
 
-The CoT and TAK work from `TAKCapability.md` §7 is **not on this path**. Its
-consumer is a desktop TAK client at a command post, and there is no command post
-in this exercise. It stays built and tested, and becomes relevant when Vox
-provides an IP-bearing mesh for a stationary operator to sit on — see
-[`TAKFieldExercise.md`](TAKFieldExercise.md) for that shape and
-[`OnboardGNSS.md`](OnboardGNSS.md) for the module that would let a RAD report
-its own position rather than borrowing a phone's.
+The CoT and TAK work from `TAKCapability.md` §7 is **not on this path** — but it
+is not parked either, which an earlier draft of this document got wrong. It has
+its own track indoors, where the deck is a command post over the LAN and
+ATAK-CIV is already installed: see [`IndoorTAKLab.md`](IndoorTAKLab.md). What
+waits for Vox is TAK *outdoors*, with a stationary operator and no
+infrastructure — [`TAKFieldExercise.md`](TAKFieldExercise.md) for that shape,
+and [`OnboardGNSS.md`](OnboardGNSS.md) for the module that would let a RAD
+report its own position rather than borrowing a phone's.
 
-Building it first was not wasted: the compact codec, the wire format and its
-three-way cross-check are what PR B and PR C are made of. But it is worth being
-plain that the two-person exercise does not need a CoT gateway, and that
-scheduling CoT ingestion next — as this project did earlier today — was
-sequencing for a deployment shape that has since been dropped.
+The two tracks share every compact encoding. A marker is the same bytes on the
+radio whether ATAK dropped it indoors or Columba dropped it in a field, so
+building them once serves both.
+
+Building it first was not wasted, and not only because the codec and its
+three-way cross-check are what PR B and PR C are made of: the indoor lab can
+exercise the whole of it today. What the two-person exercise does not need is a
+CoT gateway *in the field*, which is a narrower claim than the one this document
+first made.

@@ -224,14 +224,17 @@ That is not yet a TAK deployment, and the field exercise scoped in
 command post, tasking and chat and markers -- needs four more pieces. Each is
 its own PR, and the order is not arbitrary.
 
-**Re-sequenced 2026-09-06.** The two-person field exercise in
-[`FieldTeamMinimal.md`](FieldTeamMinimal.md) dropped the central command post,
-and with it the consumer for everything below. Vox is months out, so the work
-that reaches a runnable exercise with RADs and Android phones is there, not
-here. What follows stays scheduled and stays in this order; it starts when there
-is a stationary operator to task from.
+**Re-sequenced twice on 2026-09-06, and the second correction matters.**
+Dropping the central command post from the *outdoor* exercise
+([`FieldTeamMinimal.md`](FieldTeamMinimal.md)) defers this work outdoors, not
+altogether: indoors the deck is a command post whenever there is a LAN, ATAK-CIV
+is already installed on the bench phone, and the whole path below is testable
+now. See [`IndoorTAKLab.md`](IndoorTAKLab.md).
 
-**PR 2 — CoT ingestion, the command downlink.** *Deferred, not next.* The gateway listens for
+Two tracks, sharing one codec. The indoor lab proves the application layer; the
+outdoor exercise proves the network underneath it.
+
+**PR 2 — CoT ingestion, the command downlink.** *Next, for the indoor lab.* The gateway listens for
 CoT from the command post and carries it back into the mesh, so a stationary
 operator can task a node rather than only watch one. Compact on the wire and
 unicast to the addressed node, the same discipline as position. Everything
