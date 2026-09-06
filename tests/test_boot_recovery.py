@@ -148,5 +148,36 @@ class CoverageTests(unittest.TestCase):
         self.assertLess(wipe.index("printf("), wipe.index("node_remove_store"))
 
 
+class ConsoleTests(unittest.TestCase):
+    """The serial console is the only diagnostic channel a fielded node has."""
+
+    def test_the_wifi_status_poll_does_not_print_every_poll(self):
+        # WIFI_UPDATE_INTERVAL_MS is 500, so an unconditional print is two
+        # lines a second forever on any board whose station never comes up --
+        # which is every ESP-NOW-only node by design. It buries the boot
+        # banner, the heap samples and the panic backtrace alike.
+        remote = source("Remote.h")
+        update = remote[remote.index("void wifi_update_status()"):]
+        update = update[:update.index("\n}")]
+        self.assertIn("wr_wifi_status != previous", update)
+        self.assertIn("WIFI_STATUS_REPORT_MS", update)
+
+    def test_an_unchanged_status_still_repeats_eventually(self):
+        # A station stuck at WL_DISCONNECTED for an hour is worth knowing
+        # about. Silence after the first line would hide it.
+        remote = source("Remote.h")
+        interval = int(define(remote, "WIFI_STATUS_REPORT_MS").rstrip("ULul"))
+        poll = int(define(remote, "WIFI_UPDATE_INTERVAL_MS"))
+        self.assertGreater(interval, poll * 10)
+
+    def test_the_first_status_is_always_reported(self):
+        # wr_wifi_status starts at WL_IDLE_STATUS, which a board can genuinely
+        # be in -- comparing against it alone would swallow the first report.
+        remote = source("Remote.h")
+        update = remote[remote.index("void wifi_update_status()"):]
+        update = update[:update.index("\n}")]
+        self.assertIn("!reported", update)
+
+
 if __name__ == "__main__":
     unittest.main()
