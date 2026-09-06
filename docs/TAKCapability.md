@@ -186,15 +186,22 @@ waits on hardware.
    source that makes the pipeline demonstrable end to end.
 4. **Blackbox CoT gateway** *(built)* in Python: receive, expand to CoT XML, serve ATAK
    over TCP/multicast. Moderate, and entirely off-device.
-5. **Rate policy** before any of it is used in anger. Accounting, not
+5. **Rate policy** *(built)* before any of it is used in anger. Accounting, not
    enforcement: the point is knowing what a node spends, so a position cadence
    can be chosen on evidence. Airtime is not capped on these boards, and the
    regulatory constraint that will apply is on gain.
 
-Steps 1 to 4 are done. `tools/cot_gateway.py` receives on
+All five are done. `tools/cot_gateway.py` receives on
 `rnstransport.position.report`, expands each report into a CoT event, and serves
 it on TCP 8087 and multicast 239.2.3.1:6969 -- the two places ATAK already
-looks. Only step 5, rate accounting, remains.
+looks. `tools/position_budget.py` computes the §2 table for whichever working
+point a deployment actually uses, and a node reports what its own position
+traffic has spent on the clock page -- both accounting, neither enforcing.
+
+One discrepancy worth knowing: the planner puts a compact report at about 53 ms
+on air where the table in §2 says 44. It uses the firmware's own
+`packet_airtime_ms()` arithmetic, so it agrees with what a node will report,
+which is the agreement that matters. The table's figure has not been traced.
 
 Steps 1 and 2 are source-agnostic and were safe to build before the budget
 question was settled: `Position.h` is the seam, `PositionReport.h` the codec

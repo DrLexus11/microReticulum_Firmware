@@ -212,12 +212,23 @@ inline RNS::Bytes position_gateway_hash;
 // movement that did is not.
 #define POSITION_MOVE_THRESHOLD_E7 ((int32_t)(POSITION_MOVE_THRESHOLD_M * 10000000L / 111320L))
 
+// What a report costs on air, from the firmware's own model rather than a
+// second copy of it. Declared rather than included: this header is pulled into
+// the sketch, and the sketch is where the modem parameters live.
+float packet_airtime_ms(uint16_t written);
+
 struct PositionReportState {
   uint32_t next_due = 0;
   bool sent_any = false;
   int32_t last_lat_e7 = 0;
   int32_t last_lon_e7 = 0;
   uint32_t sent = 0;
+  // Accounting, not enforcement. §7 step 5 exists so a cadence can be chosen
+  // on evidence rather than discovered in an exercise: these boards are
+  // deliberately not airtime-limited, and nothing here refuses to send. The
+  // numbers are the deliverable.
+  uint32_t bytes_sent = 0;
+  float airtime_ms = 0.0f;
   uint32_t skipped_no_fix = 0;
   uint32_t skipped_no_path = 0;
   uint32_t path_requests = 0;
@@ -242,6 +253,16 @@ inline bool position_has_moved(const NodePositionFix& fix,
   const int32_t adlon = (dlon < 0) ? -dlon : dlon;
   return adlat >= POSITION_MOVE_THRESHOLD_E7 ||
          adlon >= POSITION_MOVE_THRESHOLD_E7;
+}
+
+// Share of the channel this node's position reporting is using, as a fraction
+// of wall-clock time since boot. The figure §2 budgets against: ten nodes at
+// one report a minute fits, twenty-five does not, and this says where a
+// particular fleet actually sits rather than where the table predicts.
+inline float position_report_duty_fraction() {
+  const uint32_t up_s = node_uptime_seconds();
+  if (up_s == 0) return 0.0f;
+  return position_report_state().airtime_ms / ((float)up_s * 1000.0f);
 }
 
 inline void position_report_loop() {
@@ -300,6 +321,8 @@ inline void position_report_loop() {
   RNS::Packet packet(gateway, RNS::Bytes(wire, len));
   packet.send();
   st.sent++;
+  st.bytes_sent += (uint32_t)len;
+  st.airtime_ms += packet_airtime_ms((uint16_t)len);
   st.sent_any = true;
   st.last_lat_e7 = fix.lat_e7;
   st.last_lon_e7 = fix.lon_e7;

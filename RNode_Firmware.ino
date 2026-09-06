@@ -268,6 +268,7 @@ void serial_interrupt_init();
 void validate_status();
 void update_radio_lock();
 void transmit(uint16_t size);
+float packet_airtime_ms(uint16_t written);
 void update_airtime();
 void update_modem_status();
 void buffer_serial();
@@ -2327,7 +2328,18 @@ void pop_queue() {
   #endif
 }
 
-void add_airtime(uint16_t written) {
+// What one packet of this size costs on air, in milliseconds.
+//
+// Extracted from add_airtime() unchanged. Position reporting needs the same
+// number to say what it spends (TAKCapability.md §7 step 5) and a second copy
+// of this arithmetic would drift from the first the day a modem is added --
+// the two would then disagree about the airtime budget while both looking
+// right.
+//
+// Accounting only. Nothing here limits anything: these boards run under
+// approved laboratory conditions with both duty-cycle limits compiled to
+// 0.0f, and the constraint that will apply is on gain rather than on time.
+float packet_airtime_ms(uint16_t written) {
   #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52 || MCU_VARIANT == MCU_NATIVE
     float lora_symbols = 0;
     float packet_cost_ms = 0.0;
@@ -2380,6 +2392,15 @@ void add_airtime(uint16_t written) {
 
     #endif
 
+    return packet_cost_ms;
+  #else
+    return 0.0;
+  #endif
+}
+
+void add_airtime(uint16_t written) {
+  #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52 || MCU_VARIANT == MCU_NATIVE
+    const float packet_cost_ms = packet_airtime_ms(written);
     uint16_t cb = current_airtime_bin();
     uint16_t nb = cb+1; if (nb == AIRTIME_BINS) { nb = 0; }
     airtime_bins[cb] += packet_cost_ms;

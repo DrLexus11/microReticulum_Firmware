@@ -26,6 +26,7 @@
 // The clock page reports how time is being distributed, not only what it says.
 #include "TimeSync.h"
 #include "TimeBeacon.h"
+#include "PositionReport.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #endif
@@ -414,6 +415,18 @@ RNS::Bytes serve_page(
         // Kept apart from the refusals above: this one means the mesh is
         // working and we are the better clock.
         content << "Stratum-  : " << std::to_string(tb.declined_stratum) << "\n";
+        // §7 step 5: what position reporting actually spends, so a cadence can
+        // be chosen on evidence. Accounting only -- nothing refuses to send.
+        {
+          const PositionReportState& pr = position_report_state();
+          content << "Pos rpt   : " << std::to_string(pr.sent) << " sent/"
+                  << std::to_string(pr.skipped_no_fix) << "nofix/"
+                  << std::to_string(pr.skipped_no_path) << "nopath\n";
+          content << "Pos air   : " << std::to_string((unsigned long)pr.airtime_ms)
+                  << "ms, " << std::to_string(pr.bytes_sent) << "B, "
+                  << std::to_string(position_report_duty_fraction() * 100.0f).substr(0, 5)
+                  << "%\n";
+        }
       }
       content << ">> Clock-domain check\n";
       content << "Monotonic ms: " << std::to_string(monotonic_ms) << "\n";

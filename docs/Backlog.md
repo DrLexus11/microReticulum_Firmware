@@ -151,3 +151,21 @@ cannot get the time when the mesh is partitioned away from its authorities.
 
 Not blocking. Pin questions are answerable from
 `~/projects/kicad_labs/lab6_mcu_lora/rev2/IMPR-RAD-01/`.
+
+## Two time-on-air figures that disagree by twenty percent
+
+`TAKCapability.md` §2 puts a compact position report at 44 ms on air at
+SF7/BW250. `tools/position_budget.py`, which uses the firmware's own
+`packet_airtime_ms()` arithmetic, computes 53 ms for the same 60 bytes. The CoT
+comparison agrees closely (538 ms documented, 550 computed), so the models are
+not wildly apart -- but the compact figure is out by a fifth.
+
+The firmware's formula adds `preamble + 0.25 + 8` symbols where the SX127x
+datasheet's `T_preamble` uses `preamble + 4.25`. That may be a deliberate
+folding of terms or an inherited off-by-four; it has not been traced. It is
+used consistently for the duty-cycle accounting, so nothing is inconsistent
+*within* the firmware, and both figures are far enough inside the budget that
+no decision made so far turns on it.
+
+Worth resolving before anyone sizes a fleet close to the limit. The node is the
+one to believe either way, since it is the thing actually transmitting.
