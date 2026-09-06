@@ -140,3 +140,14 @@ the node recovers on its own instead of looping forever. It still pays the
 airtime to relearn every path. Closing this properly means a fork of
 microStore: bound the index at load, drop the copy in `sweep()`, and stop
 treating a clockless node's uptime as a wall clock.
+## On-board GNSS (GP-02)
+
+Deferred as a feature of its own on 2026-09-06, written up in
+[`OnboardGNSS.md`](OnboardGNSS.md). It was previously the first two steps of the
+TAK plan on the strength of the clock argument in `TAKCapability.md` §5; time
+propagation shipped and that argument no longer holds. What remains is the
+unattended node — a relay with no phone attached cannot report a position, and
+cannot get the time when the mesh is partitioned away from its authorities.
+
+Not blocking. Pin questions are answerable from
+`~/projects/kicad_labs/lab6_mcu_lora/rev2/IMPR-RAD-01/`.

@@ -18,6 +18,15 @@ not on time on air.
 So nothing prerequisite is outstanding. §7 below is the whole of what remains,
 and it can start whenever the position budget in §2 is agreed.
 
+**Update 2026-09-06: the GNSS module is no longer part of this.** §5 argued the
+GP-02 justified itself on the clock alone; time propagation shipped and took
+that argument with it, and an Android device carried by a responder already has
+a receiver, a battery and a mesh identity in Columba. On-board GNSS is now a
+feature of its own, scheduled in [`OnboardGNSS.md`](OnboardGNSS.md), and §7
+below is renumbered accordingly. §5 and §6 are kept as written because the
+wiring facts in §6 remain correct; read them as background for that document
+rather than as work queued here.
+
 Getting trustworthy UTC onto every node is designed in
 [`TimePropagation.md`](TimePropagation.md).
 
@@ -112,6 +121,11 @@ before someone discovers it in an exercise.
 
 ## 5. The GNSS module buys something bigger than TAK
 
+> **Superseded 2026-09-06.** Every consumer listed below now has a real
+> timebase from signed time propagation, with no GNSS module in the fleet. The
+> argument was sound when written and is no longer load-bearing; see
+> [`OnboardGNSS.md`](OnboardGNSS.md).
+
 The node has **no real-time clock**, and it has cost us repeatedly:
 
 - the LXMF propagation announce previously advertised **uptime** as its
@@ -131,6 +145,12 @@ arrives, keep running on the monotonic clock afterwards", not "no fix, no time".
 
 ## 6. Wiring the GP-02 on Rev 2
 
+> **Deferred 2026-09-06**, to [`OnboardGNSS.md`](OnboardGNSS.md). The facts
+> below are still accurate. One correction: the J3 pinout this section calls
+> "the one fact needed before wiring" is answerable from the KiCad projects in
+> `~/projects/kicad_labs/lab6_mcu_lora/rev2/IMPR-RAD-01/`, not from inspection
+> of a board.
+
 The module is a UART GNSS emitting NMEA, conventionally 9600 8N1. `Boards.h`
 already carries a `GPS_BAUD_RATE 9600` for other variants, and the
 `lilygo_t_echo` variant shows the pin-definition pattern to follow.
@@ -148,12 +168,22 @@ exposes decides the rest -- that is the one fact needed before wiring.
 
 ## 7. Effort, in order
 
-1. **NMEA read on a second UART** and a parsed fix (RMC/GGA). Small.
-2. **Adopt UTC from the fix** into the existing time source, and let LXMF
-   announce a real timebase and RRC stamp real timestamps. Small, and the
-   highest value per line in the whole document.
-3. **Compact position encoding** and a send path to a gateway destination.
-   Moderate; the destination and codec patterns already exist from RRC and LXMF.
+Renumbered 2026-09-06. The two GNSS steps that led this list are now
+[`OnboardGNSS.md`](OnboardGNSS.md); what is left is TAK proper, and none of it
+waits on hardware.
+
+1. **A position source interface.** One small seam: a source supplies a fix,
+   the firmware does not care where it came from. The phone supplies it now
+   through Columba; the GP-02 supplies it later without changing anything
+   downstream. Building this first is what keeps the module off the critical
+   path instead of merely postponing it.
+2. **Compact position encoding** and a unicast send path to a fixed gateway
+   destination. Moderate; the destination and codec patterns already exist from
+   RRC and LXMF. §3 explains why this is unicast to a stationary gateway rather
+   than a broadcast.
+3. **Position from Columba.** The phone already holds a mesh identity and signs
+   with it for the time-authority work, and Android has GNSS. This is the
+   source that makes the pipeline demonstrable end to end.
 4. **Blackbox CoT gateway** in Python: receive, expand to CoT XML, serve ATAK
    over TCP/multicast. Moderate, and entirely off-device.
 5. **Rate policy** before any of it is used in anger. Accounting, not
@@ -161,6 +191,6 @@ exposes decides the rest -- that is the one fact needed before wiring.
    can be chosen on evidence. Airtime is not capped on these boards, and the
    regulatory constraint that will apply is on gain.
 
-Steps 1 and 2 are worth doing on their own merits. Steps 3 to 5 are TAK proper,
-and should not start until the position budget in §2 is agreed as a product
-constraint rather than discovered later.
+Steps 1 and 2 are source-agnostic and safe to build before the budget question
+is settled. Steps 3 to 5 commit to the position budget in §2, and that should be
+agreed as a product constraint rather than discovered in an exercise.
