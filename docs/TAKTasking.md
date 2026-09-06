@@ -1,6 +1,6 @@
 # PR 2: authenticated tasking over the RAD mesh
 
-Status: scoped, implementation pending. Branch `feature/atak-tasking`, based
+Status: implemented, acceptance in progress. Branch `feature/atak-tasking`, based
 on `bbcc069` (merged position PR #21). Companion Columba branch:
 `feature/tak-tasking`, based on `24b0a07f` from position reporting.
 
@@ -32,8 +32,8 @@ Both backend callback paths belong in this PR, with IPC delivery verified.
 ## Scope and trust boundary
 
 1. Subscribe to OTS's firehose with bounded parsing, reconnect handling, and
-   explicit selection of supported task events. Capture a real ATAK task event
-   before fixing its type and recipient mapping; do not infer addressing from
+   explicit selection of task candidates. Capture a real ATAK task event
+   before adding automatic type or recipient mapping; do not infer addressing from
    callsigns or the position codec's four-byte sender identifier.
 2. Require authorization before signing. Initially, an imported firehose task
    can be staged for explicit approval by the local command-post operator.
@@ -83,3 +83,125 @@ task inside a single packet and publish the actual budget.
 Completing this PR establishes one task workflow, not full TAK compatibility.
 Shared markers, chat, outdoor failover, and radio awareness retain their own
 acceptance gates in the roadmap.
+
+## Running the implementation
+
+`tools/tak_tasking.py` is a separate command-post service. It leaves the position
+gateway and existing OTS processes running. Use the host's RNS interpreter;
+firehose subscription also requires `pika` in that interpreter.
+
+```sh
+PYTHON=~/.local/share/rnode-rns-venv/bin/python
+$PYTHON tools/tak_tasking.py serve --firehose
+```
+
+The default private database is `~/.impr-tak/tasks.sqlite3`; the separate task
+authority key is `~/.impr-tak/task-authority`. Back up that key. Startup prints
+its **public** key and acknowledgment destination. The phone trusts the public
+key, not the position gateway hash. `TAK_AMQP_URL` can supply a broker URL; its
+default is the local OTS RabbitMQ service. Credentials are not logged.
+
+In Columba, open **Settings → TAK tasks**, enter the command post's 128-character
+public key and save. Receiving is off with an empty key. Trust and inbox state
+are isolated by the receiving identity. Copy the phone's public key from the
+same card and pin it on the command post:
+
+```sh
+$PYTHON tools/tak_tasking.py peer responder PHONE_PUBLIC_KEY
+$PYTHON tools/tak_tasking.py list
+```
+
+Firehose events of type `t-*` with valid coordinates become **untrusted point
+candidates**. The CLI displays their original type, claimed origin, target hint
+and text. It does not treat arbitrary task types as a supported go-to protocol,
+nor infer a recipient. `approve` explicitly converts the selected point into a
+new go-to instruction chosen by the local operator:
+
+```sh
+$PYTHON tools/tak_tasking.py approve CANDIDATE_ID --peer responder \
+  --instruction 'Meet at the marked point' --lifetime 900
+```
+
+The instruction is required even when the imported CoT has remarks. There is
+no automatic-signing option. An operator can also create a task directly, or
+import an OTS envelope from disk for reproducible testing:
+
+```sh
+$PYTHON tools/tak_tasking.py goto 41.1234567 29.1234567 --peer responder \
+  --instruction 'Bench test: review this point' --lifetime 900
+$PYTHON tools/tak_tasking.py stage firehose-envelope.json
+```
+
+The phone persists verified tasks before notifying or responding. **Received**
+means the phone verified and stored the task; **accepted/declined** require a
+user decision. Decisions are terminal. `list` shows verified responses on the
+command post; a send attempt never claims receipt. The phone retains its
+decision if acknowledgments cannot get through and reports only the number of
+attempts, not confirmed delivery. Expired tasks cannot be acted on.
+
+Deleting the private phone database deliberately also deletes its replay
+history. Ordinary app and backend restarts retain it. Old records are retained
+past their expiry; expired signed packets are independently rejected.
+
+## Wire and transmission budget
+
+All integers are big endian. Every packet starts with version (1 byte), kind
+(1), issuer identity hash (16), recipient task-destination hash (16), task ID
+(16), issue time (4) and expiry (4). Go-to payloads append latitude and longitude
+in degrees times 1e7 (4 each), a UTF-8 byte length (1), and 1–64 instruction
+bytes. Status packets append one byte: received=1, accepted=2, declined=3.
+Both append a 64-byte Ed25519 signature over `urtn-tak-task-v1\0` plus the
+entire preceding body. Task lifetime is at most one hour; future skew at most
+30 seconds. Receiver wall clocks must be correct.
+
+Measured by packing real Python RNS SINGLE packets:
+
+| Packet | Signed payload | Encrypted packet | With routed header | Estimated airtime |
+| --- | ---: | ---: | ---: | ---: |
+| Maximum go-to | 195 B | 307 B | 323 B | 245 ms |
+| Status | 123 B | 227 B | 243 B | 186 ms |
+
+Airtime uses the existing firmware model at SF7/BW250/CR4:5 and the routed
+length. It is an estimate, not a radio measurement. Both fit one Reticulum
+packet. There are at most three downlink attempts, spaced at least 60 seconds;
+a verified receipt stops downlink retries. The phone allows three attempts for
+its receipt and three for its one user decision, with the same spacing. Missing
+paths consume attempts and trigger bounded discovery rather than an unlimited
+retry loop. Nine maximum-sized transmissions total about 1.85 seconds per
+radio hop, excluding announces, path discovery, and lower-layer overhead.
+
+`tests/fixtures/task_v1.json` and Columba's matching test resource contain the
+same deterministic test-key signatures, including a non-ASCII instruction.
+The keys in these fixtures are test vectors, never deployment identities.
+
+## Acceptance record — 2026-09-06
+
+- Firmware/tool suite: **337 tests passed, no skips**, using the host RNS venv.
+- Columba: **27 targeted tests passed** (18 existing position codec, four task
+  codec, two durable inbox, two native packet operations, one Python packet
+  publication). Python-produced signatures verify in Kotlin. Both backend
+  modules and the Python debug app compile; detekt passes for the app and
+  both backends. New Kotlin sources were formatted with the repo's ktlint version.
+- The Python debug APK was built and installed on the A54, retaining its data.
+  The new receiver started and registered its task destination. Trust remains
+  unset until the task authority is explicitly configured.
+- An isolated Python test endpoint connected to Rev1 TCP received and verified
+  a signed task and returned a signed receipt that the command post verified.
+  Its return path was initially absent. Explicit path discovery resolved it at
+  two hops; the next test completed on its first downlink attempt. This test
+  uses Rev1's existing firmware and its TCP/UDP forwarding, **not a measured
+  LoRa or ESP-NOW path**.
+- A **synthetic** `t-x-bench` event published to the actual OTS RabbitMQ firehose
+  appeared only as an untrusted candidate. Explicit CLI approval produced a
+  separate signed task; the Rev1-connected endpoint verified it and the command
+  post recorded its signed receipt. No automatic command was produced on import.
+- The A54 was locked during the remaining UI work. **Not yet accepted:** saving
+  trust through the phone UI, screen-off task arrival, a human accept/decline
+  response over the real phone/backend/IPC path, reconnect behavior on the phone,
+  and a real ATAK-authored task capture. No claim of field readiness or completed
+  phone acceptance is made by the host-side probe results.
+
+The development service and its test-only database/key live under
+`~/.impr-tak/tasking-dev/`, separate from the production position gateway.
+Use the corresponding `--db` and `--identity` arguments when continuing that
+acceptance run. The temporary probe identities are not field recipients.
