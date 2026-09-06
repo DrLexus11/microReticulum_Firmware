@@ -98,7 +98,9 @@ def encode(fix):
     if flags & FLAG_ALT:
         out += struct.pack(">h", fix.alt_m)
     if flags & FLAG_COURSE:
-        out += struct.pack(">B", fix.course_ddeg // 20)
+        # Normalised before scaling, as the other two implementations do: a
+        # full turn is due north and would otherwise decode as due south.
+        out += struct.pack(">B", (fix.course_ddeg % 3600) // 20)
     if flags & FLAG_SPEED:
         out += struct.pack(">B", min(fix.speed_cms // 50, 255))
     if flags & FLAG_SATS:

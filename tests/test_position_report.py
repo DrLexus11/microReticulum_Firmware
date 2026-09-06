@@ -140,6 +140,17 @@ class RoundTripTests(unittest.TestCase):
         back = self.codec.decode(self.codec.encode(fix))
         self.assertEqual(back.accuracy_m, 255)
 
+    def test_a_full_turn_does_not_wrap_into_a_different_heading(self):
+        # A bearing of 360 degrees is due north. Scaled without normalising it
+        # becomes 180, which decodes as due south -- a silent 180-degree error
+        # in the one field where the person reading the map cannot catch it.
+        fix = self.codec.PositionFix(lat_e7=1, lon_e7=1, course_known=True,
+                                     course_ddeg=3600)
+        back = self.codec.decode(self.codec.encode(fix))
+        self.assertEqual(back.course_ddeg, 0)
+        # And all three implementations normalise the same way.
+        self.assertIn("% 3600", source("PositionReport.h"))
+
     def test_a_truncated_report_decodes_to_nothing(self):
         # These bytes come off a radio. A short frame is a thing that happens.
         fix = self.codec.PositionFix(lat_e7=1, lon_e7=1, alt_known=True,

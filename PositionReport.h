@@ -116,7 +116,11 @@ inline size_t position_report_encode(const NodePositionFix& fix,
   }
   if (flags & POSITION_FLAG_COURSE) {
     if (at + 1 > out_len) return 0;
-    out[at++] = (uint8_t)(fix.course_ddeg / 20);   // 0..179
+    // Normalise before scaling. A source handing over a full turn -- 3600
+    // tenths, which is due north -- would otherwise scale to 180 and decode
+    // as due south, and a heading is exactly the field where a silent
+    // 180-degree error is unrecoverable by the person reading the map.
+    out[at++] = (uint8_t)((fix.course_ddeg % 3600) / 20);   // 0..179
   }
   if (flags & POSITION_FLAG_SPEED) {
     if (at + 1 > out_len) return 0;
