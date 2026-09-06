@@ -72,6 +72,7 @@ uint32_t lxmf_announces_any();
 #include "TimeSync.h"
 #include "TimeBeacon.h"
 #include "NodeStatus.h"
+#include "Position.h"
 #include "Nav.h"
 #if defined(AIRTIME_LIMIT_WATCHPOINT) && MCU_VARIANT == MCU_ESP32
 #include "esp_cpu.h"
@@ -4173,6 +4174,7 @@ void loop() {
     nav_read();
     // A boot that has lasted this long is a boot, whatever the last one did.
     node_boot_mark_healthy();
+    node_position_loop();
   #endif
 
   #if HAS_INPUT
