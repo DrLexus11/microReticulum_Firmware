@@ -18,6 +18,15 @@ not on time on air.
 So nothing prerequisite is outstanding. §7 below is the whole of what remains,
 and it can start whenever the position budget in §2 is agreed.
 
+**Update 2026-09-06: the GNSS module is no longer part of this.** §5 argued the
+GP-02 justified itself on the clock alone; time propagation shipped and took
+that argument with it, and an Android device carried by a responder already has
+a receiver, a battery and a mesh identity in Columba. On-board GNSS is now a
+feature of its own, scheduled in [`OnboardGNSS.md`](OnboardGNSS.md), and §7
+below is renumbered accordingly. §5 and §6 are kept as written because the
+wiring facts in §6 remain correct; read them as background for that document
+rather than as work queued here.
+
 Getting trustworthy UTC onto every node is designed in
 [`TimePropagation.md`](TimePropagation.md).
 
@@ -112,6 +121,11 @@ before someone discovers it in an exercise.
 
 ## 5. The GNSS module buys something bigger than TAK
 
+> **Superseded 2026-09-06.** Every consumer listed below now has a real
+> timebase from signed time propagation, with no GNSS module in the fleet. The
+> argument was sound when written and is no longer load-bearing; see
+> [`OnboardGNSS.md`](OnboardGNSS.md).
+
 The node has **no real-time clock**, and it has cost us repeatedly:
 
 - the LXMF propagation announce previously advertised **uptime** as its
@@ -131,6 +145,12 @@ arrives, keep running on the monotonic clock afterwards", not "no fix, no time".
 
 ## 6. Wiring the GP-02 on Rev 2
 
+> **Deferred 2026-09-06**, to [`OnboardGNSS.md`](OnboardGNSS.md). The facts
+> below are still accurate. One correction: the J3 pinout this section calls
+> "the one fact needed before wiring" is answerable from the KiCad projects in
+> `~/projects/kicad_labs/lab6_mcu_lora/rev2/IMPR-RAD-01/`, not from inspection
+> of a board.
+
 The module is a UART GNSS emitting NMEA, conventionally 9600 8N1. `Boards.h`
 already carries a `GPS_BAUD_RATE 9600` for other variants, and the
 `lilygo_t_echo` variant shows the pin-definition pattern to follow.
@@ -148,19 +168,104 @@ exposes decides the rest -- that is the one fact needed before wiring.
 
 ## 7. Effort, in order
 
-1. **NMEA read on a second UART** and a parsed fix (RMC/GGA). Small.
-2. **Adopt UTC from the fix** into the existing time source, and let LXMF
-   announce a real timebase and RRC stamp real timestamps. Small, and the
-   highest value per line in the whole document.
-3. **Compact position encoding** and a send path to a gateway destination.
-   Moderate; the destination and codec patterns already exist from RRC and LXMF.
-4. **Blackbox CoT gateway** in Python: receive, expand to CoT XML, serve ATAK
+Renumbered 2026-09-06. The two GNSS steps that led this list are now
+[`OnboardGNSS.md`](OnboardGNSS.md); what is left is TAK proper, and none of it
+waits on hardware.
+
+1. **A position source interface.** *(built)* One small seam: a source supplies a fix,
+   the firmware does not care where it came from. The phone supplies it now
+   through Columba; the GP-02 supplies it later without changing anything
+   downstream. Building this first is what keeps the module off the critical
+   path instead of merely postponing it.
+2. **Compact position encoding** *(built)* and a unicast send path to a fixed gateway
+   destination. Moderate; the destination and codec patterns already exist from
+   RRC and LXMF. §3 explains why this is unicast to a stationary gateway rather
+   than a broadcast.
+3. **Position from Columba.** *(built)* The phone already holds a mesh identity and signs
+   with it for the time-authority work, and Android has GNSS. This is the
+   source that makes the pipeline demonstrable end to end.
+4. **Blackbox CoT gateway** *(built)* in Python: receive, expand to CoT XML, serve ATAK
    over TCP/multicast. Moderate, and entirely off-device.
-5. **Rate policy** before any of it is used in anger. Accounting, not
+5. **Rate policy** *(built)* before any of it is used in anger. Accounting, not
    enforcement: the point is knowing what a node spends, so a position cadence
    can be chosen on evidence. Airtime is not capped on these boards, and the
    regulatory constraint that will apply is on gain.
 
-Steps 1 and 2 are worth doing on their own merits. Steps 3 to 5 are TAK proper,
-and should not start until the position budget in §2 is agreed as a product
-constraint rather than discovered later.
+All five are done. `tools/cot_gateway.py` receives on
+`rnstransport.position.report`, expands each report into a CoT event, and serves
+it on TCP 8087 and multicast 239.2.3.1:6969 -- the two places ATAK already
+looks. `tools/position_budget.py` computes the §2 table for whichever working
+point a deployment actually uses, and a node reports what its own position
+traffic has spent on the clock page -- both accounting, neither enforcing.
+
+One discrepancy worth knowing: the planner puts a compact report at about 53 ms
+on air where the table in §2 says 44. It uses the firmware's own
+`packet_airtime_ms()` arithmetic, so it agrees with what a node will report,
+which is the agreement that matters. The table's figure has not been traced.
+
+Steps 1 and 2 are source-agnostic and were safe to build before the budget
+question was settled: `Position.h` is the seam, `PositionReport.h` the codec
+and send path, and `tools/position_codec.py` the same wire format in Python for
+the gateway to decode with. Twenty bytes at full extent against roughly seven
+hundred for the XML, and a report is a single encrypted packet to a stationary
+gateway rather than a Link -- Link establishment measured about eight kilobytes
+of transient heap on the OZD fixture, which would have made the routing more
+expensive than the payload all over again. Steps 3 to 5 commit to the position budget in §2, and that should be
+agreed as a product constraint rather than discovered in an exercise.
+
+
+---
+
+## 8. What comes after position, in order
+
+§7 delivered one direction: a position leaves a phone and arrives on a map.
+That is not yet a TAK deployment, and the field exercise scoped in
+[`TAKFieldExercise.md`](TAKFieldExercise.md) -- two mobile users, one stationary
+command post, tasking and chat and markers -- needs four more pieces. Each is
+its own PR, and the order is not arbitrary.
+
+**Re-sequenced twice on 2026-09-06, and the second correction matters.**
+Dropping the central command post from the *outdoor* exercise
+([`FieldTeamMinimal.md`](FieldTeamMinimal.md)) defers this work outdoors, not
+altogether: indoors the deck is a command post whenever there is a LAN, ATAK-CIV
+is already installed on the bench phone, and the whole path below is testable
+now. See [`IndoorTAKLab.md`](IndoorTAKLab.md).
+
+Two tracks, sharing one codec. The indoor lab proves the application layer; the
+outdoor exercise proves the network underneath it.
+
+**PR 2 — CoT ingestion, the command downlink.** *Next, for the indoor lab.* The gateway listens for
+CoT from the command post and carries it back into the mesh, so a stationary
+operator can task a node rather than only watch one. Compact on the wire and
+unicast to the addressed node, the same discipline as position. Everything
+arriving is untrusted until verified: a command that moves people is precisely
+the payload worth forging, and the signing path built for the time authority is
+there to be reused. Nothing else on this list is useful without it, which is
+why it is first.
+
+**PR 3 — Field transport.** The outdoor gap. The command post has no radio
+interface of its own -- both its links to the RADs are `UDPInterface` over the
+LAN -- so it needs an `RNodeInterface` on USB. Plus transport mode and a TCP
+interface on Columba, so a phone can bridge a tailnet to LoRa and the command
+post can join the mesh without radio range to it.
+
+**PR 4 — Chat and markers.** LXMF as the carrier, bridged to GeoChat at the
+gateway, and a compact marker encoding beside the position one. Explicitly not
+a raw CoT relay: §2's table applies unchanged to a GeoChat message, and seven
+hundred bytes at 538 ms is sixty-seven messages an hour for the whole channel.
+
+**PR 5 — Voice.** Nothing exists: RRC carries no audio and there is no codec in
+the firmware. Ordinary over IP, a research question over LoRa -- SF7/BW250 is
+10.9 kbps raw before framing, so even Codec2 at 3.2 kbps would take the channel
+and leave nothing for the position reports the map depends on. Measure the
+trade before designing it, and do not let it block the exercise.
+
+Two findings from scoping the exercise are worth repeating here because they
+change what is worth building:
+
+- **iTAK on iOS cannot join the mesh.** Columba is Android only, with no iOS
+  target and no shared module. An iPhone reaches TAK over IP or not at all.
+- **Tailscale is IP.** If the field phones can reach a tailnet they have
+  working internet, and TAK clients then talk natively while Reticulum carries
+  nothing. Useful as a second transport and as the "infrastructure present" arm
+  of a comparison; misleading if it is the only path tested.

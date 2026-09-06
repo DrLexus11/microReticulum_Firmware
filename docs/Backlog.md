@@ -140,3 +140,75 @@ the node recovers on its own instead of looping forever. It still pays the
 airtime to relearn every path. Closing this properly means a fork of
 microStore: bound the index at load, drop the copy in `sweep()`, and stop
 treating a clockless node's uptime as a wall clock.
+## On-board GNSS (GP-02)
+
+Deferred as a feature of its own on 2026-09-06, written up in
+[`OnboardGNSS.md`](OnboardGNSS.md). It was previously the first two steps of the
+TAK plan on the strength of the clock argument in `TAKCapability.md` §5; time
+propagation shipped and that argument no longer holds. What remains is the
+unattended node — a relay with no phone attached cannot report a position, and
+cannot get the time when the mesh is partitioned away from its authorities.
+
+Not blocking. Pin questions are answerable from
+`~/projects/kicad_labs/lab6_mcu_lora/rev2/IMPR-RAD-01/`.
+
+## Two time-on-air figures that disagree by twenty percent
+
+`TAKCapability.md` §2 puts a compact position report at 44 ms on air at
+SF7/BW250. `tools/position_budget.py`, which uses the firmware's own
+`packet_airtime_ms()` arithmetic, computes 53 ms for the same 60 bytes. The CoT
+comparison agrees closely (538 ms documented, 550 computed), so the models are
+not wildly apart -- but the compact figure is out by a fifth.
+
+The firmware's formula adds `preamble + 0.25 + 8` symbols where the SX127x
+datasheet's `T_preamble` uses `preamble + 4.25`. That may be a deliberate
+folding of terms or an inherited off-by-four; it has not been traced. It is
+used consistently for the duty-cycle accounting, so nothing is inconsistent
+*within* the firmware, and both figures are far enough inside the budget that
+no decision made so far turns on it.
+
+Worth resolving before anyone sizes a fleet close to the limit. The node is the
+one to believe either way, since it is the thing actually transmitting.
+
+
+## The command post has no radio of its own
+
+`~/.reticulum/config` on the deck reaches both RADs over `UDPInterface` to
+192.168.1.x. That is the LAN, and it does not exist outdoors, so the command
+post silently has no path into the mesh the moment it leaves the building.
+
+Needs an `RNodeInterface` on USB serial. Scheduled as PR 3 in
+[`TAKFieldExercise.md`](TAKFieldExercise.md) §4; recorded here because it is a
+live misconfiguration rather than only a future feature, and anyone taking the
+deck outside today would find it the hard way.
+
+## Columba cannot bridge a tailnet to LoRa
+
+Two things stop a phone acting as the command post's way onto the mesh:
+`enable_transport = No` in the config it generates, and no UI for adding a
+TCPServerInterface on a chosen address. Both are needed for the Tailscale arm
+of the field exercise. Scheduled as PR 3.
+
+## OpenTAKServer's web map cannot show any EUD
+
+`models/EUD.py` in OTS 1.7.13 returns a hardcoded null for the position its own
+map reads:
+
+```python
+"last_point": None,  # Setting to None for now since it can cause a huge overhead
+                     # when an EUD has lots of points in the DB
+```
+
+`/api/map_state` therefore reports every EUD with `"last_point": null`, and the
+web map draws nothing — for our gateway's tracks and for a directly connected
+ATAK alike. Confirmed 2026-09-06 with both present in the database: 2 EUDs, 26
+points, 28 CoT events, correct coordinates and callsigns, and an empty map.
+
+Nothing to fix on our side, and their tradeoff to make. Noted so the next
+person to open that map does not spend an evening on the feed.
+
+ATAK draws the same tracks correctly from the CoT stream, whether pointed at
+the gateway directly on 8087 or at OTS on 8088, so this costs the deck's own
+map view and nothing else. It becomes worth revisiting if the deck ever needs
+a display of its own -- at which point the options are a patched `to_json`, a
+query against `/api/point`, or our own small map over the database.
