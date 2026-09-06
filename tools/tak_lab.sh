@@ -31,6 +31,14 @@ OTS_UDP_PORT="${OTS_UDP_PORT:-8087}"
 OTS_TCP_PORT="${OTS_TCP_STREAMING_PORT:-8088}"
 OTS_WEB_PORT="${OTS_LISTENER_PORT:-8081}"
 RABBIT_CONTAINER="${RABBIT_CONTAINER:-impr-rabbitmq}"
+# OTS wants PostgreSQL with PostGIS -- it stores positions as geography(POINT),
+# so a plain postgres image fails at schema creation with `type "geography"
+# does not exist`. It gets its own container on its own port rather than
+# sharing the one already running on 5432: that belongs to another project, and
+# a lab fixture has no business creating roles or extensions in it.
+PG_CONTAINER="${PG_CONTAINER:-impr-ots-postgres}"
+PG_IMAGE="${PG_IMAGE:-postgis/postgis:16-3.4}"
+PG_PORT="${PG_PORT:-5433}"
 
 mkdir -p "$RUN_DIR"
 
@@ -41,7 +49,13 @@ fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 # Never pkill -f on a pattern that appears in this script's own command line.
 # It matches the shell running it and takes the whole session down with it,
 # which has happened twice on this bench.
-pid_of() { pgrep -f "$1" 2>/dev/null | head -1; }
+#
+# pgrep -f is also happy to match a passing `grep opentakserver` in another
+# terminal, which is not hypothetical: a false positive here made start_ots
+# return early and skip the config repair, so the real failure stayed hidden
+# behind "already running". Match the full executable path, and exclude this
+# script's own process group.
+pid_of() { pgrep -f "$1" 2>/dev/null | grep -v "^$$\$" | head -1; }
 
 port_busy() { ss -ltnu 2>/dev/null | grep -q ":$1 "; }
 
@@ -71,9 +85,87 @@ start_rabbit() {
     return 1
 }
 
+# A password that survives restarts without living in the repo. Generated once
+# and kept 0600 beside the logs; this is a bench database on loopback, not a
+# secret worth ceremony, but it should still not be a constant in version
+# control that everyone's install shares.
+ots_db_password() {
+    local file="$RUN_DIR/postgres-password"
+    if [ ! -s "$file" ]; then
+        (umask 077; head -c 18 /dev/urandom | base64 | tr -d '/+=' > "$file")
+    fi
+    cat "$file"
+}
+
+start_postgres() {
+    local pw; pw=$(ots_db_password)
+    if docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+        say "postgres: already running on $PG_PORT"
+        return 0
+    fi
+    if docker ps -a --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+        docker start "$PG_CONTAINER" >/dev/null && say "postgres: container restarted"
+    else
+        docker run -d --name "$PG_CONTAINER" \
+            -e POSTGRES_USER=ots -e POSTGRES_PASSWORD="$pw" -e POSTGRES_DB=ots \
+            -p "$PG_PORT:5432" "$PG_IMAGE" >/dev/null \
+            && say "postgres: container created on $PG_PORT ($PG_IMAGE)"
+    fi
+    for _ in $(seq 1 40); do
+        # Both, and in this order. pg_isready runs inside the container and
+        # says nothing about the published port, which comes up later -- OTS
+        # connects from the host and got "connection refused" on a database
+        # this loop had already declared ready.
+        if port_busy "$PG_PORT" && docker exec "$PG_CONTAINER" pg_isready -U ots -q 2>/dev/null; then
+            # The image ships PostGIS but does not enable it in an existing
+            # database. Idempotent, and cheap enough to assert every start.
+            docker exec "$PG_CONTAINER" psql -U ots -d ots -q \
+                -c "CREATE EXTENSION IF NOT EXISTS postgis;" >/dev/null 2>&1 \
+                && say "postgres: ready, postgis enabled" \
+                || warn "postgres is up but PostGIS could not be enabled"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "postgres did not become ready within 40s"
+    return 1
+}
+
+# Point OTS's own config at the database this script actually runs. Only the
+# one line is touched: everything else in that file is OTS's to own, including
+# the secret key it generated for itself.
+fix_ots_config() {
+    local cfg="$HOME/ots/config.yml"
+    local want="postgresql+psycopg://ots:$(ots_db_password)@127.0.0.1:$PG_PORT/ots"
+    [ -f "$cfg" ] || return 0
+    if grep -q "^SQLALCHEMY_DATABASE_URI: $want\$" "$cfg"; then
+        return 0
+    fi
+    # Written by python rather than sed: the password is base64 and may contain
+    # characters sed would treat as delimiters or backreferences.
+    WANT="$want" CFG="$cfg" python3 - <<'PYEOF'
+import os, re
+cfg, want = os.environ["CFG"], os.environ["WANT"]
+with open(cfg, encoding="utf-8") as handle:
+    text = handle.read()
+text = re.sub(r"^SQLALCHEMY_DATABASE_URI:.*$",
+              "SQLALCHEMY_DATABASE_URI: " + want, text, count=1, flags=re.M)
+with open(cfg, "w", encoding="utf-8") as handle:
+    handle.write(text)
+PYEOF
+    say "opentakserver: config.yml pointed at postgres on $PG_PORT"
+}
+
 start_ots() {
-    if [ -n "$(pid_of 'opentakserver')" ]; then
-        say "opentakserver: already running"
+    # Repair the config first and unconditionally. It is idempotent, and doing
+    # it before the liveness check means a stale or wrong config cannot hide
+    # behind a process that is not actually serving.
+    fix_ots_config
+
+    # The port, not the process: a running opentakserver that is not listening
+    # is not up, and that is exactly the state a database failure leaves.
+    if port_busy "$OTS_WEB_PORT" && [ -n "$(pid_of "$OTS_DIR/.venv/bin/opentakserver")" ]; then
+        say "opentakserver: already up on :$OTS_WEB_PORT"
         return 0
     fi
     if port_busy "$OTS_WEB_PORT"; then
@@ -122,6 +214,7 @@ cmd_start() {
 
     if [ "$mode" = full ]; then
         start_rabbit || return 1
+        start_postgres || return 1
         start_ots || warn "continuing without OTS; the gateway still runs"
     fi
     start_gateway "$mode" || return 1
@@ -145,8 +238,9 @@ cmd_start() {
 
 cmd_status() {
     printf '%-14s %s\n' "rabbitmq" "$(port_busy 5672 && echo 'up' || echo 'down')"
-    printf '%-14s %s\n' "opentakserver" "$([ -n "$(pid_of opentakserver)" ] && echo 'up' || echo 'down')"
-    printf '%-14s %s\n' "gateway" "$([ -n "$(pid_of cot_gateway.py)" ] && echo 'up' || echo 'down')"
+    printf '%-14s %s\n' "postgres" "$(port_busy "$PG_PORT" && echo 'up' || echo 'down')"
+    printf '%-14s %s\n' "opentakserver" "$(port_busy "$OTS_WEB_PORT" && echo 'up' || echo 'down')"
+    printf '%-14s %s\n' "gateway" "$([ -n "$(pid_of "$REPO/tools/cot_gateway.py")" ] && echo 'up' || echo 'down')"
     echo
     ss -ltnu 2>/dev/null | grep -E ":(5672|8081|8087|8088|8089) " || echo "(no lab ports listening)"
     echo
@@ -156,8 +250,8 @@ cmd_status() {
 
 cmd_stop() {
     local pid
-    pid=$(pid_of 'cot_gateway.py') && [ -n "$pid" ] && kill "$pid" && say "gateway stopped"
-    pid=$(pid_of 'opentakserver')  && [ -n "$pid" ] && kill "$pid" && say "opentakserver stopped"
+    pid=$(pid_of "$REPO/tools/cot_gateway.py") && [ -n "$pid" ] && kill "$pid" && say "gateway stopped"
+    pid=$(pid_of "$OTS_DIR/.venv/bin/opentakserver") && [ -n "$pid" ] && kill "$pid" && say "opentakserver stopped"
     # RabbitMQ is left running: it is a container, it costs little, and OTS is
     # slow to start without a warm broker.
     say "rabbitmq left running (docker stop $RABBIT_CONTAINER to remove it)"
