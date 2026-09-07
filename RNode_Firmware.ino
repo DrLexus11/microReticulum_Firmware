@@ -3908,6 +3908,16 @@ static void heap_watch() {
   #else
     printf("[lora] not fitted (ESP-NOW-only target)\n");
   #endif
+#if HAS_WIFI == true && defined(ESPNOW_TRANSPORT)
+  printf("[espnow] state=%s ch=%lu peers=%lu parent=%s relay=%d in=%lu accepted=%lu out=%lu rxdrop=%lu txdrop=%lu fail=%lu reassembly=%lu\n",
+         espnow_recovery_state_name(), (unsigned long)espnow_channel(),
+         (unsigned long)espnow_peer_count(), espnow_recovery_peer_mac(),
+         (int)RNS::Reticulum::transport_enabled(),
+         (unsigned long)espnow_packets_in(), (unsigned long)espnow_accepted_packets_in(),
+         (unsigned long)espnow_packets_out(), (unsigned long)espnow_rx_dropped(),
+         (unsigned long)espnow_tx_dropped(), (unsigned long)espnow_send_failures(),
+         (unsigned long)espnow_reassembly_timeouts());
+#endif
   printf("[heap] free %u / %u bytes (%u%%), min-free %u, uptime %lus\n",
          (unsigned)avail, (unsigned)total,
          (unsigned)(total ? (avail * 100 / total) : 0),
