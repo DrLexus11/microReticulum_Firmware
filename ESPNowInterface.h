@@ -173,9 +173,6 @@ public:
 			_recovery_state = RECOVERY_FAILED;
 			_recovery_failures++;
 			_recovery_peer_has_upstream = false;
-			// The hub is gone. Whatever this node can repeat for its
-			// neighbours now matters more than the duplicate traffic it costs.
-			apply_relay_policy("parent lost");
 			return;
 		}
 
@@ -585,7 +582,6 @@ private:
 		printf("[espnow] recovery peer %s %s on channel %u (upstream=%u)\n",
 		       _recovery_peer_text, how, (unsigned)_channel,
 		       (unsigned)_recovery_peer_has_upstream);
-		apply_relay_policy("attached to a parent");
 	}
 
 	Peer* find_peer(const uint8_t* mac) {
@@ -954,11 +950,10 @@ private:
 		_send_target_is_peer = false;
 		_send_target_valid = false;
 		_send_fanout = false;
-		if (const uint8_t* pinned = pinned_target()) {
-			memcpy(_send_target_mac, pinned, 6);
-			_send_target_valid = true;
-		}
-		else if (addressable_peer_count(now) <= UNICAST_FANOUT_MAX) {
+		// A pinned channel remains a multi-access interface. RNS can learn a
+		// next hop from any neighbour; sending only to the recovery parent
+		// would silently black-hole routes learned from a sibling.
+		if (addressable_peer_count(now) <= UNICAST_FANOUT_MAX) {
 			if (Peer* peer = next_fanout_peer(now)) {
 				memcpy(_send_target_mac, peer->mac, 6);
 				_send_target_is_peer = true;
@@ -984,24 +979,9 @@ private:
 #endif
 	}
 
-	// A node whose only route to the mesh is its own ESP-NOW parent must not
-	// repeat for anybody: every announce it relays arrives at the hub as one
-	// hop longer than the copy the hub already heard directly, and Reticulum
-	// keeps whichever copy lands first. That is how a board one hop from the
-	// hub ended up recorded three hops away, through a sibling.
-	//
-	// The moment the parent is gone this reverses -- a node that can still
-	// hear its neighbours is the only thing keeping them reachable, and the
-	// duplicate traffic stops mattering. Nodes with a way out of their own
-	// are never touched by this.
-	void apply_relay_policy(const char* reason) {
-		if (local_has_upstream()) return;
-		const bool relay = (_recovery_state != RECOVERY_PINNED);
-		if (relay == RNS::Reticulum::transport_enabled()) return;
-		RNS::Reticulum::transport_enabled(relay);
-		printf("[espnow] relaying %s: %s\n",
-		       relay ? "enabled" : "disabled", reason);
-	}
+	// Recovery selects a radio channel, not a Reticulum forwarding policy.
+	// Disabling transport here also cuts BLE clients off from the mesh.
+	// The application owns transport_enabled (including its host/TNC guard).
 
 	ESPNowDiscovery local_discovery() const {
 		ESPNowDiscovery discovery = {};
@@ -1124,13 +1104,6 @@ private:
 	// things worse.
 	static constexpr uint8_t UNICAST_FANOUT_MAX = 3;
 	static constexpr uint8_t PEER_SEND_FAILURE_LIMIT = 3;
-
-	const uint8_t* pinned_target() const {
-		if (_recovery_state != RECOVERY_PINNED) return nullptr;
-		static const uint8_t zero[6] = {0};
-		if (memcmp(_recovery_peer_mac, zero, 6) == 0) return nullptr;
-		return _recovery_peer_mac;
-	}
 
 	bool peer_is_addressable(const Peer& peer, uint32_t now) const {
 		if (!peer.used) return false;

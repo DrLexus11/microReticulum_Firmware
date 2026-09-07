@@ -741,7 +741,7 @@ RNS::Bytes serve_page(
       content << "Send failures: " << std::to_string(espnow_send_failures()) << "\n";
       content << "Reassembly timeouts: " << std::to_string(espnow_reassembly_timeouts()) << "\n\n";
       content << "Discovery PHY data remains advisory. Channel search is never run while station WiFi is connected.\n\n";
-      content << "A node attaches to a peer that can reach the mesh, and adopts one that cannot only after the scan budget expires with nothing better. A node with no way out of its own stops relaying while it has a parent, because every announce it repeats reaches the hub one hop longer than the copy the hub already heard, and it starts again the moment the parent is lost.\n";
+      content << "Recovery selects the WiFi channel; Reticulum still forwards between BLE, ESP-NOW and other enabled interfaces. Recent peers count discovery, not a verified end-to-end route. Test a page or message to verify mesh access.\n";
     }
 #endif
 #ifdef HAS_BME
