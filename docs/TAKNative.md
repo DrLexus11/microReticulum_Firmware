@@ -169,11 +169,53 @@ is what makes "we cannot depend on Columba" true in the way that matters: the
 stack can be re-hosted in a standalone bridge app, or in an ATAK plugin, without
 touching the protocol.
 
-The most native endpoint conceivable is an ATAK plugin that registers a
-Reticulum transport in ATAK's own comms menu, so the mesh appears where an
-operator already looks for it. It needs the plugin SDK and version-matched
-signed builds, it is months out, and it changes none of the above -- it replaces
-the localhost socket with an in-process one.
+## The ATAK plugin: decided, and deliberately later
+
+**Decision: a thin plugin, after the protocol is stable, binding to Columba
+rather than carrying its own stack.**
+
+The expensive part already exists. `IRnsCore.aidl` is a 47-method interface and
+`ReticulumService` already runs in its own `:reticulum` process, bound over AIDL
+from `:app` -- a real cross-process boundary that has been carrying traffic for
+months. Between today and a plugin binding to it stand `exported="false"` and a
+permission, not a new subsystem.
+
+*Not* by turning on RNS's shared instance. `share_instance = No` today, and
+loopback is not sandboxed between Android apps: opening port 37428 would let
+every app on the handset transmit and receive as this mesh identity, with no
+authentication. The AIDL service behind a permission is the same idea done
+safely.
+
+**It does not reduce Columba's settings.** That is worth stating because it is
+the reason people reach for a plugin first. The settings exist because the
+identity model is synthesised, not because ATAK cannot reach them; build the
+plugin without the pivots in [TAKIntegrationPivots.md](TAKIntegrationPivots.md)
+and the same fields simply move. With the pivots, the gateway hash, callsign and
+team all disappear on their own, and what remains is the split worth having:
+Columba owns radio configuration, ATAK owns TAK configuration.
+
+What the plugin does buy is three things a localhost CoT stream structurally
+cannot:
+
+1. **Interception before serialisation.** Inside ATAK, CoT arrives as objects.
+   Encoding straight from that model into the compact codec means XML is never
+   produced on the phone at all -- and XML size is the whole airtime problem.
+2. **Consent before airtime.** A drawing is five seconds of the shared channel
+   and a data package is fourteen minutes. Across a CoT socket we can only send
+   or drop; in-process we can ask, at the moment the operator commits.
+3. **Mesh state as first-class UI** -- reachability, pending fetches, which
+   radio a peer is on. CoT has no way to express any of it.
+
+Against that: plugins are version- and signature-locked, so every ATAK release
+can break the build; it is a separate toolchain; and it does nothing for the
+deck, which needs the localhost endpoint regardless. Both are maintained either
+way.
+
+**What this changes now.** One thing: the protocol module consumes `IRnsCore`
+across the AIDL surface, as a plugin would, rather than reaching into Columba
+internals. Then the plugin is a re-host -- run the same module in ATAK's process
+and export the service -- instead of a second implementation of every codec to
+keep in sync. A fat plugin carrying its own Reticulum is the outcome to avoid.
 
 ## The outdoor minimal test
 
