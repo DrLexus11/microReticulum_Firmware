@@ -1,6 +1,6 @@
 # PR 2: authenticated tasking over the RAD mesh
 
-Status: implemented, acceptance in progress. Branch `feature/atak-tasking`, based
+Status: implemented; phone leg accepted on hardware 2026-09-08, four items outstanding. Branch `feature/atak-tasking`, based
 on `bbcc069` (merged position PR #21). Companion Columba branch:
 `feature/tak-tasking`, based on `24b0a07f` from position reporting.
 
@@ -174,7 +174,68 @@ radio hop, excluding announces, path discovery, and lower-layer overhead.
 same deterministic test-key signatures, including a non-ASCII instruction.
 The keys in these fixtures are test vectors, never deployment identities.
 
-## Acceptance record — 2026-09-06
+## Acceptance record — 2026-09-08
+
+The phone leg is now proven end to end on hardware. Getting there required a
+harness that could drive the inbox, and that harness immediately exposed three
+defects, none of which any unit test could have caught: all three lived in the
+seams between the app, the backend and the transport.
+
+**What the phone harness added.** Four debug actions — `GET_TASK_KEY`,
+`SET_TASK_AUTHORITY`, `LIST_TASKS`, `RESPOND_TASK` — driving the real
+TaskManager, store and backend. Acceptance had been stalled on "somebody has to
+hold the device"; the only step still needing a person is the tap itself.
+
+### The three defects
+
+1. **A verify-only peer could not be addressed at all.** Every acknowledgment
+   failed with `RnsException: Identity not found: <authority hash>`. The Python
+   backend's `resolveIdentity()` could return an identity from cache or rebuild
+   one from a private key, and had no third case — so a peer known only by its
+   public key, which is every remote peer and precisely what a pinned task
+   authority is, could not be turned into an OUT destination. The native
+   backend already fell back to `fromPublicKey()`; the two are now in line, via
+   a keyless `RNS.Identity` given `load_public_key()`.
+
+2. **Path discovery consumed a delivery attempt.** `sendStatus()` marked an
+   attempt before testing for a path, so a receipt could exhaust its whole
+   budget of three waiting for a route it never got to use. Discovery now
+   defers without spending an attempt.
+
+3. **One failed announce ended the receiver permanently.** The announce used
+   `getOrThrow()` inside the receive loop, so a single failure threw out of it
+   and the destination was never advertised again for the life of the process.
+   The visible symptom was the worst kind: trusting an authority through the UI
+   produced a phone that verified nothing and could not be reached, and looked
+   fine until someone restarted the app. Announce failures are now logged and
+   retried at 30 s until one succeeds.
+
+### Verified on hardware
+
+- **Accept**: task issued, verified and persisted in 5 s, accepted, and the
+  command post recorded the signed acceptance — `"state": "accepted"`.
+- **Decline**: same round trip, `"state": "declined"`.
+- **Screen off**: with `dumpsys deviceidle get screen` reporting `false`, a task
+  arrived, verified, persisted, and its signed **received** receipt reached the
+  command post unprompted.
+- **Untrusted issuer**: a second authority signed a well-formed task addressed
+  to the same phone and delivered it. The phone refused it —
+  `Rejected task: IllegalArgumentException` — and it never became an inbox
+  entry, a notification or a decision.
+- Unit tests green, including a new case asserting that deferring for path
+  discovery leaves the attempt budget whole.
+
+### Still not accepted
+
+- Saving trust through the **UI card** rather than the harness. The announce fix
+  addresses the defect that made this fail, but the card itself is unexercised.
+- Reconnect behaviour across a real interface drop.
+- A task authored by **actual ATAK** rather than by the CLI or a synthetic
+  firehose publish.
+- Any measured **LoRa or ESP-NOW** path. Everything above ran over the phone's
+  TCP client to Rev1.
+
+## Acceptance record — 2026-09-06 (superseded by the run above)
 
 - Firmware/tool suite: **337 tests passed, no skips**, using the host RNS venv.
 - Columba: **27 targeted tests passed** (18 existing position codec, four task
