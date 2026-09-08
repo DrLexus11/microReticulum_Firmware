@@ -143,6 +143,40 @@ class TaskTests(unittest.TestCase):
             self.assertIsNone(gateway.stage(db, envelope, self.now + 10))
             self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 0)
 
+    def test_downlink_retries_until_expiry_not_for_a_fixed_count(self):
+        """A responder who is unreachable for a while must still get the task.
+
+        The selection predicate the serve loop uses is the whole retry policy.
+        With a three-attempt cap it stopped after roughly two minutes, so a
+        recipient in a dead spot missed a task that stayed valid for another
+        thirteen -- and nothing redelivered when they came back.
+        """
+        task_id = self.make_task()
+        select = ("SELECT id FROM tasks WHERE expires>? AND state='queued' "
+                  "AND last_attempt<=?")
+        with gateway.connect(self.path) as db:
+            # Ten attempts already spent, well past any fixed cap.
+            with db:
+                db.execute("UPDATE tasks SET attempts=10, last_attempt=? WHERE id=?",
+                           (self.now, task_id))
+            later = self.now + gateway.RETRY_SECONDS
+            due = db.execute(select, (later, later - gateway.RETRY_SECONDS)).fetchall()
+            self.assertEqual([row["id"] for row in due], [task_id])
+
+            # Spacing is still honoured between tries.
+            too_soon = self.now + gateway.RETRY_SECONDS - 1
+            self.assertEqual(
+                db.execute(select, (too_soon, too_soon - gateway.RETRY_SECONDS)).fetchall(), [])
+
+            # Expiry is the bound that stops it, and a decision stops it sooner.
+            expired = self.task.expires + 1
+            self.assertEqual(
+                db.execute(select, (expired, expired - gateway.RETRY_SECONDS)).fetchall(), [])
+            with db:
+                db.execute("UPDATE tasks SET state='accepted' WHERE id=?", (task_id,))
+            self.assertEqual(
+                db.execute(select, (later, later - gateway.RETRY_SECONDS)).fetchall(), [])
+
     def test_database_is_private(self):
         self.make_task()
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)

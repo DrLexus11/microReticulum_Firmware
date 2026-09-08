@@ -163,12 +163,22 @@ Measured by packing real Python RNS SINGLE packets:
 
 Airtime uses the existing firmware model at SF7/BW250/CR4:5 and the routed
 length. It is an estimate, not a radio measurement. Both fit one Reticulum
-packet. There are at most three downlink attempts, spaced at least 60 seconds;
-a verified receipt stops downlink retries. The phone allows three attempts for
-its receipt and three for its one user decision, with the same spacing. Missing
-paths consume attempts and trigger bounded discovery rather than an unlimited
-retry loop. Nine maximum-sized transmissions total about 1.85 seconds per
-radio hop, excluding announces, path discovery, and lower-layer overhead.
+packet.
+
+**Retries are bounded by the task's own expiry, not by an attempt count.** Both
+directions retry every 60 seconds for as long as the task is valid, and a
+verified receipt stops the downlink at once. The earlier three-attempt cap
+spanned two minutes, which had nothing to do with how long a task mattered: a
+responder who walked through a dead spot exhausted it and never heard the task
+again, while the task itself stayed valid for another thirteen minutes. Path
+discovery does not consume a retry in either direction -- no packet was
+transmitted and none was refused.
+
+A default 15-minute task therefore costs at most ~15 downlinks at 245 ms, about
+3.7 seconds of airtime spread across those fifteen minutes, plus the responder's
+receipt and its one decision on the same schedule -- and in the ordinary case
+where the first downlink lands, it is one transmission each way. Excludes
+announces, path discovery, and lower-layer overhead.
 
 `tests/fixtures/task_v1.json` and Columba's matching test resource contain the
 same deterministic test-key signatures, including a non-ASCII instruction.

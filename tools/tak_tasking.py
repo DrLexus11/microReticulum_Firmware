@@ -24,7 +24,13 @@ import task_codec as codec
 MAX_COT = 16384
 MAX_PENDING = 128
 RETRY_SECONDS = 60
-MAX_ATTEMPTS = 3
+# No fixed attempt cap: a task is retried until it expires. Three attempts
+# spanned two minutes, so a recipient who walked through a dead spot missed the
+# task permanently and nothing redelivered when they came back -- while the task
+# itself was still valid for another thirteen minutes. Expiry is the bound that
+# means something, and it is already enforced. A 323-byte downlink is 245 ms, so
+# a 15-minute task costs at most ~3.7 s of airtime spread across those minutes,
+# and a verified receipt stops it at once.
 STATES = {codec.RECEIVED: "received", codec.ACCEPTED: "accepted", codec.DECLINED: "declined"}
 
 
@@ -224,8 +230,8 @@ def serve(args, identity):
                 destination.announce()
                 last_announce = now
             with connect(args.db) as db:
-                rows = db.execute("SELECT * FROM tasks WHERE expires>? AND state='queued' AND attempts<? AND last_attempt<=?",
-                                  (now, MAX_ATTEMPTS, now - RETRY_SECONDS)).fetchall()
+                rows = db.execute("SELECT * FROM tasks WHERE expires>? AND state='queued' AND last_attempt<=?",
+                                  (now, now - RETRY_SECONDS)).fetchall()
                 for row in rows:
                     # Persist before sending so a process crash cannot reset the retry budget.
                     with db:
