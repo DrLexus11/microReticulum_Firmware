@@ -53,10 +53,32 @@ Computed with `tools/position_budget.py`, which is the firmware's own
 
 Two conclusions follow, and they are not the same conclusion.
 
-Generic compression is not enough. CoT XML gzips well -- roughly 4 to 5 times --
-but 4x on a 6 KB drawing is still a second of air, and 4x on a chat receipt is
-still absurd for a message that carries one bit of meaning. A codec that knows
-what the fields mean gets 15 to 40 times.
+Generic compression is not enough, and it is weaker than it sounds. Measured
+across 400 real events rather than assumed:
+
+| | Mean event | Ratio |
+| --- | ---: | ---: |
+| Raw CoT | 582 B | — |
+| Deflate, no dictionary | 378 B | 1.5x |
+| Deflate, **curated dictionary** | 232 B | **2.5x** |
+| Deflate, dictionary trained on captured traffic | 87 B | 6.7x |
+
+A single event is a few hundred bytes, which is far too little history for
+deflate to work with — hence 1.5x, and hence an earlier draft of this document
+claiming "4 to 5 times" being simply wrong. What CoT has instead is enormous
+repetition *between* events, which a preset dictionary converts into the 2.5x
+that `tools/cot_tier2.py` ships.
+
+The trained dictionary compresses best and is not used: it embeds the
+callsigns, coordinates and device identifiers it was trained on, and the
+dictionary ships to every node on the mesh.
+
+2.5x is worth more than the ratio suggests, because the threshold matters more
+than the factor: it takes the mean event from 582 bytes to 232, and a Reticulum
+packet carries 383. Most CoT stops needing two packets — 189 ms of airtime
+instead of 466. But 2.5x on a 6 KB drawing is still seconds of air, and no
+ratio makes a chat receipt sensible for a message carrying one bit of meaning.
+A codec that knows what the fields mean gets 15 to 40 times.
 
 Typed codecs alone are not enough either. There are hundreds of CoT types and
 plugins invent more. Anything without a typed codec must still work, or the
