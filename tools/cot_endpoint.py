@@ -88,3 +88,79 @@ def is_self_addressed(cot_xml, own_uid):
         cot_xml = cot_xml.encode("utf-8")
     head = cot_xml[:cot_xml.find(b">") + 1] if b">" in cot_xml else cot_xml
     return needle in head
+
+
+def _parse(cot_xml):
+    """Parse a CoT event, refusing the XML features CoT never needs.
+
+    This input arrives from a socket and from the mesh. Declarations and
+    entities are what turn an XML parser into a denial of service, and no
+    legitimate CoT event contains either.
+
+    Every failure leaves as a ValueError. ElementTree's ParseError descends
+    from SyntaxError, not from ValueError, so a caller guarding with the
+    obvious `except ValueError` would let malformed XML through untouched --
+    and malformed XML is exactly what a socket delivers first.
+    """
+    import xml.etree.ElementTree as ET
+    if isinstance(cot_xml, (bytes, bytearray)):
+        cot_xml = bytes(cot_xml).decode("utf-8", errors="strict")
+    if not isinstance(cot_xml, str):
+        raise ValueError("CoT must be text or bytes")
+    if "<!" in cot_xml:
+        raise ValueError("XML declarations and entities are not accepted")
+    try:
+        event = ET.fromstring(cot_xml)
+    except ET.ParseError as error:
+        raise ValueError("malformed CoT: %s" % error) from error
+    if event.tag != "event":
+        raise ValueError("not a CoT event")
+    return event
+
+
+def rewrite_self_uid(cot_xml, atak_uid, our_uid):
+    """Give our own self-reports a Reticulum-rooted UID before they leave.
+
+    ATAK reports itself as ANDROID-xxxx, which is a device identifier: it
+    cannot be verified, cannot be reversed to address the peer, and changes if
+    the app's data is cleared. Peers should see the UID derived from this
+    node's destination instead, which is the whole point of pivot 1 in
+    TAKIntegrationPivots.md -- otherwise the derived identity exists in the
+    codebase and never reaches a track anybody looks at.
+
+    Only *self-reports* are rewritten. An object placed on the map -- a marker,
+    a drawing -- carries its own UID and is a distinct thing that happens to
+    have been created here; rewriting those would collapse every marker this
+    node ever dropped into one track. The discriminator is the same one the
+    firehose stager uses and that held across all 42 captured events: a
+    self-report's event UID is the reporting device's own.
+    """
+    import xml.etree.ElementTree as ET
+    if not atak_uid or not our_uid:
+        return cot_xml if isinstance(cot_xml, str) else bytes(cot_xml).decode("utf-8")
+    event = _parse(cot_xml)
+    if event.get("uid") != atak_uid:
+        return cot_xml if isinstance(cot_xml, str) else bytes(cot_xml).decode("utf-8")
+    event.set("uid", our_uid)
+    return ET.tostring(event, encoding="unicode")
+
+
+def learn_atak_uid(cot_xml):
+    """The UID this ATAK calls itself, learned from a self-report.
+
+    Nothing configures it: ATAK announces its own identifier in every position
+    report, and asking an operator to type it would be one more setting that
+    can be wrong. Returns None for anything that is not a self-report, which
+    includes every marker and every event relayed from a peer.
+    """
+    try:
+        event = _parse(cot_xml)
+    except ValueError:
+        return None
+    uid = event.get("uid") or ""
+    # A self-report describes a unit; ATAK's carries <takv>, which identifies
+    # the software reporting. A marker never does, which keeps a marker created
+    # here from being mistaken for the device that created it.
+    if uid and event.find("detail/takv") is not None:
+        return uid
+    return None

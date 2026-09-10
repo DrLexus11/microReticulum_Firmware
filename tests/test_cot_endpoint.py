@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from cot_endpoint import CotStream, is_self_addressed
+from cot_endpoint import CotStream, is_self_addressed, learn_atak_uid, rewrite_self_uid
 
 A = b'<event uid="a" type="a-f-G"><point lat="1" lon="2"/><detail/></event>'
 B = b'<event uid="b" type="a-h-G"><point lat="3" lon="4"/><detail/></event>'
@@ -78,3 +78,62 @@ class EchoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PLI = ('<event uid="ANDROID-7819dadfcf858641" type="a-f-G-U-C" how="m-g" version="2.0">'
+       '<point lat="40.95" lon="29.09" hae="33.5" ce="44.0" le="9999999.0"/>'
+       '<detail><takv device="SAMSUNG SM-A546E" os="36" platform="ATAK-CIV" version="5.6"/>'
+       '<contact callsign="LEXUS" endpoint="*:-1:stcp"/><uid Droid="LEXUS"/>'
+       '<__group name="Cyan" role="Team Member"/></detail></event>')
+
+MARKER = ('<event uid="66d6de40-bd62-4a5e-92ef-d4ee14b0194a" type="a-h-G" how="h-g-i-g-o" '
+          'version="2.0"><point lat="40.954" lon="29.094" hae="48.0" ce="9999999.0" '
+          'le="9999999.0"/><detail><contact callsign="R.10.144053"/>'
+          '<creator callsign="LEXUS" uid="ANDROID-7819dadfcf858641"/></detail></event>')
+
+OURS = "urtn-" + "ab" * 16
+
+
+class UidRewriteTests(unittest.TestCase):
+    def test_our_self_report_gets_a_reticulum_rooted_uid(self):
+        """Otherwise the derived identity exists only in the codebase and
+        never reaches a track anybody looks at."""
+        import xml.etree.ElementTree as ET
+        out = rewrite_self_uid(PLI, "ANDROID-7819dadfcf858641", OURS)
+        self.assertEqual(ET.fromstring(out).get("uid"), OURS)
+        # The rest of the event is untouched.
+        self.assertEqual(ET.fromstring(out).find("detail/contact").get("callsign"), "LEXUS")
+
+    def test_a_marker_keeps_its_own_uid(self):
+        """A marker is a distinct object that happens to have been created
+        here. Rewriting them would collapse every marker this node ever
+        dropped into a single track."""
+        import xml.etree.ElementTree as ET
+        out = rewrite_self_uid(MARKER, "ANDROID-7819dadfcf858641", OURS)
+        self.assertEqual(ET.fromstring(out).get("uid"), "66d6de40-bd62-4a5e-92ef-d4ee14b0194a")
+
+    def test_a_creator_uid_in_the_detail_does_not_trigger_a_rewrite(self):
+        """The marker above names our device as its creator. Matching on that
+        would rewrite every marker we drop."""
+        self.assertIn("66d6de40", rewrite_self_uid(MARKER, "ANDROID-7819dadfcf858641", OURS))
+
+    def test_nothing_is_rewritten_before_the_atak_uid_is_known(self):
+        for atak_uid, ours in (("", OURS), (None, OURS), ("ANDROID-x", ""), ("ANDROID-x", None)):
+            self.assertEqual(rewrite_self_uid(PLI, atak_uid, ours), PLI)
+
+
+class LearnUidTests(unittest.TestCase):
+    def test_the_atak_uid_is_learned_from_a_self_report(self):
+        """Nothing configures it: ATAK announces it in every position report,
+        and a setting an operator must type is a setting that can be wrong."""
+        self.assertEqual(learn_atak_uid(PLI), "ANDROID-7819dadfcf858641")
+
+    def test_a_marker_never_teaches_us_a_device_uid(self):
+        self.assertIsNone(learn_atak_uid(MARKER))
+
+    def test_malformed_input_is_not_an_error(self):
+        """ParseError descends from SyntaxError, not ValueError, so this is
+        the case a caller's obvious `except ValueError` would have missed."""
+        for bad in (b"", b"<event", b"not xml at all", b"<other/>",
+                    b'<!DOCTYPE event [<!ENTITY x "boom">]><event uid="a"/>'):
+            self.assertIsNone(learn_atak_uid(bad), repr(bad))
