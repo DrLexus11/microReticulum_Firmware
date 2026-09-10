@@ -103,35 +103,29 @@ Reticulum packet from it that passes the interface's IFAC handling, refreshes
 the lease. Merely receiving an ESP-NOW data frame does not. Expiry marks
 recovery failed so the established fallback logic can raise SoftAP.
 
-## Choosing a parent, and who is allowed to repeat
+## Channel recovery and Reticulum forwarding
 
 Taking the **first** valid response was the original behaviour, and it does not
 survive a third node. Two orphans in range of each other both advertise
 `CAP_TRANSPORT` and both prove IFAC, so each looks exactly as good as the hub,
-and they are as likely to adopt each other as to adopt it. A node cannot route
-through a peer that has no route itself.
+and they are as likely to adopt each other as to adopt it. Prefer a known
+upstream channel when one is available, while retaining orphan-only recovery.
 
-Reticulum does not correct this afterwards. It learns paths from announces by
-**hop count alone**, keeps whichever copy of an announce arrives first, and
-never re-evaluates -- it is an overlay for heterogeneous transports, not a radio
-routing protocol. Observed directly: OZD-02, one hop from the hub, was recorded
-three hops away through a sibling, and Links across that chain would not
-establish. So the topology has to be honest to begin with; the router will not
-make it so.
+Recovery prefers a peer with `CAP_UPSTREAM`: a LoRa-equipped node or one
+associated to infrastructure WiFi. An orphan peer remains a last resort after
+the scan budget expires. This is a channel-selection hint, not a routing table.
 
-`CAP_UPSTREAM` means "I can reach the mesh without going back out through
-ESP-NOW" -- true for a LoRa-equipped node, or one associated to infrastructure
-Wi-Fi, and never true for the deliberately unconfigured fixtures. Two rules
-follow:
+Recovery must not change `Reticulum::transport_enabled()`. The earlier policy
+that disabled transport while pinned also disabled BLE-to-ESP-NOW forwarding:
+phones could connect and announce locally but could not reach the mesh.
+Transport remains controlled by the application, including the host/TNC guard.
 
-1. **Prefer a peer that sets it**, and take one that does not only as a last
-   resort.
-2. **A node that does not set it stops relaying while it has a parent.** Every
-   announce it repeats reaches the hub one hop longer than the copy the hub
-   already heard directly, and costs a duplicate flood to produce it. The
-   moment the parent is lost this reverses -- it is then the only thing keeping
-   its neighbours reachable -- so the policy is re-applied on both transitions.
-   Nodes that are themselves a way out are never touched by it.
+A pinned node sends data to the same recent neighbours as an unpinned node:
+unicast fan-out for up to three addressable peers, broadcast beyond that or
+when no addressable peer is known. Restricting sends to the recovery parent
+while accepting sibling announces creates asymmetric paths. Reticulum owns
+next-hop selection and duplicate suppression; ESP-NOW only selects the radio
+channel and delivers frames. Discovery counts do not prove application access.
 
 ### Where this sits against the literature
 
