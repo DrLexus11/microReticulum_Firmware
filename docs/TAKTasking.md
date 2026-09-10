@@ -333,9 +333,50 @@ whose loss silently empties the remote-management allow list.
 - A task authored by **actual ATAK** rather than by the CLI or a synthetic
   firehose publish.
 
-**LoRa specifically remains unmeasured.** The radio run above crossed BLE and
-ESP-NOW; no LoRa hop carried a task. The two-Rev2 outdoor exercise is where that
-gets answered, and its airtime is the figure the published budget rests on.
+### LoRa path — 2026-09-10
+
+```
+deck --UDP--> Rev2 ==LoRa==> Rev1 --BLE--> phone
+```
+
+Rev1 was rebuilt as `impr-rad01-rev1-ble-lora`: BLE added, and TCP, UDP and
+ESP-NOW removed. The removals are the point. With `UDP_TRANSPORT` in place Rev1
+sits one hop from the deck over Wi-Fi and Reticulum always prefers that, so the
+test would pass without a packet crossing the radio. Stripped, LoRa is Rev1's
+only route to anything, and the second OZD was unplugged so BLE offered no
+alternative either.
+
+**Result: 17 seconds, one attempt in each direction.** Task verified and
+persisted on the phone about four seconds after issue, accepted, and the signed
+acceptance verified at the command post with `attempts: 1`. Faster than the
+BLE/ESP-NOW run, which took 75 seconds and two attempts.
+
+Bytes crossed the radio in the same measurement: the deck's Rev2 interface went
+743.34 KB to 744.46 KB sent and 1.04 MB to 1.05 MB received across the run.
+
+Two findings on the way there, both about Rev1 rather than about tasking:
+
+**BLE is not a build-time switch on a RAD board.** `HAS_BLE` is already true for
+Rev1, so `BLEPeerInterface` was compiling into every image; it needed
+`BLE_PEER_TRANSPORT` to be registered as a transport, Bluetooth enabled in
+EEPROM (`rnodeconf --bluetooth-on`), and a power cycle. `bt_start()` is further
+gated on `wireless_kiss_policy_ready && wireless_kiss_allowed`, which provisioning
+only sets once loaded. Adding NimBLE is the wrong move here and fails twice
+over: the core ships its own BLE stack, so every NimBLE class is redefined, and
+NimBLE parameters named `MTU` collide with `Config.h`'s `#define MTU 508`.
+
+**The BLE peer would connect and then drop** until `RRC_HUB`,
+`RRC_PROTOCOL_CORE` and `LXMF_PROPAGATION_NODE` were removed from the test
+build. None of them carry a task. Static RAM only fell from 35.6% to 32.5%, so
+the static saving is not the explanation -- what those three do is allocate
+continuously, and this board's recorded failure mode is fragmentation with flat
+free memory, the largest contiguous block collapsing while totals look healthy.
+A Bluedroid GATT server needs contiguous buffers, which makes it the first thing
+to fail under exactly that.
+
+**Still unmeasured: LoRa under load, and at range.** This was one task across a
+bench-distance hop. The two-Rev2 outdoor exercise remains where airtime and
+range get answered, and its figures are what the published budget rests on.
 
 ## Acceptance record — 2026-09-06 (superseded by the run above)
 

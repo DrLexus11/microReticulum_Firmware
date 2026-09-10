@@ -68,7 +68,9 @@ echo "task $TASK_ID"
 
 step "phone verifies and persists THIS task"
 LINE=""
-for i in $(seq 1 15); do
+# LoRa across several hops is slower than a LAN path, and a run that gives up
+# at sixty seconds reports a failure that is really a short timeout.
+for i in $(seq 1 "${ARRIVE_TRIES:-15}"); do
   adbx logcat -c; cast LIST_TASKS; sleep 4
   LINE=$(adbx logcat -d -s $TAG 2>/dev/null | grep "task id=$TASK_ID" | tail -1)
   [ -n "$LINE" ] && break
