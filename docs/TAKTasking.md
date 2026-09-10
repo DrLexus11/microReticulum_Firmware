@@ -1,6 +1,7 @@
 # PR 2: authenticated tasking over the RAD mesh
 
-Status: implemented; phone leg accepted on hardware 2026-09-08, four items outstanding. Branch `feature/atak-tasking`, based
+Status: implemented; phone and reconnect legs accepted on hardware (2026-09-08,
+2026-09-10), three items outstanding. Branch `feature/atak-tasking`, based
 on `bbcc069` (merged position PR #21). Companion Columba branch:
 `feature/tak-tasking`, based on `24b0a07f` from position reporting.
 
@@ -235,11 +236,52 @@ hold the device"; the only step still needing a person is the tap itself.
 - Unit tests green, including a new case asserting that deferring for path
   discovery leaves the attempt budget whole.
 
+### Reconnect — 2026-09-10
+
+The disconnect/reconnect gate failed on first attempt and took two fixes.
+
+**Retries were bounded by an attempt count rather than by the task.** With the
+recipient's only interface down, the command post spent all three attempts in
+two minutes transmitting into a path that no longer terminated, and nothing
+redelivered when the interface returned ninety seconds later -- while the task
+stayed valid for another thirteen minutes. Both directions now retry until
+expiry, which is already enforced and already capped at an hour by the codec.
+
+**App-registered destinations did not survive an RNS restart.** With the first
+fix in, the task still never arrived, and the announce hardening from 09-08 is
+what made the reason legible rather than silent:
+
+```
+Task destination announce failed
+RnsException: Identity not found: 5d38c5ebf72dc4bc242e3e5fe7f8705e
+```
+
+That hash is a *destination*, not an identity. `PythonRnsRuntime.stop()` clears
+the destination registry -- it must, since those objects belong to a Reticulum
+instance that no longer exists -- and nothing re-created the ones app code had
+registered, along with their packet callbacks. LXMF never showed it because
+`LXMRouter` re-registers its own delivery identity on start. The phone's
+announces still reached the deck throughout, so the uplink was never the
+problem: the phone simply had no registered destination left to receive on.
+
+This is not a tasking defect. Every destination the TAK design depends on --
+group destinations for teams and missions above all -- had the same exposure,
+and any interface change would have ended inbound delivery silently. It is
+fixed by `AppDestinationRegistry`, which retains registration intent and
+replays it before `READY`, at three layers: the Python backend, the native
+backend, and the UI-side proxy, so it survives the `:reticulum` process being
+replaced outright and not merely restarted.
+
+**Verified on hardware.** Interface dropped, task issued into the outage: the
+phone held no row and the command post honestly reported no receipt. Interface
+restored: the task arrived within about seventy seconds, **exactly once**, its
+signed receipt reached the command post, and the subsequent acceptance was
+verified there. No false acceptance and no duplicate.
+
 ### Still not accepted
 
 - Saving trust through the **UI card** rather than the harness. The announce fix
   addresses the defect that made this fail, but the card itself is unexercised.
-- Reconnect behaviour across a real interface drop.
 - A task authored by **actual ATAK** rather than by the CLI or a synthetic
   firehose publish.
 - Any measured **LoRa or ESP-NOW** path. Everything above ran over the phone's

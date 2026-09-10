@@ -19,11 +19,22 @@ DEV="$HOME/.impr-tak/tasking-dev"
 PY="$HOME/.local/share/rnode-rns-venv/bin/python"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="network.columba.app.debug"
-D="${ADB_DEV:-192.168.1.37:46067}"
+# Select by transport id, not serial: this handset's mDNS serial contains a
+# space, it is listed several times (mDNS and IP), and its address changes
+# between sessions. Waydroid is excluded explicitly -- it is an x86 ATAK host
+# on this same machine and adb will happily offer it as a target.
+if [ -n "${ADB_DEV:-}" ]; then
+    TARGET="-s $ADB_DEV"
+else
+    TID=$(adb devices -l 2>/dev/null | grep -w device | grep -vi waydroid \
+        | grep -o 'transport_id:[0-9]*' | head -1 | cut -d: -f2)
+    [ -n "$TID" ] || { echo "no phone on adb; set ADB_DEV"; exit 1; }
+    TARGET="-t $TID"
+fi
 TAG=COLUMBA_TEST
 DECISION="${DECISION:-accept}"
 
-adbx() { adb -s "$D" "$@"; }
+adbx() { adb $TARGET "$@"; }
 cast() { local a="$1"; shift; adbx shell am broadcast -a "network.columba.test.$a" -n "$PKG/network.columba.app.test.TestReceiver" "$@" >/dev/null 2>&1; }
 task() { $PY "$REPO/tools/tak_tasking.py" --db "$DEV/tasks.sqlite3" --identity "$DEV/authority" "$@"; }
 await() {
