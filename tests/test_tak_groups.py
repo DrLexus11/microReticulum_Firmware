@@ -32,6 +32,24 @@ class NormalisationTests(unittest.TestCase):
 
 
 class KeyTests(unittest.TestCase):
+    def test_key_length_selects_the_stronger_cipher(self):
+        """RNS's Token picks its cipher from key length and says nothing.
+
+        32 bytes is accepted and quietly gives AES-128-CBC; 64 gives AES-256.
+        Team traffic should not get the weaker one by omission.
+        """
+        self.assertEqual(len(groups.group_key("Cyan", SECRET)), 64)
+
+    @unittest.skipUnless(RNS, "requires RNS virtualenv")
+    def test_the_derived_key_encrypts_and_decrypts_through_reticulum(self):
+        from RNS.Cryptography import Token
+        token = Token(groups.group_key("Cyan", SECRET))
+        self.assertEqual(token.decrypt(token.encrypt(b"team traffic")), b"team traffic")
+        # A different team cannot read it, which is the point of the derivation.
+        other = Token(groups.group_key("Green", SECRET))
+        with self.assertRaises(Exception):
+            other.decrypt(token.encrypt(b"team traffic"))
+
     def test_key_is_stable_and_team_specific(self):
         key = groups.group_key("Cyan", SECRET)
         self.assertEqual(len(key), groups.GROUP_KEY_BYTES)
@@ -108,8 +126,31 @@ class DestinationTests(unittest.TestCase):
         is never heard.
         """
         aspects = groups.group_aspects("Cyan", SECRET)
+        shared = groups.group_identity("Cyan", SECRET)
         self.assertEqual(groups.group_destination_hash("Cyan", SECRET),
-                         RNS.Destination.hash(None, groups.APP, *aspects))
+                         RNS.Destination.hash(shared, groups.APP, *aspects))
+
+    def test_every_member_derives_the_same_identity_and_address(self):
+        """Nothing is exchanged between members: the secret and the team name
+        are the whole of the agreement."""
+        first = groups.group_identity("Cyan", SECRET)
+        second = groups.group_identity(" cyan ", SECRET)
+        self.assertEqual(first.hash, second.hash)
+        self.assertEqual(groups.group_destination_hash("Cyan", SECRET),
+                         groups.group_destination_hash(" cyan ", SECRET))
+
+    def test_the_address_is_not_the_identity_free_one(self):
+        """The naive construction is identity=None, and it is a trap.
+
+        RNS accepts it for an IN destination and silently generates a random
+        identity, appending its hex hash to the aspects -- so two members land
+        on different addresses, both believe they have joined, and neither ever
+        hears the other. Asserting our address differs from the identity-free
+        one keeps anybody from "simplifying" it back.
+        """
+        aspects = groups.group_aspects("Cyan", SECRET)
+        self.assertNotEqual(groups.group_destination_hash("Cyan", SECRET),
+                            RNS.Destination.hash(None, groups.APP, *aspects))
 
     def test_teams_and_secrets_produce_distinct_destinations(self):
         seen = {

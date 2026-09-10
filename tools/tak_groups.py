@@ -32,7 +32,11 @@ DOMAIN = b"urtn-tak-group-v1\0"
 SECRET_ENVIRONMENT = "TAK_FLEET_SECRET"
 DEFAULT_SECRET_PATH = "~/.impr-tak/fleet-secret"
 MIN_SECRET_BYTES = 16
-GROUP_KEY_BYTES = 32
+# 64, not 32. RNS's Token picks its cipher from the key length: 32 bytes
+# selects AES-128-CBC with a 16-byte signing key, 64 selects AES-256-CBC with a
+# 32-byte one. A 32-byte key is accepted without complaint, so the weaker
+# choice would never have announced itself. Deriving 64 costs nothing here.
+GROUP_KEY_BYTES = 64
 
 
 def normalise_team(name):
@@ -85,7 +89,7 @@ def group_key(team, secret):
     which keeps length-extension out of the conversation entirely.
     """
     return hmac.new(secret, DOMAIN + normalise_team(team).encode("utf-8"),
-                    hashlib.sha256).digest()[:GROUP_KEY_BYTES]
+                    hashlib.sha512).digest()[:GROUP_KEY_BYTES]
 
 
 def group_aspects(team, secret):
@@ -104,6 +108,38 @@ def group_aspects(team, secret):
     return ASPECTS + (label,)
 
 
+def group_identity_key(team, secret):
+    """The 64-byte private key every member of this team derives alike."""
+    return hmac.new(secret, DOMAIN + b"identity\0" + normalise_team(team).encode("utf-8"),
+                    hashlib.sha512).digest()
+
+
+def group_identity(team, secret):
+    """A shared Reticulum identity for the team.
+
+    A GROUP destination cannot be built with `identity=None`, and finding out
+    why is worth recording. RNS accepts it for an IN destination -- and quietly
+    *generates a random identity*, appending its hex hash to the aspects. Two
+    members would each get a different address, both believe they were joined,
+    and neither ever hear the other. It refuses it outright for OUT.
+
+    So the identity is derived from the same secret as the key, which makes it
+    the same identity on every member's node.
+    """
+    import RNS
+    return RNS.Identity.from_bytes(group_identity_key(team, secret))
+
+
+def group_destination(team, secret, direction):
+    """The team's destination, ready to send or receive on."""
+    import RNS
+    destination = RNS.Destination(group_identity(team, secret), direction,
+                                  RNS.Destination.GROUP, APP,
+                                  *group_aspects(team, secret))
+    destination.load_private_key(group_key(team, secret))
+    return destination
+
+
 def group_destination_hash(team, secret):
     """The destination hash for this team, as RNS derives it.
 
@@ -114,4 +150,5 @@ def group_destination_hash(team, secret):
     that can transmit and never be heard.
     """
     import RNS
-    return RNS.Destination.hash(None, APP, *group_aspects(team, secret))
+    return RNS.Destination.hash(group_identity(team, secret), APP,
+                                *group_aspects(team, secret))
