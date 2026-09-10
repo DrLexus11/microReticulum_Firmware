@@ -1,7 +1,7 @@
 # PR 2: authenticated tasking over the RAD mesh
 
-Status: implemented; phone, reconnect and radio legs accepted on hardware
-(2026-09-08, 2026-09-10). Two items outstanding. Branch `feature/atak-tasking`, based
+Status: implemented; phone, reconnect, radio and UI legs accepted on hardware
+(2026-09-08, 2026-09-10). One item outstanding. Branch `feature/atak-tasking`, based
 on `bbcc069` (merged position PR #21). Companion Columba branch:
 `feature/tak-tasking`, based on `24b0a07f` from position reporting.
 
@@ -326,10 +326,31 @@ readable, and `/transport_identity` (`0056bb6a9789d02a7dd5676d4f3a0ce8`),
 `/time_offset` and all three `config/ns*.msgpack` extracted -- `ns1` included,
 whose loss silently empties the remote-management allow list.
 
-### Still not accepted
+### The UI card — 2026-09-10
 
-- Saving trust through the **UI card** rather than the harness. The announce fix
-  addresses the defect that made this fail, but the card itself is unexercised.
+Driven through the card itself rather than the harness, over the LoRa topology
+above, in the order a real operator would:
+
+1. Trust cleared. A signed task issued while untrusted **did not arrive** -- the
+   inbox held no row for it, and the card read "Receiving is off until an
+   authority is trusted". The earlier task already in the inbox was correctly
+   marked "This task's authority is no longer trusted".
+2. The command post's 128-character key typed into **Command-post public key**
+   and saved with **Save trust setting**. The card changed to "Listening for
+   verified tasks" without a restart -- which is the announce fix from 09-08
+   doing its job, since setting trust on a running receiver used to kill it.
+3. The task that had been refused **then arrived** on the next retry, and its
+   signed receipt reached the command post. Retrying until expiry is what made
+   this possible: under the old three-attempt cap the task would have been dead
+   long before trust was configured.
+4. **Accept** tapped in the card. It moved to "Go to point · Accepted", and the
+   command post verified the signed acceptance.
+
+The only step not performed by a person is the finger on the glass; every
+component in the path -- card, TaskManager, store, backend, IPC, BLE, LoRa --
+is the production one.
+
+### Still not accepted
 - A task authored by **actual ATAK** rather than by the CLI or a synthetic
   firehose publish.
 
