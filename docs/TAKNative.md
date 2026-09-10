@@ -241,21 +241,59 @@ keep in sync. A fat plugin carrying its own Reticulum is the outcome to avoid.
 
 ## The outdoor minimal test
 
-Two Rev2s on LoRa with the large antennas, one at the deck and one walking out
-with the phone on BLE:
+**Corrected 2026-09-10.** An earlier draft of this section had two Rev2s on
+LoRa. That is the *bench* topology, and it is what the acceptance runs used.
+The field kit is not LoRa at all:
 
 ```
-waydroid ATAK ─127.0.0.1─ deck endpoint ─ RNS ─USB─ Rev2 ═LoRa═ Rev2 ─BLE─ phone RNS host ─127.0.0.1─ ATAK
+Columba + ATAK ─BLE─► IMPR-RAD ─Wi-Fi─► VOX-Mini ═HaLow═► VOX-Mini ─Wi-Fi─► IMPR-RAD ─BLE─► Columba + ATAK
 ```
 
-Duplex chat, markers and drawings, with neither end configured to point at the
-other. This is the first outdoor goal, ahead of the two-person exercise, because
-it isolates the protocol from the mesh: one hop, one radio, no roaming.
+VOX-Mini is the RPi Zero 2 W with the HaLow uHAT and GNSS, and it hosts the
+Wi-Fi the RAD associates to. **The RADs are compiled without LoRa** and act as
+BLE-to-Wi-Fi bridges; each side of the exercise is an identical pair.
 
-Its prerequisite is already committed -- ESP-NOW recovery used to disable
-Reticulum forwarding on a node without its own upstream, which is precisely the
-walking node, and its phone could have announced happily into a node that had
-stopped relaying for it.
+Three consequences, and the first two are corrections to this document.
+
+**HaLow is the field backbone, not LoRa.** The radio-selection section below
+says "LoRa is the backbone", and that remains true of the lab fleet and of any
+deployment without a VOX. It is not true of the field kit, where LoRa is absent
+by choice.
+
+**The airtime arguments do not bind the field kit.** Every budget in this
+document is SF7/BW250 at 10.9 kbps. The narrowest link in the field kit is BLE
+or HaLow at range — two orders of magnitude more, as the HaLow table below
+sets out. Tier 3 becomes exercisable in the field far earlier than its position
+in the sequence suggests, because what gated it was bandwidth and the bandwidth
+arrives with VOX.
+
+The tiering itself still holds, and this is the test of it: the compact codecs
+cost nothing when bandwidth is plentiful, a HaLow link at range still degrades
+toward its 150 kbps floor, and the lab fleet stays LoRa. A design that had to be
+unpicked when the bandwidth arrived would have been the wrong design.
+
+**The 863–868 MHz band conflict is retired.** This document warned that a HaLow
+module in that band would share it with the fleet's LoRa radios, transmitter
+inches from receiver. With the field RADs built without LoRa there is no
+co-located LoRa transmitter in the kit, so the constraint applies only to
+operating a VOX inside the lab alongside the LoRa fleet — a siting question
+rather than a hardware-selection one.
+
+**GNSS arrives on VOX rather than on the RAD.** `docs/OnboardGNSS.md` defers a
+GNSS module for the RAD, and the firmware's position path has never had a
+source registered — `node_position_register()` is called nowhere. VOX-Mini
+carries GNSS, so the field kit gets a position source without that deferred work
+being done, and the unexercised firmware path stays unexercised until a RAD
+needs to report on its own.
+
+Duty cycle is by permission, as in the lab: the current approval covers lab
+conditions, and field testing will carry its own. Nothing in this design assumes
+otherwise — the airtime accounting exists so the cost is known, not because a
+regulator is enforcing it here.
+
+Afterwards, a CM5 IO board with HaLow and GNSS built in and full-size antennas
+replaces the Zero 2 W. That is a hardware refresh under the same protocol, which
+is the point of keeping the protocol independent of the radio.
 
 ## Sequence
 
