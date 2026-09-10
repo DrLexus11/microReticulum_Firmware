@@ -1,7 +1,7 @@
 # PR 2: authenticated tasking over the RAD mesh
 
-Status: implemented; phone and reconnect legs accepted on hardware (2026-09-08,
-2026-09-10), three items outstanding. Branch `feature/atak-tasking`, based
+Status: implemented; phone, reconnect and radio legs accepted on hardware
+(2026-09-08, 2026-09-10). Two items outstanding. Branch `feature/atak-tasking`, based
 on `bbcc069` (merged position PR #21). Companion Columba branch:
 `feature/tak-tasking`, based on `24b0a07f` from position reporting.
 
@@ -278,14 +278,64 @@ restored: the task arrived within about seventy seconds, **exactly once**, its
 signed receipt reached the command post, and the subsequent acceptance was
 verified there. No false acceptance and no duplicate.
 
+### Measured radio path — 2026-09-10
+
+Run over BLE and ESP-NOW with no TCP anywhere in the chain:
+
+```
+phone --BLE--> OZD-9B2DD2 --ESP-NOW--> Rev1 --UDP--> deck command post
+```
+
+**The path carried nothing at first, and the failure is worth recording** because
+it was not a tasking defect and would have been misread as one. With the phone's
+only interface set to BLE, a signed task never arrived; a Reticulum probe from
+the deck showed 100% loss; raw packets at 8, 64 and 200 bytes were all accepted
+by the sender (`receipt=True`) and none arrived, which rules out BLE
+fragmentation; and the phone's own announce failed to advance the deck's path
+table. Traffic was dead in both directions. Earlier path timestamps that looked
+healthy turned out to predate the switch, from while the phone was still on TCP.
+
+That is the `apply_relay_policy` behaviour described in
+`fix/espnow-mesh-forwarding`: a node with no upstream of its own disabled
+`Reticulum::transport_enabled()` while it held an ESP-NOW parent, so a phone
+could associate over BLE, announce locally, and reach nothing. OZD-9B2DD2 has no
+LoRa and no infrastructure Wi-Fi, so it has no upstream and sits exactly in that
+case.
+
+After flashing OZD-9B2DD2 with that branch, same test, nothing else changed:
+
+| | Before | After |
+| --- | --- | --- |
+| Phone announce reaching the deck | path unchanged | path advanced |
+| Probe, deck to phone | 100% loss | **0% loss, 2.016 s over 3 hops** |
+| Signed task delivered, accepted, verified | never arrived | **complete in 75 s** |
+
+The task landed on the command post's second attempt at about 62 seconds; the
+first went out before the path had settled after the board's reboot. In steady
+state the earlier TCP runs completed in a single attempt each way.
+
+**`fix/espnow-mesh-forwarding` is therefore a hard dependency of this gate**, not
+an adjacent branch, and should merge before this PR cites the result.
+
+Flashing preserved the board. `pio run -t upload` writes bootloader, partition
+table and `app0` only, and the node identity and provisioned config live in the
+LittleFS partition at `0x2D0000` -- as `boards/ozdisan_esp32.csv` warns, and
+which the board's continued ESP-NOW peering with Rev1 confirms. A full 4 MB
+image was taken first, its LittleFS partition mounted to prove the backup
+readable, and `/transport_identity` (`0056bb6a9789d02a7dd5676d4f3a0ce8`),
+`/time_offset` and all three `config/ns*.msgpack` extracted -- `ns1` included,
+whose loss silently empties the remote-management allow list.
+
 ### Still not accepted
 
 - Saving trust through the **UI card** rather than the harness. The announce fix
   addresses the defect that made this fail, but the card itself is unexercised.
 - A task authored by **actual ATAK** rather than by the CLI or a synthetic
   firehose publish.
-- Any measured **LoRa or ESP-NOW** path. Everything above ran over the phone's
-  TCP client to Rev1.
+
+**LoRa specifically remains unmeasured.** The radio run above crossed BLE and
+ESP-NOW; no LoRa hop carried a task. The two-Rev2 outdoor exercise is where that
+gets answered, and its airtime is the figure the published budget rests on.
 
 ## Acceptance record — 2026-09-06 (superseded by the run above)
 
