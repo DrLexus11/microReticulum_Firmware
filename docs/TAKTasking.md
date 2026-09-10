@@ -1,7 +1,7 @@
 # PR 2: authenticated tasking over the RAD mesh
 
-Status: implemented; phone, reconnect, radio and UI legs accepted on hardware
-(2026-09-08, 2026-09-10). One item outstanding. Branch `feature/atak-tasking`, based
+Status: implemented; all merge gates met on hardware (2026-09-08, 2026-09-10).
+Outdoor range and load remain the separate two-Rev2 exercise. Branch `feature/atak-tasking`, based
 on `bbcc069` (merged position PR #21). Companion Columba branch:
 `feature/tak-tasking`, based on `24b0a07f` from position reporting.
 
@@ -350,9 +350,57 @@ The only step not performed by a person is the finger on the glass; every
 component in the path -- card, TaskManager, store, backend, IPC, BLE, LoRa --
 is the production one.
 
+### A task from real ATAK — 2026-09-10
+
+A marker dropped in ATAK-CIV 5.6.0.12 on the phone became a signed task on that
+same phone, over the LoRa path, with the operator supplying the instruction:
+
+```
+ATAK marker -> OTS -> firehose -> untrusted candidate -> operator approval
+            -> signed task -> Reticulum -> LoRa -> BLE -> phone -> accepted
+```
+
+The marker's point (40.9546015, 29.0922658) carried through to the task
+unchanged, while the instruction — "Investigate the marked contact" — came from
+the operator at approve time. The marker supplied a location; a person supplied
+the order. The candidate was consumed on approval, so rebroadcasting the same
+marker does not re-offer it.
+
+**Real ATAK traffic disproved three assumptions.** None of them would have
+surfaced against a synthetic publish, which is exactly why this gate existed.
+
+*The `t-` type filter matched nothing ATAK sends.* Dropping a marker emits an
+atom — `a-h-G` for a hostile, `a-n-G` for a neutral — and ATAK's marker UI never
+produces a `t-` event. The filter was a guess made before anyone here had seen
+ATAK on the wire. Both families are accepted now; the type was never what made
+a candidate safe, the explicit approval step is.
+
+*Auto-send makes one marker expensive.* With auto-send on, ATAK rebroadcast a
+single stationary marker every ten seconds at 724 bytes. On this fleet's LoRa
+that is 570 ms per transmission, **5.7% of the channel continuously, and 205
+seconds of airtime an hour, for one marker that never moves.** Three of them
+exceed 17% before anyone speaks. Keying candidates on the envelope hash also
+meant each repeat created a new candidate, filling the 128-slot inbox in about
+twenty minutes; candidates are now keyed on the marker's own UID and position,
+so repeats collapse and a genuine move earns a new candidate.
+
+*Position reports would have flooded it worse.* They are most of the firehose
+and every one moves. The discriminator is in the data and held across all 42
+events captured, ATAK's own PLI and this project's position gateway alike: a
+self-report carries the publishing EUD's UID as the event UID, an object placed
+on the map carries its own. Self-reports are skipped. Verified live — 45 seconds
+of pure position traffic produced no candidates at all.
+
+There is still no automatic signing, and no recipient is inferred: a broadcast
+marker carries no `marti/dest`, so there is nothing to infer from even if that
+were wanted.
+
 ### Still not accepted
-- A task authored by **actual ATAK** rather than by the CLI or a synthetic
-  firehose publish.
+
+Every merge gate is met. What remains is not a gate but an exercise: **LoRa at
+range and under load**. Everything above crossed a bench-distance hop carrying
+one task at a time. The two-Rev2 outdoor run is where airtime, range and
+contention get answered, and its figures are what the published budget rests on.
 
 ### LoRa path — 2026-09-10
 

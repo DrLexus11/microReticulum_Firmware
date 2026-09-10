@@ -74,7 +74,23 @@ def stage(db, envelope, now):
         raise ValueError("XML declarations/entities are not accepted")
     event = ET.fromstring(xml)
     cot_type = event.get("type", "")
-    if event.tag != "event" or not cot_type.startswith("t-"):
+    # `t-` was a guess at what ATAK tasking looks like, made before anyone here
+    # had seen real ATAK traffic. It does not: dropping a marker emits an atom,
+    # `a-h-G` for a hostile, and ATAK's marker UI never produces a `t-` event at
+    # all, so nothing would ever have been staged from it. Atoms carry the one
+    # thing a candidate needs, which is a point; the operator supplies the
+    # instruction at approve time and always did. Both families are accepted.
+    if event.tag != "event" or not cot_type.startswith(("t-", "a-")):
+        return None
+    # An EUD reporting where it is, is not a place to send somebody. Position
+    # reports are the overwhelming majority of the firehose and each one moves,
+    # so they would fill the inbox faster than the marker repeats did. The
+    # discriminator is in the data and held across every event captured on
+    # 2026-09-10: a self-report carries the publishing EUD's own UID as the
+    # event UID, while an object placed on the map carries its own. That is
+    # true of ATAK's PLI and of this project's own position gateway alike.
+    publisher = str(obj.get("uid", ""))
+    if publisher and event.get("uid", "") == publisher:
         return None
     point = event.find("point")
     if point is None:
@@ -87,7 +103,23 @@ def stage(db, envelope, now):
     targets = [dest.attrib for dest in event.findall("detail/marti/dest")]
     hints = {name: event.get(name, "")[:128] for name in ("uid", "time", "start", "stale")}
     hints["destinations"] = targets
-    key = hashlib.sha256(envelope).hexdigest()[:32]
+    # Who put it on the map, so an operator approving it can see whose marker
+    # they are turning into somebody's orders. A broadcast marker carries no
+    # marti/dest, so this is the only provenance available -- and it is a claim
+    # in the payload, not evidence, exactly like the UID.
+    for element, attribute in (("detail/creator", "callsign"), ("detail/contact", "callsign")):
+        node = event.find(element)
+        if node is not None and node.get(attribute):
+            hints.setdefault("claimed_origin", node.get(attribute)[:128])
+
+    # Keyed on the marker's identity and position, not on the envelope. ATAK
+    # re-sends a broadcast marker roughly every ten seconds with fresh
+    # timestamps, so an envelope hash made a new candidate on every repeat and
+    # filled the 128-slot inbox in about twenty minutes from one static marker.
+    # Position is in the key so that moving a marker offers a new candidate
+    # while leaving it still does not.
+    identity = "%s|%d|%d" % (event.get("uid", ""), round(lat * 1e7), round(lon * 1e7))
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
     with db:
         db.execute("DELETE FROM candidates WHERE created < ?", (now - 3600,))
         db.execute("DELETE FROM approved_imports WHERE expires <= ?", (now,))

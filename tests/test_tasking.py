@@ -94,6 +94,57 @@ class TaskTests(unittest.TestCase):
             self.assertEqual(gateway.stage(db, envelope, self.now), key)
             self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 1)
 
+    def test_atak_marker_stages_once_however_often_it_is_rebroadcast(self):
+        """Real ATAK traffic, captured 2026-09-10 from ATAK-CIV 5.6.0.12.
+
+        Dropping a marker emits an atom, not a `t-` tasking type, and with
+        auto-send on ATAK repeats it about every ten seconds with fresh
+        timestamps. Keying candidates on the envelope made a new one per repeat
+        and filled the inbox from a single stationary marker.
+        """
+        def marker(when, lat="40.9545566", lon="29.0945023"):
+            return json.dumps({"uid": "ANDROID-7819dadfcf858641", "cot":
+                '<event access="Undefined" how="h-g-i-g-o" type="a-h-G" version="2.0"'
+                ' uid="66d6de40-bd62-4a5e-92ef-d4ee14b0194a"'
+                ' time="%s" start="%s" stale="%s">'
+                '<point ce="9999999.0" hae="48.019" lat="%s" le="9999999.0" lon="%s"/>'
+                '<detail><status readiness="true"/><contact callsign="R.10.144053"/>'
+                '<creator callsign="LEXUS" type="a-f-G-U-C" uid="ANDROID-7819dadfcf858641"/>'
+                '<remarks/></detail></event>' % (when, when, when, lat, lon)}).encode()
+
+        with gateway.connect(self.path) as db:
+            key = gateway.stage(db, marker("2026-09-10T11:41:57.829Z"), self.now)
+            self.assertIsNotNone(key, "an ATAK marker must be offered as a candidate")
+
+            # Five auto-send repeats, each with different timestamps.
+            for second in (7, 17, 27, 34, 44):
+                repeat = marker("2026-09-10T11:42:%02d.000Z" % second)
+                self.assertEqual(gateway.stage(db, repeat, self.now + second), key)
+            self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 1)
+
+            # Moving it is a different proposition and earns its own candidate.
+            moved = gateway.stage(db, marker("2026-09-10T11:43:00.000Z", lat="40.9600000"), self.now)
+            self.assertNotEqual(moved, key)
+            self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 2)
+
+            # A PLI is the same EUD saying where it is, not a place to send
+            # anyone, and it moves constantly. Same envelope UID as event UID.
+            pli = json.dumps({"uid": "ANDROID-7819dadfcf858641", "cot":
+                '<event type="a-f-G-U-C" version="2.0" uid="ANDROID-7819dadfcf858641"'
+                ' time="2026-09-10T11:42:03Z" start="2026-09-10T11:42:03Z"'
+                ' stale="2026-09-10T11:42:51Z">'
+                '<point ce="44.0" hae="33.593" lat="40.954935" le="9999999.0" lon="29.093375"/>'
+                '<detail><contact callsign="LEXUS"/></detail></event>'}).encode()
+            self.assertIsNone(gateway.stage(db, pli, self.now),
+                              "a self-report must never become a candidate")
+            self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 2)
+
+            # Staging still never signs anything, whatever the type.
+            self.assertEqual(db.execute("SELECT count(*) FROM tasks").fetchone()[0], 0)
+            row = db.execute("SELECT cot_type, target_hint FROM candidates WHERE id=?", (key,)).fetchone()
+            self.assertEqual(row["cot_type"], "a-h-G")
+            self.assertEqual(json.loads(row["target_hint"])["claimed_origin"], "LEXUS")
+
     def test_rejects_xml_entities_and_invalid_points(self):
         for xml in ('<!DOCTYPE event [<!ENTITY x "boom">]><event/>',
                     '<event type="t-test"><point lat="nan" lon="0"/></event>'):
