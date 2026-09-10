@@ -271,6 +271,87 @@ Each of these is a PR, and each leaves something demonstrable behind.
 | **F** | Per-class radio routing | The research item above. Until it lands, tier 3 is manual. |
 | **V** | Voice | Measurement first; see the roadmap. Nothing about it is started. |
 
+## After C: the plugin, and what HaLow changes
+
+### The plugin is real, and C is the right gate
+
+By the end of C the protocol is settled — identity, group addressing, tier 2,
+and typed codecs for position, chat, markers and drawings. A plugin arriving
+then is a **UI and interception layer over a stable wire format**, which is a
+few weeks of work. A plugin arriving before it would be co-designing a protocol
+inside a version-locked, signature-locked toolchain, debugging both at once.
+
+The IPC it needs already exists and is already exercised in production:
+`IRnsCore` (47 methods), `IRnsLxmf`, `IRnsTelemetry`, `IRnsTelephony`,
+`IRnsTransportAdmin`, spoken across a real process boundary to `:reticulum`.
+Between today and a plugin binding it stand `exported="false"` and a permission.
+
+What it can offer that a localhost CoT socket structurally cannot:
+
+- **The mesh, as a map layer and a panel.** Peers, hop count, which radio, last
+  heard, whether the command post is reachable. CoT has no vocabulary for any
+  of it, so today it is invisible no matter how well the mesh is working.
+- **Direct messaging from inside ATAK**, over `IRnsLxmf` — store-and-forward,
+  receipts and propagation already built.
+- **Consent before airtime.** A drawing is seconds of a shared channel and a
+  data package is minutes. Across a socket we can only send or drop; in-process
+  we can ask, at the moment the operator commits.
+- **Interception before serialisation**, so CoT XML is never produced on the
+  phone at all.
+
+### RRC first needs Eridanus and Columba to be one app
+
+There is no RRC in Columba's AIDL surface today, and RRC lives in Eridanus as a
+separate application. A plugin cannot reach it without binding two apps, two
+RNS hosts and two identities — which is the arrangement the thin-plugin
+decision exists to avoid.
+
+So **merging Eridanus into Columba is a prerequisite for RRC in ATAK**, not a
+tidying exercise. It is what produces one RNS host, one identity, and an
+`IRnsRrc` alongside the interfaces above. Voice is the same shape and further
+along: `IRnsTelephony` already exists for LXST.
+
+### What HaLow changes, and what it does not
+
+Everything in tier 3 is bandwidth-bound, and the numbers are not close:
+
+| | LoRa SF7/BW250 | HaLow (802.11ah) |
+| --- | ---: | ---: |
+| Throughput | ~10.9 kbps | ~150 kbps to several Mbps |
+| 1 MB data package | **13.7 min** | seconds |
+| 200 KB QuickPic image | ~2.5 min | ~2 s |
+| Codec2 voice at 3.2 kbps | 29% of the channel | negligible |
+
+So the honest framing is that **tier 3 is designed now and becomes ordinary
+later**. Descriptors, thumbnails and fetch-on-demand are worth building against
+LoRa because they are what make an attachment *possible* there at all; on HaLow
+the same design simply stops hurting. Nothing about it needs redesigning when
+the bandwidth arrives — which is the test of whether the tiering was right.
+
+Voice is the one that changes category rather than degree. On LoRa it starves
+the position reports the map depends on; on HaLow it is unremarkable. It stays
+scheduled behind measurement either way.
+
+**One spec question to settle before the HAT is chosen.** If the HaLow module is
+the 863–868 MHz variant it shares the band with the fleet's LoRa radios, with a
+transmitter inches from a receiver and ETSI duty-cycle limits across both. That
+decision may pick the HAT, and it is cheaper to answer on paper than after a
+fabrication run.
+
+### Sequence
+
+| | | Depends on |
+| --- | --- | --- |
+| **G** | Merge Eridanus into Columba: one RNS host, one identity, `IRnsRrc` | nothing — can start whenever |
+| **H** | Export the RNS service behind a permission | G, so the surface is complete when it opens |
+| **I** | **Thin ATAK plugin**: mesh layer, peer panel, LXMF and RRC messaging, consent dialogs | C and H |
+| **J** | Tier 3 over HaLow: data packages, images at full size | D, and Vox hardware |
+| **V2** | Voice over HaLow | V1 measurement, G, and Vox hardware |
+
+G and H are software and gated on nothing but time. I is the payoff. J and V2
+wait on Vox, which is months out — but they wait on *hardware*, not on design,
+and that is the point of doing the tiering now.
+
 A is the large one and the one worth doing next: it is what turns a position
 demo into TAK.
 
