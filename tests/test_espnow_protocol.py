@@ -358,20 +358,11 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertIn("_recovery_fallback_valid = false",
                       start[:start.index("_recovery_scans++")])
 
-    def test_a_node_with_no_way_out_stops_relaying_while_it_has_a_parent(self):
-        # Every announce such a node repeats reaches the hub one hop longer
-        # than the copy the hub already heard directly. The moment the parent
-        # is lost this reverses and it is the only thing keeping neighbours
-        # reachable, so the policy is applied on both transitions.
+    def test_channel_recovery_does_not_override_transport_policy(self):
+        # A pinned node must still forward BLE clients, and an interface must
+        # not turn transport back on when the application selected host mode.
         iface = source(INTERFACE)
-        policy = iface[iface.index("void apply_relay_policy("):]
-        policy = policy[:policy.index("ESPNowDiscovery local_discovery()")]
-        self.assertIn("if (local_has_upstream()) return;", policy)
-        self.assertIn("const bool relay = (_recovery_state != RECOVERY_PINNED);",
-                      policy)
-        self.assertIn("RNS::Reticulum::transport_enabled(relay)", policy)
-        self.assertIn('apply_relay_policy("attached to a parent")', iface)
-        self.assertIn('apply_relay_policy("parent lost")', iface)
+        self.assertNotRegex(iface, r"transport_enabled\([^)]*[^\s)]\)")
 
     def test_upstream_claim_requires_a_route_that_is_not_esp_now(self):
         iface = source(INTERFACE)

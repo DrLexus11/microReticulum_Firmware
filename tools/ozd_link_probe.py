@@ -37,7 +37,13 @@ def main():
     if not RNS.Transport.has_path(dest_hash):
         print("[%6.2f] no path, requesting..." % 0.0)
         RNS.Transport.request_path(dest_hash)
+        last_request = time.monotonic()
         while not RNS.Transport.has_path(dest_hash):
+            # BLE connects asynchronously. The first request may have been
+            # sent before any interface was online; give it a bounded retry.
+            if time.monotonic() - last_request >= 10:
+                RNS.Transport.request_path(dest_hash)
+                last_request = time.monotonic()
             if time.time() - t0 > args.timeout:
                 print("[%6.2f] FAIL: path never resolved" % (time.time() - t0))
                 return 1

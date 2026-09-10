@@ -23,3 +23,9 @@ bench-runs/
 # Standalone bring-up sketches under tools/ are their own PlatformIO
 # projects; the root .pio/* rule does not reach their build output.
 tools/*/.pio/
+
+# An RNS tool run with the repo root as its config directory drops its
+# storage here. These are runtime state, never source.
+destination_table
+known_destinations
+packet_hashlist
