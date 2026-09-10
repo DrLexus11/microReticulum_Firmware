@@ -151,6 +151,62 @@ class TaskTests(unittest.TestCase):
             with gateway.connect(self.path) as db, self.assertRaises(ValueError):
                 gateway.stage(db, json.dumps({"cot": xml}).encode(), self.now)
 
+    def test_database_refuses_a_symlinked_path(self):
+        """--db is operator input, so a symlink there must not be followed.
+
+        Without O_NOFOLLOW the mode change and every SQLite write land on
+        whatever the link points at, which for a file holding signed tasks and
+        peer keys is somebody else's choice of destination.
+        """
+        target = os.path.join(self.directory.name, "elsewhere.db")
+        link = os.path.join(self.directory.name, "link.db")
+        os.symlink(target, link)
+        with self.assertRaises(OSError):
+            with gateway.connect(link):
+                pass
+        self.assertFalse(os.path.exists(target), "the link target must not be created")
+
+    def test_discovery_does_not_count_as_a_delivery_attempt(self):
+        """`attempts` counts transmissions, not deferrals while routing.
+
+        The serve loop claims a row with attempts+1 only when a path exists.
+        An operator reading "3 attempts" should know three packets went out.
+        """
+        task_id = self.make_task()
+        with gateway.connect(self.path) as db:
+            for routed, expected in ((False, 0), (False, 0), (True, 1), (True, 2)):
+                row = db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                with db:
+                    db.execute(
+                        "UPDATE tasks SET attempts=attempts+?,last_attempt=? "
+                        "WHERE id=? AND attempts=? AND last_attempt=? AND state='queued'",
+                        (1 if routed else 0, row["last_attempt"] + 60, task_id,
+                         row["attempts"], row["last_attempt"]))
+                self.assertEqual(
+                    db.execute("SELECT attempts FROM tasks WHERE id=?", (task_id,)).fetchone()[0],
+                    expected)
+            # Spacing still advanced on every pass, routed or not.
+            self.assertEqual(
+                db.execute("SELECT last_attempt FROM tasks WHERE id=?", (task_id,)).fetchone()[0],
+                240)
+
+    def test_signed_payload_with_invalid_utf8_is_rejected_as_a_value_error(self):
+        """Reviewer's concern, pinned down rather than assumed.
+
+        A *tampered* payload never reaches the decode -- the signature is
+        checked first. Only an authority signing malformed bytes can get there,
+        which this project's own encoder cannot do since body() encodes
+        strictly. If it happens, UnicodeDecodeError is a ValueError subclass, so
+        every caller's `except ValueError` already rejects it cleanly.
+        """
+        broken = codec.Message(codec.GOTO, self.authority.hash, self.task.recipient,
+                               bytes(range(16)), self.now, self.now + 900, 1, 2, "ok")
+        payload = codec.body(broken)
+        payload = payload[:-2] + b"\xff\xfe"  # invalid UTF-8 inside the instruction
+        wire = payload + self.authority.sign(codec.DOMAIN + payload)
+        with self.assertRaises(ValueError):
+            codec.verify(wire, self.authority, self.task.recipient, self.now)
+
     def make_task(self):
         with gateway.connect(self.path) as db:
             with db:

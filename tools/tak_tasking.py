@@ -12,6 +12,7 @@ import json
 import math
 import os
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -39,9 +40,19 @@ def connect(path):
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Create privately before SQLite opens it, including under permissive umask.
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
-    os.close(fd)
-    os.chmod(path, 0o600)
+    #
+    # O_NOFOLLOW and the regular-file check matter because --db is operator
+    # input: a symlink at that path would otherwise redirect both the mode
+    # change and every subsequent SQLite write to whatever it points at. The
+    # mode is set through the descriptor rather than the name, so nothing can
+    # be swapped in between opening the file and securing it.
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"Task database must be a regular file: {path}")
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
     db.executescript("""
@@ -265,14 +276,24 @@ def serve(args, identity):
                 rows = db.execute("SELECT * FROM tasks WHERE expires>? AND state='queued' AND last_attempt<=?",
                                   (now, now - RETRY_SECONDS)).fetchall()
                 for row in rows:
+                    # Discovery is not a delivery attempt. Testing for the path
+                    # before claiming the row keeps `attempts` a count of
+                    # transmissions, so an operator reading "3 attempts" knows
+                    # three packets went out rather than three deferrals while
+                    # waiting for a route. Either way last_attempt advances, so
+                    # the retry spacing still holds. This mirrors the responder,
+                    # which defers the same way.
+                    target = bytes(row["destination"])
+                    routed = RNS.Transport.has_path(target)
                     # Persist before sending so a process crash cannot reset the retry budget.
                     with db:
-                        claimed = db.execute("UPDATE tasks SET attempts=attempts+1,last_attempt=? WHERE id=? AND attempts=? AND last_attempt=? AND state='queued'",
-                                             (now, row["id"], row["attempts"], row["last_attempt"])).rowcount
+                        claimed = db.execute(
+                            "UPDATE tasks SET attempts=attempts+?,last_attempt=? "
+                            "WHERE id=? AND attempts=? AND last_attempt=? AND state='queued'",
+                            (1 if routed else 0, now, row["id"], row["attempts"], row["last_attempt"])).rowcount
                     if not claimed:
                         continue
-                    target = bytes(row["destination"])
-                    if not RNS.Transport.has_path(target):
+                    if not routed:
                         RNS.Transport.request_path(target)
                         error = "no path; requested discovery"
                     else:
