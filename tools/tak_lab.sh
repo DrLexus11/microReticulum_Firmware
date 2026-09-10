@@ -36,6 +36,9 @@ OTS_DIR="${OTS_DIR:-/home/deck/projects/OpenTAKServer}"
 RNS_PY="${RNS_PY:-/home/deck/.local/share/rnode-rns-venv/bin/python3}"
 RUN_DIR="${RUN_DIR:-$HOME/.impr-tak}"
 GATEWAY_IDENTITY="${GATEWAY_IDENTITY:-$HOME/.rns_cot_gateway_identity}"
+OTS_PATCHER="${OTS_PATCHER:-$HOME/bin/impr-tak-install-ots-patch}"
+SYSTEMD_TARGET="impr-tak.target"
+DOCKER="${DOCKER:-$HOME/bin/docker}"
 
 # OTS defaults, from opentakserver/defaultconfig.py. Its CoT input is UDP,
 # which is what the gateway forwards to; EUDs get the TCP port.
@@ -73,20 +76,22 @@ port_busy() { ss -ltnu 2>/dev/null | grep -q ":$1 "; }
 
 start_rabbit() {
     if port_busy 5672; then
+        "$DOCKER" update --restart unless-stopped "$RABBIT_CONTAINER" >/dev/null 2>&1 || true
         say "rabbitmq: already listening on 5672"
         return 0
     fi
-    if ! command -v docker >/dev/null; then
-        fail "rabbitmq needs docker, which is not on PATH"
+    if [ ! -x "$DOCKER" ]; then
+        fail "rabbitmq needs docker at $DOCKER"
         return 1
     fi
-    if docker ps -a --format '{{.Names}}' | grep -qx "$RABBIT_CONTAINER"; then
-        docker start "$RABBIT_CONTAINER" >/dev/null && say "rabbitmq: container restarted"
+    if "$DOCKER" ps -a --format '{{.Names}}' | grep -qx "$RABBIT_CONTAINER"; then
+        "$DOCKER" start "$RABBIT_CONTAINER" >/dev/null && say "rabbitmq: container restarted"
     else
-        docker run -d --name "$RABBIT_CONTAINER" \
+        "$DOCKER" run -d --name "$RABBIT_CONTAINER" \
             -p 5672:5672 -p 15672:15672 rabbitmq:3-management >/dev/null \
             && say "rabbitmq: container created"
     fi
+    "$DOCKER" update --restart unless-stopped "$RABBIT_CONTAINER" >/dev/null 2>&1 || true
     # It takes a few seconds to accept connections, and OTS exits rather than
     # waits if it cannot reach the broker.
     for _ in $(seq 1 30); do
@@ -111,27 +116,29 @@ ots_db_password() {
 
 start_postgres() {
     local pw; pw=$(ots_db_password)
-    if docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+    if "$DOCKER" ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+        "$DOCKER" update --restart unless-stopped "$PG_CONTAINER" >/dev/null 2>&1 || true
         say "postgres: already running on $PG_PORT"
         return 0
     fi
-    if docker ps -a --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
-        docker start "$PG_CONTAINER" >/dev/null && say "postgres: container restarted"
+    if "$DOCKER" ps -a --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+        "$DOCKER" start "$PG_CONTAINER" >/dev/null && say "postgres: container restarted"
     else
-        docker run -d --name "$PG_CONTAINER" \
+        "$DOCKER" run -d --name "$PG_CONTAINER" \
             -e POSTGRES_USER=ots -e POSTGRES_PASSWORD="$pw" -e POSTGRES_DB=ots \
             -p "$PG_PORT:5432" "$PG_IMAGE" >/dev/null \
             && say "postgres: container created on $PG_PORT ($PG_IMAGE)"
     fi
+    "$DOCKER" update --restart unless-stopped "$PG_CONTAINER" >/dev/null 2>&1 || true
     for _ in $(seq 1 40); do
         # Both, and in this order. pg_isready runs inside the container and
         # says nothing about the published port, which comes up later -- OTS
         # connects from the host and got "connection refused" on a database
         # this loop had already declared ready.
-        if port_busy "$PG_PORT" && docker exec "$PG_CONTAINER" pg_isready -U ots -q 2>/dev/null; then
+        if port_busy "$PG_PORT" && "$DOCKER" exec "$PG_CONTAINER" pg_isready -U ots -q 2>/dev/null; then
             # The image ships PostGIS but does not enable it in an existing
             # database. Idempotent, and cheap enough to assert every start.
-            docker exec "$PG_CONTAINER" psql -U ots -d ots -q \
+            "$DOCKER" exec "$PG_CONTAINER" psql -U ots -d ots -q \
                 -c "CREATE EXTENSION IF NOT EXISTS postgis;" >/dev/null 2>&1 \
                 && say "postgres: ready, postgis enabled" \
                 || warn "postgres is up but PostGIS could not be enabled"
@@ -155,7 +162,7 @@ fix_ots_config() {
     fi
     # Written by python rather than sed: the password is base64 and may contain
     # characters sed would treat as delimiters or backreferences.
-    WANT="$want" CFG="$cfg" python3 - <<'PYEOF'
+    WANT="$want" CFG="$cfg" /usr/bin/python3 - <<'PYEOF'
 import os, re
 cfg, want = os.environ["CFG"], os.environ["WANT"]
 with open(cfg, encoding="utf-8") as handle:
@@ -176,7 +183,7 @@ fix_ots_listen_address() {
     [ -f "$cfg" ] || return 0
     [ "${OTS_BIND_ALL:-1}" = "1" ] || return 0
     grep -q "^OTS_LISTENER_ADDRESS: 0.0.0.0$" "$cfg" && return 0
-    CFG="$cfg" python3 - <<'PYEOF'
+    CFG="$cfg" /usr/bin/python3 - <<'PYEOF'
 import os, re
 cfg = os.environ["CFG"]
 with open(cfg, encoding="utf-8") as handle:
@@ -187,6 +194,19 @@ with open(cfg, "w", encoding="utf-8") as handle:
     handle.write(text)
 PYEOF
     say "opentakserver: listening on all interfaces (OTS_BIND_ALL=0 to keep loopback)"
+}
+
+apply_ots_patch() {
+    [ -x "$OTS_PATCHER" ] || { fail "OpenTAK patch installer missing: $OTS_PATCHER"; return 1; }
+    "$OTS_PATCHER"
+}
+
+cmd_prepare() {
+    start_rabbit || return 1
+    start_postgres || return 1
+    fix_ots_config
+    fix_ots_listen_address
+    apply_ots_patch
 }
 
 # The two helper daemons. Failing to start either is worth saying out loud
@@ -279,6 +299,12 @@ cmd_start() {
     local mode=full
     [ "${1:-}" = "--simple" ] && mode=simple
 
+    if [ "$mode" = full ] && systemctl --user cat "$SYSTEMD_TARGET" >/dev/null 2>&1; then
+        systemctl --user start "$SYSTEMD_TARGET"
+        cmd_status
+        return
+    fi
+
     if [ "$mode" = full ]; then
         start_rabbit || return 1
         start_postgres || return 1
@@ -318,6 +344,9 @@ cmd_status() {
 }
 
 cmd_stop() {
+    if systemctl --user cat "$SYSTEMD_TARGET" >/dev/null 2>&1; then
+        systemctl --user stop "$SYSTEMD_TARGET"
+    fi
     local pid
     pid=$(pid_of "$REPO/tools/cot_gateway.py") && [ -n "$pid" ] && kill "$pid" && say "gateway stopped"
     for b in "$OTS_EUD_BIN" "$OTS_COT_BIN" "$OTS_BIN"; do
@@ -325,12 +354,13 @@ cmd_stop() {
     done
     # RabbitMQ is left running: it is a container, it costs little, and OTS is
     # slow to start without a warm broker.
-    say "rabbitmq left running (docker stop $RABBIT_CONTAINER to remove it)"
+    say "rabbitmq left running ($DOCKER stop $RABBIT_CONTAINER to remove it)"
 }
 
 case "${1:-start}" in
     start)  shift || true; cmd_start "${1:-}" ;;
+    prepare) cmd_prepare ;;
     status) cmd_status ;;
     stop)   cmd_stop ;;
-    *)      echo "usage: impr-tak {start [--simple]|status|stop}" >&2; exit 2 ;;
+    *)      echo "usage: impr-tak {start [--simple]|prepare|status|stop}" >&2; exit 2 ;;
 esac
