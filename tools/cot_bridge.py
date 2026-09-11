@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Run a local CoT endpoint: ATAK on 127.0.0.1, a team on the mesh.
 
-    TAK_FLEET_SECRET=... tools/cot_bridge.py --team Cyan
+    tools/cot_bridge.py --team Cyan --config ~/.impr-tak/bridge-rns
+
+The bridge owns its own Reticulum instance and refuses to run as a client of a
+shared one; see tools/cot_bridge.example.conf for the configuration and the
+reason. The fleet secret comes from the environment or ~/.impr-tak/fleet-secret,
+never from the command line.
 
 ATAK connects to 127.0.0.1:8087 and never to anybody's address. Everything it
 sends goes to the team's GROUP destination; everything the team sends is
@@ -70,7 +75,12 @@ class CotBridge:
         self.port = port
         self.clients = []
         self.clients_lock = threading.Lock()
-        self.sent = self.received = self.dropped = 0
+        self.sent = self.received = 0
+        # Two separate counts. They mean different things: one is a
+        # frame off the mesh this build cannot read, which is ordinary
+        # on a shared destination; the other is an event ATAK sent that
+        # we refused. Collapsing them hides whichever is smaller.
+        self.unreadable = 0
 
         # A GROUP destination is symmetric -- every member both speaks and
         # listens on it, and command is a member rather than a hop -- but RNS
@@ -97,7 +107,7 @@ class CotBridge:
         except ValueError:
             # A frame we cannot read is ordinary on a shared destination: an
             # older node, a newer dictionary, or simply not ours.
-            self.dropped += 1
+            self.unreadable += 1
             return
         self._to_clients(xml.encode("utf-8"))
         self.received += 1
@@ -122,7 +132,9 @@ class CotBridge:
             print("[bridge] this ATAK calls itself %s; peers will see %s"
                   % (self.pipeline.atak_uid, self.uid), flush=True)
         if frame is None:
-            self.dropped = self.pipeline.dropped
+            # The pipeline keeps its own refusal count; reading it here rather
+            # than assigning it into a shared one, which silently discarded
+            # every mesh-side drop recorded above.
             return
         self.rns.Packet(self.out, frame).send()
         self.sent += 1
@@ -199,8 +211,9 @@ def main():
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
-        print("\n[bridge] sent %d, received %d, dropped %d"
-              % (bridge.sent, bridge.received, bridge.dropped), flush=True)
+        print("\n[bridge] sent %d, received %d, unreadable %d, refused %d"
+              % (bridge.sent, bridge.received, bridge.unreadable,
+                 bridge.pipeline.dropped), flush=True)
 
 
 if __name__ == "__main__":

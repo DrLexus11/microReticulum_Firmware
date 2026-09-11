@@ -446,6 +446,16 @@ agreement between implementations; they cannot pin agreement with the intent.
   yet drawn one of these markers.
 - Airtime. The path was TCP over Wi-Fi, so nothing here measures what a marker
   costs on LoRa or HaLow.
+- **Reaching a peer by its UID.** The UID now decodes to a real `SINGLE`
+  destination that the node answers on, which is what pivot 1 asked for -- but
+  neither end announces that destination yet, so no peer has a path to it and
+  nothing can actually be sent there. The UID is derivable and correct; it is
+  not yet useful. `announce_payload` / `announcePayload` exist and are tested
+  on both sides with no caller, waiting for this.
+
+  Left out of A deliberately: an announce needs a callsign to carry, which
+  means a setting on both ends, and addressing individual peers is what B and E
+  are for. Worth knowing before reading the UID work as finished.
 
 ## After C: the plugin, and what HaLow changes
 
