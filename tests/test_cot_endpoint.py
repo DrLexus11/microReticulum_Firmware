@@ -75,6 +75,21 @@ class EchoTests(unittest.TestCase):
         self.assertFalse(is_self_addressed(A, ""))
         self.assertFalse(is_self_addressed(A, None))
 
+    def test_an_angle_bracket_in_an_earlier_attribute_does_not_hide_the_uid(self):
+        """A closing angle bracket is legal unescaped in an XML attribute
+        value. A scan that stopped at the first one would miss the uid and
+        forward our own event straight back into the mesh."""
+        ours = "urtn-" + "ab" * 16
+        awkward = ('<event how="a>b" uid="%s" type="a-f-G-U-C"><detail/></event>' % ours)
+        self.assertTrue(is_self_addressed(awkward.encode("utf-8"), ours))
+
+    def test_an_attribute_whose_name_ends_in_uid_is_not_the_uid(self):
+        """A substring check would read somebody else's event as our own and
+        quietly stop forwarding it."""
+        ours = "urtn-" + "ab" * 16
+        nested = ('<event parent_uid="%s" uid="other" type="a-f-G"><detail/></event>' % ours)
+        self.assertFalse(is_self_addressed(nested.encode("utf-8"), ours))
+
 
 
 

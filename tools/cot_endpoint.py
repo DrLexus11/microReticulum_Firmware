@@ -83,11 +83,59 @@ def is_self_addressed(cot_xml, own_uid):
     """
     if not own_uid:
         return False
-    needle = ('uid="%s"' % own_uid).encode("utf-8")
-    if isinstance(cot_xml, str):
-        cot_xml = cot_xml.encode("utf-8")
-    head = cot_xml[:cot_xml.find(b">") + 1] if b">" in cot_xml else cot_xml
-    return needle in head
+    if isinstance(cot_xml, (bytes, bytearray)):
+        cot_xml = bytes(cot_xml).decode("utf-8", errors="replace")
+    end = _start_tag_end(cot_xml)
+    head = cot_xml if end < 0 else cot_xml[:end]
+    span = _attribute_value_span(head, "uid")
+    if span is None:
+        return False
+    return head[span[0]:span[1]] == own_uid
+
+
+def _start_tag_end(xml):
+    """Index of the character closing the root start tag, or -1.
+
+    Quote-aware, because a closing angle bracket is legal unescaped inside an
+    XML attribute value. Stopping at the first one would cut the tag short and
+    lose the uid attribute -- and losing it in is_self_addressed() means
+    forwarding our own event, which is the loop that check exists to prevent.
+    """
+    quote = ""
+    for index, character in enumerate(xml):
+        if quote:
+            if character == quote:
+                quote = ""
+        elif character in "\"'":
+            quote = character
+        elif character == ">":
+            return index
+    return -1
+
+
+def _attribute_value_span(start_tag, name):
+    """Half-open span of the named attribute's *value* within a start tag.
+
+    The name is matched as a whole token, so a parent_uid attribute is not
+    mistaken for uid -- a substring check would read somebody else's event as
+    our own and stop us forwarding it.
+    """
+    index = start_tag.find(name)
+    while index >= 0:
+        before = " " if index == 0 else start_tag[index - 1]
+        after = index + len(name)
+        while after < len(start_tag) and start_tag[after].isspace():
+            after += 1
+        if before.isspace() and after < len(start_tag) and start_tag[after] == "=":
+            value = after + 1
+            while value < len(start_tag) and start_tag[value].isspace():
+                value += 1
+            if value < len(start_tag) and start_tag[value] in "\"'":
+                close = start_tag.find(start_tag[value], value + 1)
+                if close > 0:
+                    return value + 1, close
+        index = start_tag.find(name, index + 1)
+    return None
 
 
 def _parse(cot_xml):
