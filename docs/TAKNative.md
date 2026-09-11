@@ -457,6 +457,64 @@ agreement between implementations; they cannot pin agreement with the intent.
   means a setting on both ends, and addressing individual peers is what B and E
   are for. Worth knowing before reading the UID work as finished.
 
+## Acceptance record -- PR B, 2026-09-11
+
+Membership replaces the group address, and position leaves the tier 2 path.
+Verified deck-to-deck between two bridges on separate Reticulum instances, and
+then deck-to-phone with Columba on the same team.
+
+### Mutual discovery
+
+```
+phone : Team member ALPHA is urtn-45a0122763d01e4bc3f6fca2d59073db
+ALPHA : team member COLUMBA is urtn-da4d8be3a2260eb1e6ca927bd7da293a
+```
+
+Neither was configured with the other. Each announces its own node destination
+carrying an HMAC of the team, and each recognised the other's.
+
+### Traffic, both directions
+
+| | Sent | Arrived as |
+| --- | --- | --- |
+| Deck marker -> phone | `a-h-G`, uid `deck-marker-1` | same uid, `40.9601, 29.1002` |
+| Phone position -> deck | `a-f-G-U-C`, uid `ANDROID-PHONE` | uid `urtn-da4d8be3…`, `40.9549, 29.0934` |
+| Phone position -> deck | second report | uid `urtn-da4d8be3…`, `40.9750000, 29.1150000` |
+
+The third row is the one worth reading closely. `40.9549` is ATAK's own string,
+carried through tier 2 as CoT; `40.9750000` is seven-decimal reconstruction from
+the twenty-one byte codec. The first position went as CoT because the endpoint
+had not yet learned the ATAK UID, and the second took the typed path -- so the
+routing decision is visible in the output rather than asserted.
+
+A marker keeps its own UID and a self-report gets the node's, which is pivot 1
+holding across a real exchange.
+
+### What this run does not establish
+
+- **Airtime.** The path was TCP over Wi-Fi. The 85%-against-32% figures that
+  justify the typed codec are computed from the firmware's model, not measured
+  on a radio.
+- **More than one hop.** Both topologies were one hop by construction. Multi-hop
+  is the whole reason for pivot 5 and is still untested end to end.
+- **A real ATAK.** The harness speaks the same socket, and the events come from
+  a real ATAK capture, but no map has drawn one of these.
+- **Chat and receipts.** 10 of the 853 observed events still have no typed
+  codec and fall through to tier 2.
+
+### Two things found while running it
+
+The backends drop announces whose aspect they do not recognise, and neither knew
+the TAK node aspect. Team announces would have been discarded before reaching
+the app, and a team would never have discovered itself with nothing logged to
+say why. The two aspect lists -- Kotlin and Python -- were "kept in sync by
+hand"; there is now a test that reads both.
+
+A bridge started under `nohup` does not print its closing counters on SIGINT, so
+the send/receive/suppressed figures are only available from a foreground run.
+Not fixed; recorded so the next person does not read an empty summary as zero
+traffic.
+
 ## After C: the plugin, and what HaLow changes
 
 ### The plugin is real, and C is the right gate
