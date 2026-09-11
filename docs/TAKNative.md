@@ -114,7 +114,31 @@ buys nothing to make delivery reliable. Typed binary. This is what the existing
 **Tier 2, must arrive.** Chat, markers, drawings, tasks, mission changes. LXMF,
 which already has receipts, propagation nodes and store-and-forward -- exactly
 the semantics ATAK's own delivery receipts are asking for, and the reason not
-to rebuild them. Typed codec where we have one, gzipped CoT where we do not.
+to rebuild them. Typed codec where we have one, dictionary-compressed CoT where
+we do not.
+
+**Tier 2 has an addressed half and a broadcast half, and only one of them can
+keep the promise.** LXMF delivers to a single destination that has an identity;
+there is no LXMF message to a `GROUP`. So tier 2 splits:
+
+| | Carrier | Guarantee |
+| --- | --- | --- |
+| Addressed -- tasking to command, direct chat | LXMF | Receipts, retry, store-and-forward |
+| Team broadcast -- a marker dropped for everyone | `Packet` on the group destination | Best effort, and that is all |
+
+This is a property of broadcast rather than a shortcut. A group has no member
+list to retry against and no receipt to wait for; reliable multicast over a
+partitionable mesh means either an acknowledgement from every member -- which
+requires knowing who they are, which a key-derived group deliberately does not
+-- or repetition, which spends airtime on the assumption that someone missed it.
+
+What it means in practice: **a marker broadcast to the team can be lost, and
+nothing will say so.** Tolerable indoors and for the exercise, where a second
+marker costs a gesture. Not tolerable for tasking, which is why tasking is
+addressed LXMF with the acceptance record behind it and is not on this path at
+all. If broadcast markers need to arrive, the honest options are an
+application-level repeat with a sequence number, or sending to known members
+individually -- both are real work and neither is in A.
 
 **Tier 3, bulk.** QuickPic images, data packages, drawings past the MTU. Do not
 push these. Send a **descriptor** -- uid, name, mime, size, content hash, and a
@@ -301,7 +325,7 @@ Each of these is a PR, and each leaves something demonstrable behind.
 
 | | | Unlocks |
 | --- | --- | --- |
-| **A** | Local CoT endpoint on both ends; group destinations; tier 2 as gzipped CoT over LXMF | **The indoor test.** Chat, markers and drawings both ways, no server address typed anywhere. Every CoT type works, none of them cheaply. |
+| **A** | Local CoT endpoint on both ends; group destinations; dictionary-compressed CoT broadcast on the group | **The indoor test.** Chat, markers and drawings both ways, no server address typed anywhere. Every CoT type works, none of them cheaply. |
 | **B** | Typed codecs: position, chat and receipts, point markers | 850 of the 853 observed events. Makes A affordable on LoRa. |
 | **C** | Drawings: typed geometry codec, and tier 2 spill to `Resource` past the MTU | **The outdoor minimal test** passes here. |
 | **D** | Tier 3: descriptors, thumbnails, fetch-on-demand, cost consent | QuickPic and data packages. |
