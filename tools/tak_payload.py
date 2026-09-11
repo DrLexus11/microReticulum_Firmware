@@ -18,6 +18,7 @@ coordinates, and a marker lands somewhere nobody put it.
 COT_TIER2 = 1
 POSITION_V2 = 2
 CHAT_V1 = 3
+MARKER_V1 = 4
 
 # Every kind that may appear as byte zero, and what produced it. A reader that
 # does not recognise a kind should drop the frame rather than guess: a peer
@@ -26,6 +27,7 @@ KINDS = {
     COT_TIER2: "cot-tier2",
     POSITION_V2: "position-v2",
     CHAT_V1: "chat-v1",
+    MARKER_V1: "marker-v1",
 }
 
 
