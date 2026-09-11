@@ -1,0 +1,23 @@
+{
+  "note": "Cross-implementation vectors. The DICTIONARY must be byte-identical on both sides or nothing decompresses. The tier2 FRAME must not be asserted byte-for-byte: Java's Deflater and zlib may emit different, equally valid deflate streams. What is required is that each side decodes the other's frame back to the same CoT.",
+  "tier2": {
+    "dictionary_sha256": "1c4c802e4e56ea00b1ef50265ae1c8f5a6f6fa6d6daf218bbef16db17924af7e",
+    "dictionary_length": 1459,
+    "cot": "<event uid=\"ANDROID-7819dadfcf858641\" type=\"a-f-G-U-C\" how=\"m-g\" version=\"2.0\"><point lat=\"40.9549\" lon=\"29.0934\" hae=\"33.5\" ce=\"44.0\" le=\"9999999.0\"/><detail><takv device=\"SAMSUNG SM-A546E\" os=\"36\" platform=\"ATAK-CIV\" version=\"5.6\"/><contact callsign=\"LEXUS\" endpoint=\"*:-1:stcp\"/><__group name=\"Cyan\" role=\"Team Member\"/></detail></event>",
+    "frame": "0101832622b0bca39f4b90bfa78baeb985a1654a624a5a729a85a985998921cc1878fe83a61e6009a3849afc50929389819ea5a9892534551901138da5b1093471191beb994212988909deb485127dc18ebec1a17eee0ac1beba8ea62666ae90e834362310a1a67a66e070c248a63eae11a1c05406ab656c95b4ac740dad8a4b920b301330a8ccc29188d1c31400"
+  },
+  "identity": {
+    "destination_hash": "000102030405060708090a0b0c0d0e0f",
+    "uid": "urtn-000102030405060708090a0b0c0d0e0f",
+    "announce": "010a045241442d4245313342334379616e5465616d204d656d626572"
+  },
+  "groups": {
+    "secret": "a fleet secret long enough to pass",
+    "team": "Cyan",
+    "normalised": "cyan",
+    "group_key": "dd8166334126c4f4636259ed6da590326fcf89ad27e52e42221b342cd537fa44831750106a5e92c975f75f335d16261a18dafca1786d8ad1220190310e9ba9a7",
+    "identity_key": "1c640d22658bf1a9329bc93f7df3450b88fc98cc8728bbda552c42b7eaf92a1babe9019de90531f73dd7dd338a27076f4289c5f8b3cc5d1ad945007be0f919ee",
+    "aspect": "1679e76b5d19c38d7eb2f36cdc545d7c",
+    "destination_hash": "65985cd6f565b5c40638d94c6b955281"
+  }
+}

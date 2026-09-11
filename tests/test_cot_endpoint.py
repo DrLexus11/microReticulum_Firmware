@@ -76,8 +76,6 @@ class EchoTests(unittest.TestCase):
         self.assertFalse(is_self_addressed(A, None))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 PLI = ('<event uid="ANDROID-7819dadfcf858641" type="a-f-G-U-C" how="m-g" version="2.0">'
@@ -137,3 +135,5 @@ class LearnUidTests(unittest.TestCase):
         for bad in (b"", b"<event", b"not xml at all", b"<other/>",
                     b'<!DOCTYPE event [<!ENTITY x "boom">]><event uid="a"/>'):
             self.assertIsNone(learn_atak_uid(bad), repr(bad))
+if __name__ == "__main__":
+    unittest.main()

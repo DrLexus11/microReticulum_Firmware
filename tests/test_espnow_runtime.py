@@ -24,3 +24,7 @@ class ESPNowRuntimeTests(unittest.TestCase):
             result = subprocess.run([binary], capture_output=True,
                                     text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
