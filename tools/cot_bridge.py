@@ -16,7 +16,7 @@ written back to every connected client. See docs/TAKNative.md.
 import argparse
 import os
 import struct
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import socket
 import stat
 import sys
@@ -30,6 +30,7 @@ import tak_groups as groups
 import tak_identity as tak_identity
 import cot_chat
 import cot_gateway
+import cot_marker
 import cot_position
 import position_codec
 import tak_membership as membership
@@ -187,6 +188,13 @@ class CotBridge:
         self.sender_id = self.registry.sender_id_for(self.node.hash)
         self.positions_sent = self.positions_received = 0
         self.chat_sent = self.chat_received = 0
+        self.markers_sent = self.markers_received = 0
+        # SPI is tier 1 by the classification in TAKNative.md -- a pointer
+        # ATAK drags across the map, 121 of the 853 captured events, and
+        # latest-wins. Gated like position, and for the same reason: the
+        # codec makes each one cheap, the gate is what makes the stream of
+        # them affordable.
+        self.spi_gate = cot_position.PositionGate(interval_seconds=5)
 
     # ---- membership ----
     def announce(self):
@@ -241,6 +249,9 @@ class CotBridge:
         elif kind == tak_payload.CHAT_V1:
             if self._chat_from_mesh(raw):
                 return
+        elif kind == tak_payload.MARKER_V1:
+            if self._marker_from_mesh(raw):
+                return
         try:
             xml = tier2.decode(raw)
         except ValueError:
@@ -250,6 +261,28 @@ class CotBridge:
             return
         self._to_clients(xml.encode("utf-8"))
         self.received += 1
+
+    def _marker_from_mesh(self, raw):
+        """Render a peer's marker as CoT for the local ATAK."""
+        decoded = cot_marker.decode(raw)
+        if decoded is None:
+            return False
+        sender = self.registry.resolve_sender_id(decoded["sender_id"])
+        if sender is None:
+            # A marker from a node this team has never heard announce. Drawing
+            # it under an invented identity would put an object on the map that
+            # nobody can be asked about.
+            self.unreadable += 1
+            return True
+        claims = self.registry.describe(sender) or {}
+        now = datetime.now(timezone.utc)
+        self._to_clients(cot_marker.build_marker_cot(
+            decoded, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
+            cot_gateway.cot_time(now),
+            cot_gateway.cot_time(now + timedelta(seconds=decoded["stale_seconds"]))
+        ).encode("utf-8"))
+        self.markers_received += 1
+        return True
 
     def _chat_from_mesh(self, raw):
         """Render a peer's chat line or receipt as CoT for the local ATAK."""
@@ -332,6 +365,8 @@ class CotBridge:
                 return
             if self._chat_from_atak(xml):
                 return
+            if self._marker_from_atak(xml):
+                return
         known = self.pipeline.atak_uid
         frame = self.pipeline.frame(xml, tier2.encode)
         if known is None and self.pipeline.atak_uid:
@@ -373,6 +408,27 @@ class CotBridge:
         if frame is None:
             return False
         self.chat_sent += self._fan_out(frame)
+        return True
+
+    def _marker_from_atak(self, xml):
+        """Send a point marker as tens of bytes, if it is one.
+
+        SPI passes through a cadence gate first. It is a pointer being dragged
+        across a map, so most of what ATAK emits is a position it has already
+        superseded, and sending every one would spend the channel on a cursor.
+        """
+        frame = cot_marker.marker_from_cot(xml, self.sender_id)
+        if frame is None:
+            return False
+        decoded = cot_marker.decode(frame)
+        if decoded and decoded["type"] == cot_marker.SPI_TYPE:
+            fix = position_codec.PositionFix(lat_e7=decoded["lat_e7"],
+                                             lon_e7=decoded["lon_e7"])
+            if not self.spi_gate.allows(fix, time.time()):
+                # Handled: suppressed rather than passed on to tier 2, which
+                # would spend more airtime than the codec just saved.
+                return True
+        self.markers_sent += self._fan_out(frame)
         return True
 
     def _fan_out(self, frame):
@@ -496,12 +552,15 @@ def main():
         bridge.serve_forever()
     except KeyboardInterrupt:
         print("\n[bridge] sent %d, received %d, positions %d/%d, chat %d/%d, "
-              "unreadable %d, refused %d, unreachable %d, suppressed %d, members %d"
+              "markers %d/%d, unreadable %d, refused %d, unreachable %d, "
+              "suppressed %d/%d, members %d"
               % (bridge.sent, bridge.received,
                  bridge.positions_sent, bridge.positions_received,
                  bridge.chat_sent, bridge.chat_received,
+                 bridge.markers_sent, bridge.markers_received,
                  bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
-                 bridge.position_gate.suppressed, len(bridge.registry)), flush=True)
+                 bridge.position_gate.suppressed, bridge.spi_gate.suppressed,
+                 len(bridge.registry)), flush=True)
 
 
 if __name__ == "__main__":
