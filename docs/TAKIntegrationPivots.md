@@ -145,6 +145,88 @@ broadcast to a team needs no new format.
 **Why now.** The task wire format is v1 and unshipped. A destination-kind byte
 costs one byte today and a version bump plus dual-path verification later.
 
+### Pivot 5 — the team is a membership set, not an address
+
+Measured 2026-09-11, and it invalidates the transport Decision 3 assumed: **a
+`GROUP` destination reaches only peers on the same interface as the sender.**
+Both implementations exclude `GROUP` from path-table routing by name, so a
+group packet never carries transport headers, nothing relays it, and both drop
+it above one hop. Details and the bench table are in `TAKNative.md`.
+
+The consequence is not "groups do not cross a radio". It is that **any**
+intermediary spends the single hop -- including a shared Reticulum instance on
+the same machine, which is how this was found. The intended field topology
+(phone, RAD, HaLow, RAD, phone) is four hops. Two phones through one RAD is
+two. Neither carries group traffic at all.
+
+#### The two ways out, costed
+
+A tier 2 marker is a 128-byte frame, 168 bytes on air with Reticulum framing,
+**132 ms** per transmission at SF7/BW250. Flooding costs one transmission per
+node; addressed fan-out costs one routed unicast per peer, each traversing
+every hop of its path:
+
+| Team | Flood | Addressed fan-out |
+| --- | --- | --- |
+| 2 nodes, 2 hops | 263 ms | 263 ms |
+| 4 nodes, 3 hops | 526 ms | 1 184 ms |
+| 6 nodes, 4 hops | 789 ms | 2 631 ms |
+| 10 nodes, 4 hops | 1 316 ms | 4 736 ms |
+
+Flooding is three to four times cheaper on LoRa, and that is a real argument,
+not a rounding error. On HaLow the same 10-node marker is 90 ms flooded against
+323 ms addressed, and the question stops mattering.
+
+#### Recommendation: addressed fan-out
+
+Four reasons, in the order they actually weigh:
+
+**Flooding cannot be made reliable; addressed can be made cheaper.** Tier 2
+promised must-arrive. A flood is best effort with wider reach -- it does not
+acquire receipts or retry by spreading further. Addressed delivery starts
+reliable and can be optimised later (batching, suppressing peers that already
+acknowledged). The migration runs the right way only one of these two ways.
+
+**The deck is upstream RNS and always will be.** Flooding works only where our
+firmware is the relay. Put the deck in the middle of a path -- which is what a
+command post *is* -- and group traffic silently dies again, at precisely the
+seam that already cost an afternoon. A design whose correctness depends on
+which implementation happens to be in the middle is a design that fails
+quietly, in the field, once.
+
+**The airtime gap is paid on the rare thing.** A marker is an operator action,
+not a beacon. Five seconds of channel for a hostile marker reaching ten people
+is affordable. What is *not* affordable is fanning out position: 20 bytes plus
+framing is ~60 ms, and ten nodes reporting once a minute at four hops would be
+37 % of the channel. So position does not fan out -- it stays gateway-bound or
+one-hop, exactly where it already is. The tiering in `TAKNative.md` already
+says this; the hop limit just makes it binding.
+
+**We need announces anyway.** The UID from pivot 1 decodes to a real
+destination that nothing announces, so no peer has a path to it. The membership
+list that fan-out needs and the announce that makes pivot 1 true are the same
+piece of work.
+
+#### What it changes
+
+The team stops being an address and becomes a membership set: the fleet secret
+still gates who can find and decrypt a team's traffic, but delivery is to each
+member's `SINGLE` destination, which routes. The `GROUP` destination becomes
+vestigial as a transport and should be retired rather than left as a trap that
+works on the bench and not in the field.
+
+**Why now.** Before PR B. Markers and peer position are the first things built
+on this, and building them on a broadcast that cannot leave the room means
+writing them twice.
+
+#### The honest counter-case
+
+If the exercise is LoRa-only and teams grow past six, flooding's advantage
+compounds and this recommendation gets expensive. It still does not become
+reliable -- so the answer there is flooding *plus* addressed retry for what
+matters, which is more machinery than either option alone, not less. Worth
+revisiting only with a measured team size and a LoRa-only decision.
+
 ### Pivot 4 — let the RAD say what it can see
 
 A RAD knows its ESP-NOW peers, its LoRa neighbours and its link quality, and
@@ -156,6 +238,10 @@ pages mechanism.
 tree; a separate excavation once it is cold.
 
 ### The counter-argument
+
+Pivot 5 is the expensive one and the only one already forced: the measurement
+is not a judgement call, and PR A ships a transport that works at one hop and
+nowhere else.
 
 Pivots 1 and 3 are wire-format changes, and position v2 is already running on
 hardware. Making them means re-provisioning the UID mapping and re-flashing.
