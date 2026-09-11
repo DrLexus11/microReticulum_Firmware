@@ -67,10 +67,22 @@ def destination_for(uid):
     body = uid[len(UID_PREFIX):]
     if len(body) != DESTINATION_HASH_LENGTH * 2:
         return None
+    # bytes.fromhex() ignores ASCII whitespace, so "0" * 30 + "  " is 32
+    # characters long, converts happily, and yields fifteen bytes -- an
+    # address this function claims to have rejected. The length check above
+    # cannot see that, because it counts characters and fromhex does not.
+    if any(character not in "0123456789abcdef" for character in body):
+        return None
     try:
-        return bytes.fromhex(body)
+        recovered = bytes.fromhex(body)
     except ValueError:
         return None
+    # Belt and braces: the character check above already forces this, and a
+    # destination hash of the wrong length is the one thing a caller must
+    # never receive from here.
+    if len(recovered) != DESTINATION_HASH_LENGTH:
+        return None
+    return recovered
 
 
 def announce_payload(callsign, team=DEFAULT_TEAM, role=DEFAULT_ROLE):

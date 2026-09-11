@@ -133,5 +133,27 @@ class NodeDestinationTests(unittest.TestCase):
                          node_hash)
 
 
+class NonCanonicalUidTests(unittest.TestCase):
+    """destination_for() must never return an address it claims to reject."""
+
+    def test_whitespace_inside_the_body_is_not_a_hash(self):
+        """bytes.fromhex() ignores ASCII whitespace, so thirty hex characters
+        and two spaces is thirty-two characters long, converts happily, and
+        yields a fifteen-byte hash -- an address that addresses nothing."""
+        for body in ("00" * 15 + "  ", " " + "0" * 31, "0" * 15 + " " + "0" * 16):
+            self.assertEqual(len(body), identity.DESTINATION_HASH_LENGTH * 2)
+            self.assertIsNone(identity.destination_for(identity.UID_PREFIX + body), body)
+
+    def test_upper_case_and_other_non_canonical_forms_are_refused(self):
+        """A UID is emitted lower-case. Accepting other spellings means the
+        same destination has more than one UID, and two tracks for one node."""
+        self.assertIsNone(identity.destination_for(identity.UID_PREFIX + "AB" * 16))
+
+    def test_anything_returned_is_a_whole_destination_hash(self):
+        good = identity.UID_PREFIX + "ab" * identity.DESTINATION_HASH_LENGTH
+        recovered = identity.destination_for(good)
+        self.assertEqual(len(recovered), identity.DESTINATION_HASH_LENGTH)
+
+
 if __name__ == "__main__":
     unittest.main()
