@@ -145,6 +145,16 @@ broadcast to a team needs no new format.
 **Why now.** The task wire format is v1 and unshipped. A destination-kind byte
 costs one byte today and a version bump plus dual-path verification later.
 
+### Pivot 4 — let the RAD say what it can see
+
+A RAD knows its ESP-NOW peers, its LoRa neighbours and its link quality, and
+tells the phone none of it. Partition detection, reachability display and radio
+awareness all want that table. The firmware already half-exposes it through the
+pages mechanism.
+
+**Why now.** Cheap while the ESP-NOW and BLE forwarding work is fresh in the
+tree; a separate excavation once it is cold.
+
 ### Pivot 5 — the team is a membership set, not an address
 
 Measured 2026-09-11, and it invalidates the transport Decision 3 assumed: **a
@@ -227,16 +237,6 @@ reliable -- so the answer there is flooding *plus* addressed retry for what
 matters, which is more machinery than either option alone, not less. Worth
 revisiting only with a measured team size and a LoRa-only decision.
 
-### Pivot 4 — let the RAD say what it can see
-
-A RAD knows its ESP-NOW peers, its LoRa neighbours and its link quality, and
-tells the phone none of it. Partition detection, reachability display and radio
-awareness all want that table. The firmware already half-exposes it through the
-pages mechanism.
-
-**Why now.** Cheap while the ESP-NOW and BLE forwarding work is fresh in the
-tree; a separate excavation once it is cold.
-
 ### The counter-argument
 
 Pivot 5 is the expensive one and the only one already forced: the measurement
@@ -257,7 +257,8 @@ their own.
 | | Added work | Why there |
 | --- | --- | --- |
 | **Before A** | **Pivot 1** — identity rooting; **Pivot 3** — destination-kind in the task codec | Both are wire-format. They must precede anything that stores an id or ships a format. |
-| **A** | Pivot 2 — position folded onto group destinations | Same PR that introduces group destinations. |
+| **A** | Pivot 2 — position folded onto the same path as everything else | Same PR that introduces the tiering. |
+| **Before B** | **Pivot 5** — retire the group destination as a transport; announce the node destination; build the member list | Measured, not optional: group traffic does not leave one interface. Markers and peer position are the first things built on it, and building them on a broadcast that cannot leave the room means writing them twice. |
 | **B** | Peer reachability from the RAD (Pivot 4) | Needs the neighbour table; unblocks the operator display. |
 | **C** | **Digest exchange and anti-entropy sync on rejoin** | First tier-2 content worth reconciling. Requires Pivot 1. |
 | **C** | Stale-handling rule: never re-stamp an unheard track | Same PR; it is the safety half of the same behaviour. |
