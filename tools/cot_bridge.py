@@ -49,13 +49,34 @@ def load_node_identity(path=None):
     import RNS
     identity_path = Path(path or DEFAULT_IDENTITY_PATH).expanduser()
     identity_path.parent.mkdir(parents=True, exist_ok=True)
-    if identity_path.exists():
-        info = identity_path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise ValueError("Node identity must be a regular file: %s" % identity_path)
-        if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise ValueError("Node identity is group- or world-accessible: %s" % identity_path)
-        return RNS.Identity.from_file(str(identity_path))
+    # Opened once and read through that descriptor. Identity.from_file() reopens
+    # by name, so validating with lstat() and then handing the *pathname* to RNS
+    # checks one file and loads another -- a local process can swap the path in
+    # between and choose this node's identity for it. Same pattern as
+    # tools/tak_tasking.py.
+    try:
+        fd = os.open(identity_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        fd = None
+    except OSError as error:
+        raise ValueError("Node identity must be a regular file: %s (%s)"
+                         % (identity_path, error.strerror)) from error
+    if fd is not None:
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Node identity must be a regular file: %s" % identity_path)
+            if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                raise ValueError("Node identity is group- or world-accessible: %s"
+                                 % identity_path)
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                key = handle.read()
+        finally:
+            os.close(fd)
+        identity = RNS.Identity.from_bytes(key)
+        if identity is None:
+            raise ValueError("Node identity file is not a valid identity: %s" % identity_path)
+        return identity
     identity = RNS.Identity()
     # Written through a private-by-construction descriptor rather than written
     # and then chmod'ed: the gap between the two is a window where the key is

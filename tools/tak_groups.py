@@ -74,17 +74,32 @@ def load_fleet_secret(path=None, environment=None):
         secret = None
     if secret is None:
         secret_path = Path(path or DEFAULT_SECRET_PATH).expanduser()
-        if not secret_path.exists():
+        # One descriptor, opened then validated then read. lstat() followed by
+        # read_bytes() checks one file and reads another: a local process can
+        # swap the path between the two calls and redirect the read to a secret
+        # of its choosing. Same pattern as tools/tak_tasking.py.
+        try:
+            fd = os.open(secret_path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
             raise ValueError(
                 "No fleet secret. Set %s, or write one to %s with mode 600."
-                % (SECRET_ENVIRONMENT, secret_path))
-        info = secret_path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise ValueError("Fleet secret must be a regular file: %s" % secret_path)
-        if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                % (SECRET_ENVIRONMENT, secret_path)) from None
+        except OSError as error:
+            # ELOOP lands here: the path is a symlink, which O_NOFOLLOW refused.
             raise ValueError(
-                "Fleet secret is group- or world-accessible: %s" % secret_path)
-        secret = secret_path.read_bytes()
+                "Fleet secret must be a regular file: %s (%s)"
+                % (secret_path, error.strerror)) from error
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Fleet secret must be a regular file: %s" % secret_path)
+            if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                raise ValueError(
+                    "Fleet secret is group- or world-accessible: %s" % secret_path)
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                secret = handle.read()
+        finally:
+            os.close(fd)
     # Stripped whichever way it arrived. A file written with `echo` carries a
     # trailing newline and stripping it is why this is here at all -- but
     # stripping only that route meant the same provisioning material derived
