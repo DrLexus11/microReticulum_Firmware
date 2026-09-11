@@ -177,7 +177,24 @@ def main():
 
     secret = groups.load_fleet_secret(args.secret_file)
     import RNS
-    RNS.Reticulum(args.config)
+    reticulum = RNS.Reticulum(args.config)
+    if reticulum.is_connected_to_shared_instance:
+        # Refused rather than warned about. A GROUP packet is dropped above one
+        # hop, and a shared-instance client sits one hop behind the daemon that
+        # owns the interfaces -- so a peer one hop from the daemon is two hops
+        # from here and every packet is dropped on delivery. Nothing reports
+        # it: the endpoint listens, the team address is right, counters move on
+        # the wire, and no CoT ever arrives. Measured 2026-09-11; it cost an
+        # afternoon, and it would cost it again every time.
+        print("[bridge] REFUSING to run as a client of a shared Reticulum instance.",
+              flush=True)
+        print("[bridge] Group traffic cannot survive the extra hop that adds. Give",
+              flush=True)
+        print("[bridge] the bridge its own config with share_instance = No and its",
+              flush=True)
+        print("[bridge] own interface, and point peers at that:  --config <dir>",
+              flush=True)
+        sys.exit(1)
     bridge = CotBridge(args.team, secret, args.port, args.identity)
     try:
         bridge.serve_forever()
