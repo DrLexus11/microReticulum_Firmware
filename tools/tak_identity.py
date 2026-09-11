@@ -34,6 +34,16 @@ KNOWN_TEAMS = ("White", "Yellow", "Orange", "Magenta", "Red", "Maroon", "Purple"
 DEFAULT_TEAM = "Cyan"
 DEFAULT_ROLE = "Team Member"
 
+# This node's own destination, which is what a UID must name.
+#
+# Not the team's group destination: every member of a team derives that same
+# address, so a UID built from it is the same string on every node -- one track
+# on the map for the whole team, jumping between everyone's positions. A UID
+# has to name the node, and it has to be reversible to an address a peer can
+# actually send to, which is the whole of pivot 1.
+NODE_APP = "rnstransport"
+NODE_ASPECTS = ("tak", "node")
+
 _HEADER = struct.Struct(">BBB")
 
 
@@ -103,3 +113,27 @@ def parse_announce(payload):
     except ValueError:
         return None
     return {"callsign": callsign, "team": team, "role": role}
+
+
+def node_destination(identity, direction):
+    """This node's addressable TAK destination.
+
+    SINGLE, so it routes: unlike the team's GROUP destination it goes through
+    Reticulum's path table and survives more than one hop, which is what makes
+    a UID derived from it usable for addressing a peer rather than merely
+    naming one.
+    """
+    import RNS
+    return RNS.Destination(identity, direction, RNS.Destination.SINGLE,
+                           NODE_APP, *NODE_ASPECTS)
+
+
+def node_destination_hash(identity):
+    """The hash of this node's TAK destination, without registering anything.
+
+    Delegates to RNS rather than recomputing: a second implementation of the
+    hash derivation is a second thing that can drift, and when it drifts it
+    produces a perfectly plausible address nobody else is on.
+    """
+    import RNS
+    return RNS.Destination.hash(identity, NODE_APP, *NODE_ASPECTS)

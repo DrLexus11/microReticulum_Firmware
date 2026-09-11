@@ -78,5 +78,60 @@ class AnnounceTests(unittest.TestCase):
         self.assertLessEqual(len(payload), 96)
 
 
+class NodeDestinationTests(unittest.TestCase):
+    """A UID must name one node, not the team it belongs to.
+
+    This is the bug the first hardware run produced: both ends derived their
+    UID from the *group* destination, which every member computes identically,
+    so the deck and the phone reported themselves as the same track. ATAK drew
+    one marker teleporting between two positions.
+    """
+
+    def setUp(self):
+        try:
+            import RNS  # noqa: F401
+        except ImportError:
+            self.skipTest("RNS not installed")
+
+    def test_two_nodes_get_two_uids(self):
+        import RNS
+        first = identity.node_destination_hash(RNS.Identity())
+        second = identity.node_destination_hash(RNS.Identity())
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(identity.uid_for(first), identity.uid_for(second))
+
+    def test_a_node_uid_is_stable_across_restarts(self):
+        """Same identity, same UID. A UID that changed on restart would read to
+        every peer as a different responder rather than the same one back."""
+        import RNS
+        one = RNS.Identity()
+        self.assertEqual(identity.node_destination_hash(one),
+                         identity.node_destination_hash(one))
+
+    def test_the_node_uid_is_not_the_team_uid(self):
+        """The specific collision observed on hardware, asserted directly."""
+        import RNS
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import tak_groups as groups
+        secret = b"a fleet secret long enough to pass"
+        team_hash = groups.group_destination_hash("Cyan", secret)
+        node_hash = identity.node_destination_hash(RNS.Identity())
+        self.assertNotEqual(node_hash, team_hash)
+
+    def test_the_hash_agrees_with_rns_own_derivation(self):
+        """Recomputing the derivation here is how it drifts, and a drifted hash
+        is a perfectly plausible address nobody else is on."""
+        import RNS
+        one = RNS.Identity()
+        registered = identity.node_destination(one, RNS.Destination.OUT)
+        self.assertEqual(registered.hash, identity.node_destination_hash(one))
+
+    def test_a_node_uid_round_trips_to_its_destination(self):
+        import RNS
+        node_hash = identity.node_destination_hash(RNS.Identity())
+        self.assertEqual(identity.destination_for(identity.uid_for(node_hash)),
+                         node_hash)
+
+
 if __name__ == "__main__":
     unittest.main()
