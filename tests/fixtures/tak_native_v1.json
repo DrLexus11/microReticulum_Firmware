@@ -9,7 +9,12 @@
   "identity": {
     "destination_hash": "000102030405060708090a0b0c0d0e0f",
     "uid": "urtn-000102030405060708090a0b0c0d0e0f",
-    "announce": "010a045241442d4245313342334379616e5465616d204d656d626572"
+    "announce": "010a045241442d4245313342334379616e5465616d204d656d626572",
+    "node_app": "rnstransport",
+    "node_aspects": [
+      "tak",
+      "node"
+    ]
   },
   "groups": {
     "secret": "a fleet secret long enough to pass",
