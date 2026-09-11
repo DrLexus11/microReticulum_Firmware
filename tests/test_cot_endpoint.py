@@ -254,5 +254,41 @@ class StrictDecodingTests(unittest.TestCase):
         self.assertIsNone(pipeline.atak_uid)
 
 
+
+
+class ClientSocketTests(unittest.TestCase):
+    """The bridge bounds how long a write to one ATAK client may take. How
+    that bound is applied is the whole of this test."""
+
+    def test_a_write_bound_must_not_bound_reads(self):
+        """settimeout() belongs to the whole socket, so bounding writes with it
+        also bounds recv() -- and the bridge reads on the same object, catching
+        the timeout as a dead client. Every client was disconnected two seconds
+        after receiving its first message, which on the bench presented as chat
+        simply not working."""
+        import socket
+        first, second = socket.socketpair()
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        first.settimeout(0.2)
+        first.sendall(b"hello")
+        with self.assertRaises(OSError):
+            first.recv(4096)
+
+    def test_so_sndtimeo_bounds_sends_without_touching_reads(self):
+        """Which is why the bridge uses it instead."""
+        import socket
+        import struct
+        first, second = socket.socketpair()
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        first.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
+                         struct.pack("@qq", 0, 200000))
+        first.sendall(b"hello")
+        self.assertIsNone(first.gettimeout(), "the socket is still blocking for reads")
+        second.sendall(b"world")
+        self.assertEqual(first.recv(5), b"world")
+
+
 if __name__ == "__main__":
     unittest.main()

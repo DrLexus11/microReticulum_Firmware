@@ -15,6 +15,7 @@ written back to every connected client. See docs/TAKNative.md.
 
 import argparse
 import os
+import struct
 from datetime import datetime, timezone
 import socket
 import stat
@@ -43,7 +44,8 @@ DEFAULT_IDENTITY_PATH = "~/.impr-tak/node-identity"
 # How long a single write to one ATAK client may take before that client is
 # treated as gone. Generous for a loopback socket carrying a few hundred bytes,
 # and short enough that one stalled client cannot hold up the mesh callback
-# thread that every other client's data arrives on.
+# thread that every other client's data arrives on. Applied with SO_SNDTIMEO so
+# it bounds sends only; see _serve_client for why that distinction matters.
 CLIENT_WRITE_TIMEOUT = 2.0
 # How often this node re-announces its membership.
 #
@@ -305,11 +307,6 @@ class CotBridge:
         dead = []
         for client in targets:
             try:
-                # A timeout rather than a blocking write, because "slow" and
-                # "gone" look identical from here and only one of them resolves
-                # itself. A client that cannot take a single CoT event inside
-                # this window is not keeping up with a live feed either.
-                client.settimeout(CLIENT_WRITE_TIMEOUT)
                 client.sendall(payload)
             except OSError:
                 dead.append(client)
@@ -412,6 +409,15 @@ class CotBridge:
 
     def _serve_client(self, connection):
         stream = CotStream()
+        # SO_SNDTIMEO, not settimeout(). A timeout set with settimeout() belongs
+        # to the whole socket, so the write bound also bounds recv() -- and this
+        # loop reads on the same object, catching the resulting timeout as a
+        # dead client. Every client was disconnected two seconds after receiving
+        # its first message, which on the bench looked like chat not working.
+        # SO_SNDTIMEO bounds sends in the kernel and leaves reads blocking.
+        connection.setsockopt(
+            socket.SOL_SOCKET, socket.SO_SNDTIMEO,
+            struct.pack("@qq", int(CLIENT_WRITE_TIMEOUT), 0))
         with self.clients_lock:
             self.clients.append(connection)
         try:
