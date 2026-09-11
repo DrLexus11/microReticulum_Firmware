@@ -278,6 +278,20 @@ class CotOutbound:
         self.atak_uid = None
         self.dropped = 0
 
+    def is_echo(self, cot_xml):
+        """Whether this event is our own, come back to us.
+
+        Exposed so a caller routing an event to a different codec can ask the
+        same question frame() asks, rather than reimplementing the guard and
+        getting the order wrong -- which is the bug this class exists to stop.
+        """
+        if isinstance(cot_xml, (bytes, bytearray)):
+            try:
+                cot_xml = bytes(cot_xml).decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                return False
+        return is_self_addressed(cot_xml, self.our_uid)
+
     def frame(self, cot_xml, encode):
         """The frame to put on the mesh, or None if this event should not go.
 

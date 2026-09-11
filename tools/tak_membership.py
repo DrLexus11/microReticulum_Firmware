@@ -198,6 +198,27 @@ class MemberRegistry:
         live.sort(key=lambda item: item[1]["heard"], reverse=True)
         return [dest for dest, _ in live]
 
+    def resolve_sender_id(self, sender_id, now=None):
+        """The member a 32-bit sender id belongs to, or None.
+
+        The position wire format has room for four bytes of identity, not
+        sixteen -- which is the truncation pivot 1 objected to, except that
+        here it is a *lookup key* rather than an identity. Membership is the
+        table that turns it back into a whole destination hash, so a track gets
+        the same UID as everything else that node sends.
+
+        A collision returns None rather than a guess. Two members sharing four
+        bytes is remote, and attributing one responder's position to another is
+        not a failure to resolve quietly.
+        """
+        matches = [dest for dest in self.members(now)
+                   if int.from_bytes(dest[:4], "big") == sender_id]
+        return matches[0] if len(matches) == 1 else None
+
+    def sender_id_for(self, destination_hash):
+        """The four bytes this node puts in its own position reports."""
+        return int.from_bytes(bytes(destination_hash)[:4], "big")
+
     def describe(self, destination_hash):
         """Callsign and role as claimed, or None. For display, not for trust."""
         entry = self._members.get(bytes(destination_hash))
