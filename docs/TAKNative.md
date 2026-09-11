@@ -378,7 +378,7 @@ Each of these is a PR, and each leaves something demonstrable behind.
 | | | Unlocks |
 | --- | --- | --- |
 | **A** | Local CoT endpoint on both ends; group destinations; dictionary-compressed CoT broadcast on the group | **The indoor test.** Chat, markers and drawings both ways, no server address typed anywhere. Every CoT type works, none of them cheaply. |
-| **B** | Typed codecs: position, chat and receipts, point markers | 850 of the 853 observed events. Makes A affordable on LoRa. |
+| **B** | Typed codecs: position, chat and receipts, point markers; membership replacing the group address | 850 of the 853 observed events. Makes A affordable on LoRa, and addressable at all past one hop. |
 | **C** | Drawings: typed geometry codec, and tier 2 spill to `Resource` past the MTU | **The outdoor minimal test** passes here. |
 | **D** | Tier 3: descriptors, thumbnails, fetch-on-demand, cost consent | QuickPic and data packages. |
 | **E** | Teams and missions as group destinations, with membership and mission content | Mission-based operation. |
@@ -538,6 +538,45 @@ A bridge started under `nohup` does not print its closing counters on SIGINT, so
 the send/receive/suppressed figures are only available from a foreground run.
 Not fixed; recorded so the next person does not read an empty summary as zero
 traffic.
+
+### Markers and chat, added 2026-09-11
+
+The remaining typed codecs, measured against real events pulled from this lab's
+OpenTAKServer rather than composed for the purpose:
+
+| | Raw | Tier 2 | Typed |
+| --- | ---: | ---: | ---: |
+| `a-h-G` hostile marker | 759 B | 242 B | **57 B** |
+| `b-m-p-s-m` spot marker | 799 B | 263 B | **53 B** |
+| `b-m-p-c-cp` checkpoint | 714 B | 234 B | **65 B** |
+| `b-m-p-s-p-i` SPI | 561 B | 193 B | **45 B** |
+| GeoChat line | 1100 B | *refused* | **45 B** |
+| Chat receipt | 879 B | 345 B | **35 B** |
+
+Chat is the row that changes a conclusion: a real GeoChat line compresses to
+402 bytes against a 383-byte MDU, so on tier 2 it was not expensive, it was
+**undeliverable**.
+
+Two findings came out of writing these.
+
+**SPI was leaking a device identifier.** ATAK names it
+`ANDROID-<device id>.SPI1`, and forwarding that uid verbatim would have put the
+sender's device id on the air -- the thing pivot 1 removed from everything else,
+carried past it by the one event type nobody had looked at. It is 121 of the 853
+captured events, so it was also the most frequent thing doing it. A uid that is
+not a UUID now travels as its suffix alone.
+
+**Sixteen bits of seconds is eighteen hours**, and ATAK writes a stale a year
+out for a spot marker. Clamping turned a permanent marker into one that vanished
+overnight. The field now carries a unit flag: seconds where they fit, because an
+SPI lives twenty of them, minutes where they do not.
+
+SPI is tier 1 by the classification above -- a pointer being dragged, latest-wins
+-- so it is gated like position. The codec makes one cheap; the gate is what
+makes a stream of them affordable.
+
+`tools/tak_team_acceptance.sh` drives the whole of PR B between two bridges:
+discovery, then each codec in turn. It passes.
 
 ## After C: the plugin, and what HaLow changes
 
