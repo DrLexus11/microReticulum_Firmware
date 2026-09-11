@@ -43,6 +43,10 @@ ENCODING_DEFLATE_DICT_V1 = 1
 # already outside tier 2 -- it belongs in tier 3, fetched deliberately -- so the
 # bound is a refusal rather than a limitation.
 MAX_DECOMPRESSED = 64 * 1024
+# One Reticulum packet, which is the whole promise of tier 2. RNS.Packet's
+# ENCRYPTED_MDU; hard-coded rather than imported so this module stays usable
+# without RNS installed, and asserted against the real value in the tests.
+MAX_FRAME_BYTES = 383
 
 _ATTRIBUTES = (
     "version uid type time start stale how access qos opex lat lon hae ce le "
@@ -96,8 +100,20 @@ def encode(cot_xml):
     compressor = zlib.compressobj(9, zlib.DEFLATED, -15, zdict=DICTIONARY)
     deflated = compressor.compress(bytes(cot_xml)) + compressor.flush()
     if len(deflated) < len(cot_xml):
-        return bytes([VERSION, ENCODING_DEFLATE_DICT_V1]) + deflated
-    return bytes([VERSION, ENCODING_RAW]) + bytes(cot_xml)
+        frame = bytes([VERSION, ENCODING_DEFLATE_DICT_V1]) + deflated
+    else:
+        frame = bytes([VERSION, ENCODING_RAW]) + bytes(cot_xml)
+    if len(frame) > MAX_FRAME_BYTES:
+        # Tier 2 is one packet by definition, and this is the bound that makes
+        # it one. Nothing here checked it: a 5 KB ATAK drawing compresses to
+        # ~700 bytes, which is comfortably under MAX_DECOMPRESSED and nearly
+        # twice the MDU. RNS.Packet then raises OSError, which the bridge's
+        # client loop catches as a dead socket -- so drawing a polyline
+        # disconnected ATAK rather than reporting anything.
+        raise ValueError(
+            "tier 2 frame is %d bytes, over the %d-byte bound; it belongs in tier 3"
+            % (len(frame), MAX_FRAME_BYTES))
+    return frame
 
 
 def decode(frame):
@@ -118,6 +134,14 @@ def decode(frame):
             raise ValueError("tier 2 payload did not decompress: %s" % error) from error
         if decompressor.unconsumed_tail:
             raise ValueError("tier 2 payload expands beyond the tier 2 bound")
+        # unconsumed_tail alone does not mean the stream finished. A truncated
+        # frame decompresses to whatever prefix it contained, leaves no
+        # unconsumed input, and reports eof False -- so a half a CoT event
+        # would be handed on as though it were whole.
+        if not decompressor.eof:
+            raise ValueError("tier 2 payload is truncated")
+        if decompressor.unused_data:
+            raise ValueError("tier 2 frame has trailing data after the stream")
     else:
         raise ValueError("unknown tier 2 encoding %d" % encoding)
     if not payload:

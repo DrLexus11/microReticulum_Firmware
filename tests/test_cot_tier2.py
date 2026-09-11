@@ -65,7 +65,10 @@ class SizeTests(unittest.TestCase):
         so a case that genuinely does not is built from random bytes.
         """
         import os
-        incompressible = '<event uid="%s"/>' % os.urandom(400).hex()
+        # Small enough to stay inside MAX_FRAME_BYTES: an event that cannot be
+        # compressed *and* does not fit one packet is a tier 3 problem, and is
+        # asserted separately below.
+        incompressible = '<event uid="%s"/>' % os.urandom(120).hex()
         for xml in (MARKER, PLI, '<event type="a" uid="b"/>', incompressible):
             frame = tier2.encode(xml)
             self.assertLessEqual(len(frame), len(xml.encode("utf-8")) + 2, xml[:40])
@@ -126,6 +129,56 @@ class DictionaryTests(unittest.TestCase):
         for leaked in ("LEXUS", "ANDROID-7819", "R.10.144053", "40.954", "29.09",
                        "SM-A546E", "66d6de40"):
             self.assertNotIn(leaked, blob, leaked)
+
+
+class FrameBoundTests(unittest.TestCase):
+    """Tier 2 is one packet, and this is the bound that makes it one."""
+
+    def test_the_bound_is_the_reticulum_encrypted_mdu(self):
+        """Hard-coded so this module works without RNS installed, which makes
+        it a number that can drift away from the one that matters."""
+        try:
+            import RNS
+        except ImportError:
+            self.skipTest("RNS not installed")
+        self.assertEqual(tier2.MAX_FRAME_BYTES, RNS.Packet.ENCRYPTED_MDU)
+
+    def test_an_event_that_cannot_fit_one_packet_is_refused(self):
+        """A 5 KB ATAK drawing compresses to about 700 bytes -- well inside
+        MAX_DECOMPRESSED and nearly twice the MDU. Nothing checked it, so the
+        frame reached RNS.Packet, which raises OSError, which the bridge's
+        client loop reads as a dead socket: drawing a polyline disconnected
+        ATAK instead of reporting anything."""
+        drawing = ('<event uid="drawing-1" type="u-d-f" how="h-e" version="2.0">'
+                   '<point lat="40.95" lon="29.09" hae="0" ce="9" le="9"/>'
+                   '<detail><shape><polyline closed="true">'
+                   + "".join('<vertex lat="40.95%04d" lon="29.09%04d"/>' % (i, i * 7 % 9999)
+                             for i in range(120))
+                   + '</polyline></shape></detail></event>')
+        self.assertGreater(len(drawing), 4000)
+        with self.assertRaises(ValueError) as caught:
+            tier2.encode(drawing)
+        self.assertIn("tier 3", str(caught.exception))
+
+    def test_everything_encode_returns_fits_one_packet(self):
+        for xml in (MARKER, PLI, '<event type="a" uid="b"/>'):
+            self.assertLessEqual(len(tier2.encode(xml)), tier2.MAX_FRAME_BYTES, xml[:40])
+
+
+class TruncationTests(unittest.TestCase):
+    def test_a_truncated_frame_is_refused_not_half_decoded(self):
+        """decompress() returns whatever prefix the input contained and leaves
+        no unconsumed input, so checking unconsumed_tail alone accepted half a
+        CoT event as a whole one."""
+        frame = tier2.encode(PLI)
+        for cut in (4, 8, 16, len(frame) - 1):
+            with self.assertRaises(ValueError, msg="cut at %d" % cut):
+                tier2.decode(frame[:cut])
+
+    def test_trailing_data_after_the_stream_is_refused(self):
+        frame = tier2.encode(PLI)
+        with self.assertRaises(ValueError):
+            tier2.decode(frame + b"leftover")
 
 
 if __name__ == "__main__":
