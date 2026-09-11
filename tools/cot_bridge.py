@@ -15,6 +15,7 @@ written back to every connected client. See docs/TAKNative.md.
 
 import argparse
 import os
+from datetime import datetime, timezone
 import socket
 import stat
 import sys
@@ -26,10 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
+import cot_chat
 import cot_gateway
 import cot_position
 import position_codec
 import tak_membership as membership
+import tak_payload
 from cot_endpoint import CotOutbound, CotStream
 
 DEFAULT_PORT = 8087
@@ -181,6 +184,7 @@ class CotBridge:
         self.position_gate = cot_position.PositionGate()
         self.sender_id = self.registry.sender_id_for(self.node.hash)
         self.positions_sent = self.positions_received = 0
+        self.chat_sent = self.chat_received = 0
 
     # ---- membership ----
     def announce(self):
@@ -225,13 +229,15 @@ class CotBridge:
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
         raw = bytes(data)
-        # Byte zero is the format version of whichever codec produced this, and
-        # the two in use differ: tier 2 frames open with 1, position reports
-        # with 2. Cheap, and asserted in the tests so the day they collide is
-        # the day a test fails rather than the day a track lands in the wrong
-        # place.
-        if raw[:1] == bytes([position_codec.WIRE_VERSION]):
+        # Byte zero says which codec produced this. One namespace shared by all
+        # of them rather than three independent version counters -- see
+        # tools/tak_payload.py for why that distinction matters.
+        kind = tak_payload.kind_of(raw)
+        if kind == tak_payload.POSITION_V2:
             if self._position_from_mesh(raw):
+                return
+        elif kind == tak_payload.CHAT_V1:
+            if self._chat_from_mesh(raw):
                 return
         try:
             xml = tier2.decode(raw)
@@ -242,6 +248,26 @@ class CotBridge:
             return
         self._to_clients(xml.encode("utf-8"))
         self.received += 1
+
+    def _chat_from_mesh(self, raw):
+        """Render a peer's chat line or receipt as CoT for the local ATAK."""
+        decoded = cot_chat.decode(raw)
+        if decoded is None:
+            return False
+        sender = self.registry.resolve_sender_id(decoded["sender_id"])
+        if sender is None:
+            # Chat from a node this team has never heard announce. Dropping it
+            # is the honest option: rendering it under an invented identity
+            # would put words on the screen attributed to nobody.
+            self.unreadable += 1
+            return True
+        claims = self.registry.describe(sender) or {}
+        self._to_clients(cot_chat.build_chat_cot(
+            decoded, tak_identity.uid_for(sender),
+            claims.get("callsign", "UNKNOWN"),
+            cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
+        self.chat_received += 1
+        return True
 
     def _position_from_mesh(self, raw):
         """Render a peer's position report as CoT for the local ATAK."""
@@ -304,8 +330,10 @@ class CotBridge:
         # Our own position takes the typed path. The echo guard runs first --
         # inside the pipeline -- for everything else, so this asks the same
         # question the pipeline would before spending a packet on it.
-        if self.pipeline.atak_uid and cot_position.is_position(xml):
-            if not self.pipeline.is_echo(xml) and self._position_from_atak(xml):
+        if self.pipeline.atak_uid and not self.pipeline.is_echo(xml):
+            if cot_position.is_position(xml) and self._position_from_atak(xml):
+                return
+            if self._chat_from_atak(xml):
                 return
         known = self.pipeline.atak_uid
         frame = self.pipeline.frame(xml, tier2.encode)
@@ -334,6 +362,20 @@ class CotBridge:
         if not self.position_gate.allows(fix, time.time()):
             return True
         self.positions_sent += self._fan_out(position_codec.encode(fix))
+        return True
+
+    def _chat_from_atak(self, xml):
+        """Send a chat line or a receipt as tens of bytes, if it is one.
+
+        True when this event was handled here. Chat is worth its own codec for
+        a reason tier 2 makes plain: a real GeoChat line compresses to 402
+        bytes against a 383-byte MDU, so before this it was not expensive, it
+        was undeliverable.
+        """
+        frame = cot_chat.chat_from_cot(xml, self.sender_id)
+        if frame is None:
+            return False
+        self.chat_sent += self._fan_out(frame)
         return True
 
     def _fan_out(self, frame):
@@ -447,10 +489,11 @@ def main():
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
-        print("\n[bridge] sent %d, received %d, positions %d/%d, unreadable %d, "
-              "refused %d, unreachable %d, suppressed %d, members %d"
+        print("\n[bridge] sent %d, received %d, positions %d/%d, chat %d/%d, "
+              "unreadable %d, refused %d, unreachable %d, suppressed %d, members %d"
               % (bridge.sent, bridge.received,
                  bridge.positions_sent, bridge.positions_received,
+                 bridge.chat_sent, bridge.chat_received,
                  bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
                  bridge.position_gate.suppressed, len(bridge.registry)), flush=True)
 
