@@ -4,7 +4,8 @@
     "dictionary_sha256": "1c4c802e4e56ea00b1ef50265ae1c8f5a6f6fa6d6daf218bbef16db17924af7e",
     "dictionary_length": 1459,
     "cot": "<event uid=\"ANDROID-7819dadfcf858641\" type=\"a-f-G-U-C\" how=\"m-g\" version=\"2.0\"><point lat=\"40.9549\" lon=\"29.0934\" hae=\"33.5\" ce=\"44.0\" le=\"9999999.0\"/><detail><takv device=\"SAMSUNG SM-A546E\" os=\"36\" platform=\"ATAK-CIV\" version=\"5.6\"/><contact callsign=\"LEXUS\" endpoint=\"*:-1:stcp\"/><__group name=\"Cyan\" role=\"Team Member\"/></detail></event>",
-    "frame": "0101832622b0bca39f4b90bfa78baeb985a1654a624a5a729a85a985998921cc1878fe83a61e6009a3849afc50929389819ea5a9892534551901138da5b1093471191beb994212988909deb485127dc18ebec1a17eee0ac1beba8ea62666ae90e834362310a1a67a66e070c248a63eae11a1c05406ab656c95b4ac740dad8a4b920b301330a8ccc29188d1c31400"
+    "frame": "0101832622b0bca39f4b90bfa78baeb985a1654a624a5a729a85a985998921cc1878fe83a61e6009a3849afc50929389819ea5a9892534551901138da5b1093471191beb994212988909deb485127dc18ebec1a17eee0ac1beba8ea62666ae90e834362310a1a67a66e070c248a63eae11a1c05406ab656c95b4ac740dad8a4b920b301330a8ccc29188d1c31400",
+    "max_frame_bytes": 383
   },
   "identity": {
     "destination_hash": "000102030405060708090a0b0c0d0e0f",
