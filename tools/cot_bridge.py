@@ -33,6 +33,11 @@ DEFAULT_PORT = 8087
 # first run; losing it changes this node's UID, which to every peer reads as a
 # different responder rather than the same one returning.
 DEFAULT_IDENTITY_PATH = "~/.impr-tak/node-identity"
+# How long a single write to one ATAK client may take before that client is
+# treated as gone. Generous for a loopback socket carrying a few hundred bytes,
+# and short enough that one stalled client cannot hold up the mesh callback
+# thread that every other client's data arrives on.
+CLIENT_WRITE_TIMEOUT = 2.0
 # Loopback only, and not configurable. This endpoint applies no authentication
 # because it assumes only this device can reach it; binding it to a routable
 # address would hand the mesh to anyone who can open a socket.
@@ -134,16 +139,40 @@ class CotBridge:
         self.received += 1
 
     def _to_clients(self, payload):
+        """Write to every connected client without blocking the ones behind.
+
+        This runs on Reticulum's packet callback thread. sendall() blocks for as
+        long as a client refuses to read -- an ATAK that has stopped draining
+        its socket blocks forever -- and doing that while holding clients_lock
+        would stop every other client, the accept loop, and the mesh callback
+        that delivers the next packet. So the lock covers the snapshot only, and
+        a client that cannot keep up is dropped rather than allowed to stall the
+        bridge.
+        """
         with self.clients_lock:
-            for client in list(self.clients):
-                try:
-                    client.sendall(payload)
-                except OSError:
+            targets = list(self.clients)
+        dead = []
+        for client in targets:
+            try:
+                # A timeout rather than a blocking write, because "slow" and
+                # "gone" look identical from here and only one of them resolves
+                # itself. A client that cannot take a single CoT event inside
+                # this window is not keeping up with a live feed either.
+                client.settimeout(CLIENT_WRITE_TIMEOUT)
+                client.sendall(payload)
+            except OSError:
+                dead.append(client)
+        if not dead:
+            return
+        with self.clients_lock:
+            for client in dead:
+                if client in self.clients:
                     self.clients.remove(client)
-                    try:
-                        client.close()
-                    except OSError:
-                        pass
+        for client in dead:
+            try:
+                client.close()
+            except OSError:
+                pass
 
     # ---- ATAK -> mesh ----
     def _from_atak(self, xml):
