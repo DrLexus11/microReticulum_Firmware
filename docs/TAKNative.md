@@ -385,6 +385,68 @@ Each of these is a PR, and each leaves something demonstrable behind.
 | **F** | Per-class radio routing | The research item above. Until it lands, tier 3 is manual. |
 | **V** | Voice | Measurement first; see the roadmap. Nothing about it is started. |
 
+## Acceptance record -- PR A, 2026-09-11
+
+CoT crossed the mesh in both directions between the deck bridge and Columba's
+endpoint, with ATAK pointed at nothing but `127.0.0.1`. Driven by
+`tools/tak_cot_acceptance.sh`, which stands in for ATAK at both ends through
+`adb forward`, so the loop is observable without a map on screen.
+
+```
+== deck bridge is listening      PASS
+== phone endpoint is reachable   PASS
+== round trip
+   deck -> phone     arrived
+   phone -> deck     arrived
+PASS: CoT crossed the mesh in both directions
+```
+
+What that establishes: the framer, the tier 2 codec, the group key derivation
+and the UID rewrite all work across the Python and Kotlin implementations on
+real hardware. The phone derived the team address `88a2f27d…14053a`
+independently and reached the same value as the deck -- the two derivations
+agreeing against each other rather than against a stored vector.
+
+### Two defects the run found
+
+**The shared instance cost a hop.** Covered above; it is why the bridge now
+refuses to start as a shared-instance client.
+
+**Every node reported the same UID.** Both ends built their ATAK UID from the
+*group* destination, which every member of a team derives identically, so the
+deck and the phone reported themselves under one identifier:
+
+```
+deck's self-report,  as the phone saw it : urtn-88a2f27d…14053a
+phone's self-report, as the deck saw it  : urtn-88a2f27d…14053a
+```
+
+ATAK draws that as one track teleporting between two positions -- exactly the
+outcome pivot 1 exists to prevent, produced by the code meant to implement it.
+The old gateway's 32-bit truncation at least told two nodes apart. The UID now
+comes from a `SINGLE` destination on each node's own identity:
+
+```
+deck  : urtn-a8d8a8a16c9955965d7aaffa0d73f8a7
+phone : urtn-da4d8be3a2260eb1e6ca927bd7da293a
+```
+
+Both defects were invisible to the unit tests and to the golden vectors,
+because both sides agreed perfectly -- on the wrong thing. The vectors pin
+agreement between implementations; they cannot pin agreement with the intent.
+
+### Not established
+
+- Anything beyond one hop. The topology under test was phone to bridge over a
+  direct TCP interface, chosen because it is the only shape group traffic
+  survives. BLE and the RAD path are untested for CoT and, per the hop finding,
+  cannot work as designed.
+- ATAK itself was not in the loop. The harness speaks the same socket ATAK
+  does, and the fixture events came from a real ATAK capture, but a map has not
+  yet drawn one of these markers.
+- Airtime. The path was TCP over Wi-Fi, so nothing here measures what a marker
+  costs on LoRa or HaLow.
+
 ## After C: the plugin, and what HaLow changes
 
 ### The plugin is real, and C is the right gate
