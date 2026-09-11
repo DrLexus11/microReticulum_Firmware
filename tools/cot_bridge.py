@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
-from cot_endpoint import CotStream, learn_atak_uid, rewrite_self_uid
+from cot_endpoint import CotOutbound, CotStream
 
 DEFAULT_PORT = 8087
 # Loopback only, and not configurable. This endpoint applies no authentication
@@ -36,7 +36,6 @@ class CotBridge:
         self.port = port
         self.clients = []
         self.clients_lock = threading.Lock()
-        self.atak_uid = None
         self.sent = self.received = self.dropped = 0
 
         # A GROUP destination is symmetric -- every member both speaks and
@@ -47,6 +46,10 @@ class CotBridge:
         self.group.set_packet_callback(self._from_mesh)
         self.out = groups.group_destination(team, secret, RNS.Destination.OUT)
         self.uid = tak_identity.uid_for(self.group.hash)
+        # One pipeline per bridge: it holds the learned ATAK UID, refuses our
+        # own events before they can teach it anything, and rewrites our
+        # self-reports. The order of those three is the whole of it.
+        self.pipeline = CotOutbound(self.uid)
 
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
@@ -74,18 +77,13 @@ class CotBridge:
 
     # ---- ATAK -> mesh ----
     def _from_atak(self, xml):
-        if self.atak_uid is None:
-            learned = learn_atak_uid(xml)
-            if learned:
-                self.atak_uid = learned
-                print("[bridge] this ATAK calls itself %s; peers will see %s"
-                      % (learned, self.uid), flush=True)
-        try:
-            rewritten = rewrite_self_uid(xml, self.atak_uid, self.uid)
-            frame = tier2.encode(rewritten)
-        except ValueError as error:
-            self.dropped += 1
-            print("[bridge] refused an event from ATAK: %s" % error, flush=True)
+        known = self.pipeline.atak_uid
+        frame = self.pipeline.frame(xml, tier2.encode)
+        if known is None and self.pipeline.atak_uid:
+            print("[bridge] this ATAK calls itself %s; peers will see %s"
+                  % (self.pipeline.atak_uid, self.uid), flush=True)
+        if frame is None:
+            self.dropped = self.pipeline.dropped
             return
         self.rns.Packet(self.out, frame).send()
         self.sent += 1

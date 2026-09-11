@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from cot_endpoint import CotStream, is_self_addressed, learn_atak_uid, rewrite_self_uid
+from cot_endpoint import (CotOutbound, CotStream, is_self_addressed,
+                          learn_atak_uid, rewrite_self_uid)
 
 A = b'<event uid="a" type="a-f-G"><point lat="1" lon="2"/><detail/></event>'
 B = b'<event uid="b" type="a-h-G"><point lat="3" lon="4"/><detail/></event>'
@@ -91,8 +92,6 @@ class EchoTests(unittest.TestCase):
         self.assertFalse(is_self_addressed(nested.encode("utf-8"), ours))
 
 
-
-
 PLI = ('<event uid="ANDROID-7819dadfcf858641" type="a-f-G-U-C" how="m-g" version="2.0">'
        '<point lat="40.95" lon="29.09" hae="33.5" ce="44.0" le="9999999.0"/>'
        '<detail><takv device="SAMSUNG SM-A546E" os="36" platform="ATAK-CIV" version="5.6"/>'
@@ -150,5 +149,61 @@ class LearnUidTests(unittest.TestCase):
         for bad in (b"", b"<event", b"not xml at all", b"<other/>",
                     b'<!DOCTYPE event [<!ENTITY x "boom">]><event uid="a"/>'):
             self.assertIsNone(learn_atak_uid(bad), repr(bad))
+
+
+def identity_encode(xml):
+    """Stand in for the tier 2 codec, so these tests are about the order."""
+    return xml.encode("utf-8")
+
+
+class OutboundPipelineTests(unittest.TestCase):
+    """The three steps between ATAK and the mesh, and the order of them."""
+
+    ATAK = "ANDROID-7819dadfcf858641"
+
+    def test_the_first_self_report_teaches_us_and_goes_out_rewritten(self):
+        import xml.etree.ElementTree as ET
+        pipeline = CotOutbound(OURS)
+        self.assertIsNone(pipeline.atak_uid)
+        frame = pipeline.frame(PLI, identity_encode)
+        self.assertEqual(pipeline.atak_uid, self.ATAK)
+        self.assertEqual(ET.fromstring(frame.decode()).get("uid"), OURS)
+
+    def test_our_own_event_coming_back_is_refused(self):
+        pipeline = CotOutbound(OURS)
+        pipeline.frame(PLI, identity_encode)
+        echo = PLI.replace(self.ATAK, OURS)
+        self.assertIsNone(pipeline.frame(echo, identity_encode))
+
+    def test_the_echo_guard_runs_before_anything_is_learned(self):
+        """Our own self-report echoed back carries <takv> and is a perfectly
+        well-formed self-report. Learning from it would set the ATAK UID to our
+        own, after which no genuine self-report matches it and none is ever
+        rewritten -- the device would report itself as ANDROID-xxxx to the
+        whole team for the rest of the session."""
+        pipeline = CotOutbound(OURS)
+        echo = PLI.replace(self.ATAK, OURS)
+        self.assertIsNone(pipeline.frame(echo, identity_encode))
+        self.assertIsNone(pipeline.atak_uid)
+
+    def test_a_marker_keeps_its_uid_and_never_teaches_us_one(self):
+        import xml.etree.ElementTree as ET
+        pipeline = CotOutbound(OURS)
+        frame = pipeline.frame(MARKER, identity_encode)
+        self.assertIsNone(pipeline.atak_uid)
+        self.assertEqual(ET.fromstring(frame.decode()).get("uid"),
+                         "66d6de40-bd62-4a5e-92ef-d4ee14b0194a")
+
+    def test_rubbish_is_dropped_and_counted_before_anything_is_known(self):
+        """rewrite_self_uid returns early -- without parsing -- until an ATAK
+        UID has been learned, so without validating here nothing in this path
+        would look at the event at all before the first self-report."""
+        pipeline = CotOutbound(OURS)
+        for bad in ("", "<event", "not xml at all", "<other/>",
+                    '<!DOCTYPE event [<!ENTITY x "boom">]><event uid="a"/>'):
+            self.assertIsNone(pipeline.frame(bad, identity_encode), repr(bad))
+        self.assertEqual(pipeline.dropped, 5)
+
+
 if __name__ == "__main__":
     unittest.main()

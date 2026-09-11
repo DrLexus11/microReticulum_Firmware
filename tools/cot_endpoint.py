@@ -212,3 +212,57 @@ def learn_atak_uid(cot_xml):
     if uid and event.find("detail/takv") is not None:
         return uid
     return None
+
+
+class CotOutbound:
+    """Everything that happens to an event between ATAK and the mesh.
+
+    Separated from the socket so the order of the three steps can be tested,
+    because the order is the whole of it: refuse anything already ours, learn
+    the device's UID, then rewrite our self-reports.
+
+    One per endpoint rather than one per process. The learned UID belongs to
+    the run: changing team tears the endpoint down, and a UID carried across
+    that would be a claim about an ATAK nobody has heard from since.
+    """
+
+    def __init__(self, our_uid):
+        self.our_uid = our_uid
+        self.atak_uid = None
+        self.dropped = 0
+
+    def frame(self, cot_xml, encode):
+        """The frame to put on the mesh, or None if this event should not go.
+
+        None is ordinary and covers three cases: our own event coming back,
+        something that is not CoT at all, and an event we could not encode.
+        """
+        if isinstance(cot_xml, (bytes, bytearray)):
+            cot_xml = bytes(cot_xml).decode("utf-8", errors="replace")
+        # Validated here rather than relied on downstream. rewrite_self_uid
+        # returns early -- without parsing -- until an ATAK UID has been
+        # learned, so before the first self-report of a session nothing else in
+        # this path would look at the event at all.
+        try:
+            _parse(cot_xml)
+        except ValueError:
+            self.dropped += 1
+            return None
+        # The echo guard comes first, before anything is learned from the
+        # event. Our own self-report echoed back carries <takv> and is a
+        # perfectly well-formed self-report, so learning from it would set the
+        # ATAK UID to our own -- after which no genuine self-report matches it
+        # and none is ever rewritten again. The device would report itself as
+        # ANDROID-xxxx to the whole team for the rest of the session, which is
+        # the one outcome this pipeline exists to prevent.
+        if is_self_addressed(cot_xml, self.our_uid):
+            return None
+        if self.atak_uid is None:
+            learned = learn_atak_uid(cot_xml)
+            if learned:
+                self.atak_uid = learned
+        try:
+            return encode(rewrite_self_uid(cot_xml, self.atak_uid, self.our_uid))
+        except ValueError:
+            self.dropped += 1
+            return None
