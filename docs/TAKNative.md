@@ -167,12 +167,64 @@ Reticulum has both already:
 | central command | a member of the groups, not a hop in them |
 
 A team name plus the fleet secret derives the group key, so joining a team is a
-key, not a registration. Reticulum's Transport already relays between members
-through whichever RADs are in between.
+key, not a registration.
 
-Routing peer traffic through command instead would put a node that may be ten
-kilometres away, or destroyed, in the path between two people standing next to
-each other; it doubles the airtime of every peer exchange; and it makes the one
+### A GROUP destination does not cross a hop
+
+An earlier version of this section said Reticulum's Transport relays between
+members through whichever RADs are in between. **It does not.** That is true of
+`SINGLE` destinations, which is why tasking works at three hops; it is not true
+of groups, and the group design rested on it.
+
+In both implementations, a `GROUP` destination is excluded by name from
+path-table routing -- `Transport.py:1138`, `Transport.cpp:1231` -- so a group
+packet never receives transport headers. Relaying requires
+`packet.transport_id == Transport.identity.hash`, which such a packet never
+carries, so no intermediate node forwards it. Both then drop `GROUP` packets
+with `hops > 1` outright. The only broadcast rebroadcast either implementation
+performs is for `PLAIN`.
+
+Measured on the bench, 2026-09-11:
+
+| Path | Hops | Result |
+| --- | --- | --- |
+| Phone -> RAD Rev2 -> ... -> deck (BLE) | 3 | nothing arrives |
+| Phone -> deck daemon -> bridge (shared instance) | 2 | nothing arrives |
+| Phone -> bridge owning its own interface | 1 | works, both directions |
+
+The second row is the one to remember. The deck's Reticulum runs as a **shared
+instance**, so a program connected to it sits one hop behind the daemon that
+owns the interfaces. A peer one hop from the daemon is therefore two hops from
+the bridge, and every group packet died there -- on the same machine, over
+loopback. The wire was never the problem: the deck's TCP interface gained 660
+bytes for five markers that were then dropped on delivery.
+
+So the constraint is not "groups do not cross a radio". It is **groups reach
+only peers on the same interface as the sender**, and any intermediary at all
+spends the single hop, including one on the same host.
+
+What this costs the design:
+
+- The bridge cannot be a shared-instance client. It owns its own Reticulum
+  instance and its own interface, and peers connect to that.
+- The intended field topology -- phone, RAD, HaLow, RAD, phone -- is four hops.
+  Group broadcast does not survive it. **Neither does two phones through a
+  single RAD**, which is two hops.
+- Anything that must reach a team more than one hop away needs a different
+  carrier. The options are unchanged from the tier 2 note above: addressed
+  fan-out to members learned from announces, which routes properly and costs
+  N times the airtime and needs the membership a key-derived group deliberately
+  avoids; or flooding `GROUP` in our own firmware with hashlist dedup, which
+  works only because our boards are the only relays in the field topology and
+  diverges from upstream RNS.
+
+This is undecided and blocks the outdoor exercise, not the indoor one. It does
+not affect tasking, which is addressed.
+
+The reasoning for groups over a star still holds, and the hop limit above does
+not rescue the star: routing peer traffic through command would put a node that
+may be ten kilometres away, or destroyed, in the path between two people
+standing next to each other; it doubles the airtime of every peer exchange; and it makes the one
 asset most likely to be targeted the one whose loss silences everybody. A mesh
 that fails when its centre fails is not a disaster network.
 
