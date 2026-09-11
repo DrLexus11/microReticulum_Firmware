@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
+import tak_membership as membership
 from cot_endpoint import CotOutbound, CotStream
 
 DEFAULT_PORT = 8087
@@ -38,6 +39,14 @@ DEFAULT_IDENTITY_PATH = "~/.impr-tak/node-identity"
 # and short enough that one stalled client cannot hold up the mesh callback
 # thread that every other client's data arrives on.
 CLIENT_WRITE_TIMEOUT = 2.0
+# How often this node re-announces its membership.
+#
+# Announces are deliberately expensive in Reticulum -- they are how the network
+# learns paths -- so this is not a heartbeat. It is slow enough to be cheap and
+# frequent enough that a node restarting is found again without anyone doing
+# anything. Members are kept far longer than this (see tak_membership), so a
+# missed announce costs nothing.
+ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 # Loopback only, and not configurable. This endpoint applies no authentication
 # because it assumes only this device can reach it; binding it to a routable
 # address would hand the mesh to anyone who can open a socket.
@@ -93,11 +102,35 @@ def load_node_identity(path=None):
     return identity
 
 
+class TeamAnnounceHandler:
+    """Learns team members from the announces every node already hears.
+
+    Reticulum hands every announce on our aspect to this, most of which are not
+    ours: another team, or software that is not this project at all. The
+    registry decides, and a payload it does not recognise is ordinary.
+    """
+
+    def __init__(self, registry, on_new_member=None):
+        self.aspect_filter = "%s.%s" % (tak_identity.NODE_APP,
+                                        ".".join(tak_identity.NODE_ASPECTS))
+        self.registry = registry
+        self.on_new_member = on_new_member
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        if self.registry.remember(destination_hash, app_data) is membership.MEMBER_NEW:
+            if self.on_new_member:
+                self.on_new_member(destination_hash)
+
+
 class CotBridge:
-    def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None):
+    def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None,
+                 callsign="BRIDGE", role="Team Member"):
         import RNS
         self.rns = RNS
         self.team = team
+        self.secret = secret
+        self.callsign = callsign
+        self.role = role
         self.port = port
         self.clients = []
         self.clients_lock = threading.Lock()
@@ -107,24 +140,69 @@ class CotBridge:
         # on a shared destination; the other is an event ATAK sent that
         # we refused. Collapsing them hides whichever is smaller.
         self.unreadable = 0
-
-        # A GROUP destination is symmetric -- every member both speaks and
-        # listens on it, and command is a member rather than a hop -- but RNS
-        # still wants an IN and an OUT object. Both are built from the team's
-        # shared identity so every member lands on the same address.
-        self.group = groups.group_destination(team, secret, RNS.Destination.IN)
-        self.group.set_packet_callback(self._from_mesh)
-        self.out = groups.group_destination(team, secret, RNS.Destination.OUT)
+        self.unreachable = 0
 
         # The UID names *this node*, not the team. Registered IN so the address
-        # a peer recovers from the UID is one this node actually answers on.
+        # a peer recovers from the UID is one this node actually answers on --
+        # and so team traffic addressed to us arrives here.
         self.identity = load_node_identity(identity_path)
         self.node = tak_identity.node_destination(self.identity, RNS.Destination.IN)
+        self.node.set_packet_callback(self._from_mesh)
         self.uid = tak_identity.uid_for(self.node.hash)
+
+        # No GROUP destination. Pivot 5: a group packet reaches only peers on
+        # the same interface as the sender -- any intermediary at all spends
+        # its single hop -- so a team is a membership set and traffic for it is
+        # addressed to each member. See docs/TAKIntegrationPivots.md.
+        self.registry = membership.MemberRegistry(team, secret, own_hash=self.node.hash)
+        self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined)
+        RNS.Transport.register_announce_handler(self.announce_handler)
+
         # One pipeline per bridge: it holds the learned ATAK UID, refuses our
         # own events before they can teach it anything, and rewrites our
         # self-reports. The order of those three is the whole of it.
         self.pipeline = CotOutbound(self.uid)
+        self._announce_thread = None
+
+    # ---- membership ----
+    def announce(self):
+        """Say who we are, so peers can address us.
+
+        Without this the UID derived in pivot 1 decodes to a destination
+        nothing has a path to: correct, and unreachable. The payload carries an
+        HMAC of the team rather than its name, so the announce does not undo
+        what group_aspects went to trouble to hide.
+        """
+        self.node.announce(membership.member_payload(self.team, self.secret,
+                                                     self.callsign, self.role))
+
+    def _member_joined(self, destination_hash):
+        claims = self.registry.describe(destination_hash) or {}
+        print("[bridge] team member %s is %s"
+              % (claims.get("callsign", "?"), tak_identity.uid_for(destination_hash)),
+              flush=True)
+        # Say who we are back. A node that starts late hears everyone who
+        # announces after it and nobody who announced before, so without this
+        # the first node up stays invisible to the second until the next
+        # re-announce -- half an hour of a team that cannot see its own
+        # members. The registry rate-limits, and greeting only happens for a
+        # member that was not already known, so the reply this provokes finds a
+        # known member and goes no further.
+        if self.registry.should_greet():
+            try:
+                self.announce()
+            except Exception as error:                      # noqa: BLE001
+                print("[bridge] greeting announce failed: %s" % error, flush=True)
+
+    def _announce_forever(self):
+        while True:
+            time.sleep(ANNOUNCE_INTERVAL_SECONDS)
+            try:
+                self.announce()
+            except Exception as error:                      # noqa: BLE001
+                # A failed announce is not worth losing the bridge over; the
+                # next one is half an hour away and members are kept far longer.
+                print("[bridge] announce failed: %s" % error, flush=True)
 
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
@@ -186,8 +264,39 @@ class CotBridge:
             # than assigning it into a shared one, which silently discarded
             # every mesh-side drop recorded above.
             return
-        self.rns.Packet(self.out, frame).send()
-        self.sent += 1
+        self.sent += self._fan_out(frame)
+
+    def _fan_out(self, frame):
+        """Send one frame to every member of the team. Returns how many went.
+
+        One routed unicast each, because that is the only thing that crosses a
+        hop. The airtime is real and is the reason position does not come this
+        way: a marker is an operator action and rare, a position report is a
+        beacon. See pivot 5 for the costing.
+        """
+        sent = 0
+        for destination_hash in self.registry.members():
+            identity = self.rns.Identity.recall(destination_hash)
+            if identity is None:
+                # Heard the announce, lost the identity -- possible after a
+                # restart. Ask for the path; the next marker will find it.
+                self.rns.Transport.request_path(destination_hash)
+                self.unreachable += 1
+                continue
+            try:
+                destination = tak_identity.node_destination(identity,
+                                                            self.rns.Destination.OUT)
+                self.rns.Packet(destination, frame).send()
+                sent += 1
+            except OSError as error:
+                # An oversized frame is refused by encode() long before here,
+                # so this is a transport problem: no path, or an interface that
+                # has gone. Counted rather than fatal -- one unreachable member
+                # must not cost the others their copy.
+                self.unreachable += 1
+                print("[bridge] could not reach %s: %s"
+                      % (destination_hash.hex(), error), flush=True)
+        return sent
 
     def _serve_client(self, connection):
         stream = CotStream()
@@ -216,8 +325,11 @@ class CotBridge:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((BIND_HOST, self.port))
         listener.listen(8)
-        print("[bridge] team %r on %s" % (self.team, self.group.hash.hex()), flush=True)
-        print("[bridge] this node is %s" % self.uid, flush=True)
+        print("[bridge] team %r, this node is %s (%s)"
+              % (self.team, self.uid, self.callsign), flush=True)
+        self.announce()
+        self._announce_thread = threading.Thread(target=self._announce_forever, daemon=True)
+        self._announce_thread.start()
         print("[bridge] point ATAK at %s:%d, TCP, no SSL" % (BIND_HOST, self.port), flush=True)
         while True:
             connection, _ = listener.accept()
@@ -233,6 +345,9 @@ def main():
                         help="path to the fleet secret; %s is preferred"
                              % groups.SECRET_ENVIRONMENT)
     parser.add_argument("--config", default=None, help="Reticulum config directory")
+    parser.add_argument("--callsign", default="BRIDGE",
+                        help="how this node identifies itself to the team")
+    parser.add_argument("--role", default="Team Member")
     parser.add_argument("--identity", default=None,
                         help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
     args = parser.parse_args()
@@ -257,13 +372,16 @@ def main():
         print("[bridge] own interface, and point peers at that:  --config <dir>",
               flush=True)
         sys.exit(1)
-    bridge = CotBridge(args.team, secret, args.port, args.identity)
+    bridge = CotBridge(args.team, secret, args.port, args.identity,
+                       args.callsign, args.role)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
-        print("\n[bridge] sent %d, received %d, unreadable %d, refused %d"
+        print("\n[bridge] sent %d, received %d, unreadable %d, refused %d, "
+              "unreachable %d, members %d"
               % (bridge.sent, bridge.received, bridge.unreadable,
-                 bridge.pipeline.dropped), flush=True)
+                 bridge.pipeline.dropped, bridge.unreachable,
+                 len(bridge.registry)), flush=True)
 
 
 if __name__ == "__main__":
