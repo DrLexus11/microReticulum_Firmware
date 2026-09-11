@@ -85,6 +85,19 @@ class SecretLoadingTests(unittest.TestCase):
         secret = groups.load_fleet_secret(environment={groups.SECRET_ENVIRONMENT: "x" * 32})
         self.assertEqual(secret, b"x" * 32)
 
+    def test_every_route_derives_the_same_key_from_the_same_material(self):
+        """A file written with `echo` carries a trailing newline; an operator
+        pasting the same secret into a phone may add a space. If the routes
+        disagree, each member broadcasts happily and hears nothing."""
+        self.write(SECRET + b"\n")
+        from_file = groups.load_fleet_secret(self.path, environment={})
+        padded = " " + SECRET.decode() + " \n"
+        from_env = groups.load_fleet_secret(
+            environment={groups.SECRET_ENVIRONMENT: padded})
+        self.assertEqual(from_file, from_env)
+        self.assertEqual(groups.group_key("Cyan", from_file),
+                         groups.group_key("Cyan", from_env))
+
     def test_a_private_file_is_accepted_and_trailing_newline_ignored(self):
         self.write(SECRET + b"\n")
         self.assertEqual(groups.load_fleet_secret(self.path, environment={}), SECRET)

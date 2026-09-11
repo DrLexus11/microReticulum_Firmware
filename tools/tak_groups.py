@@ -32,6 +32,12 @@ DOMAIN = b"urtn-tak-group-v1\0"
 SECRET_ENVIRONMENT = "TAK_FLEET_SECRET"
 DEFAULT_SECRET_PATH = "~/.impr-tak/fleet-secret"
 MIN_SECRET_BYTES = 16
+
+# Spelled out rather than left to bytes.strip()'s default so the Kotlin side can
+# match it exactly. Kotlin's String.trim() is Unicode-aware and would strip more
+# than this, which for a shared secret means deriving a different key from the
+# same characters.
+ASCII_WHITESPACE = b" \t\n\r\x0b\x0c"
 # 64, not 32. RNS's Token picks its cipher from the key length: 32 bytes
 # selects AES-128-CBC with a 16-byte signing key, 64 selects AES-256-CBC with a
 # 32-byte one. A 32-byte key is accepted without complaint, so the weaker
@@ -65,6 +71,8 @@ def load_fleet_secret(path=None, environment=None):
     if supplied:
         secret = supplied.encode("utf-8")
     else:
+        secret = None
+    if secret is None:
         secret_path = Path(path or DEFAULT_SECRET_PATH).expanduser()
         if not secret_path.exists():
             raise ValueError(
@@ -76,7 +84,14 @@ def load_fleet_secret(path=None, environment=None):
         if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
             raise ValueError(
                 "Fleet secret is group- or world-accessible: %s" % secret_path)
-        secret = secret_path.read_bytes().strip()
+        secret = secret_path.read_bytes()
+    # Stripped whichever way it arrived. A file written with `echo` carries a
+    # trailing newline and stripping it is why this is here at all -- but
+    # stripping only that route meant the same provisioning material derived
+    # one key from a file and a different one from the environment, or from an
+    # operator pasting it into a phone with a stray space. Two members whose
+    # keys disagree each broadcast happily and hear nothing.
+    secret = secret.strip(ASCII_WHITESPACE)
     if len(secret) < MIN_SECRET_BYTES:
         raise ValueError("Fleet secret must be at least %d bytes" % MIN_SECRET_BYTES)
     return secret
