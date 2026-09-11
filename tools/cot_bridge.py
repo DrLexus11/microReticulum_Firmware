@@ -26,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
+import cot_gateway
+import cot_position
+import position_codec
 import tak_membership as membership
 from cot_endpoint import CotOutbound, CotStream
 
@@ -47,6 +50,12 @@ CLIENT_WRITE_TIMEOUT = 2.0
 # anything. Members are kept far longer than this (see tak_membership), so a
 # missed announce costs nothing.
 ANNOUNCE_INTERVAL_SECONDS = 30 * 60
+# How long a position is worth drawing before the track should go grey.
+#
+# Twice the report floor: one missed report is a radio being a radio, two is
+# worth an operator noticing. A stale track that never expires is the failure
+# that matters here -- a marker where somebody used to be, still being trusted.
+POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
 # Loopback only, and not configurable. This endpoint applies no authentication
 # because it assumes only this device can reach it; binding it to a routable
 # address would hand the mesh to anyone who can open a socket.
@@ -164,6 +173,15 @@ class CotBridge:
         self.pipeline = CotOutbound(self.uid)
         self._announce_thread = None
 
+        # Position does not go through tier 2. 94% of what ATAK emits is a
+        # position report, and at ten nodes over four hops that is 85% of a
+        # LoRa channel as compressed CoT against 32% as this codec -- neither
+        # survivable alone, which is why the gate matters as much as the
+        # encoding. See tools/cot_position.py for the measurements.
+        self.position_gate = cot_position.PositionGate()
+        self.sender_id = self.registry.sender_id_for(self.node.hash)
+        self.positions_sent = self.positions_received = 0
+
     # ---- membership ----
     def announce(self):
         """Say who we are, so peers can address us.
@@ -206,15 +224,44 @@ class CotBridge:
 
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
+        raw = bytes(data)
+        # Byte zero is the format version of whichever codec produced this, and
+        # the two in use differ: tier 2 frames open with 1, position reports
+        # with 2. Cheap, and asserted in the tests so the day they collide is
+        # the day a test fails rather than the day a track lands in the wrong
+        # place.
+        if raw[:1] == bytes([position_codec.WIRE_VERSION]):
+            if self._position_from_mesh(raw):
+                return
         try:
-            xml = tier2.decode(bytes(data))
+            xml = tier2.decode(raw)
         except ValueError:
-            # A frame we cannot read is ordinary on a shared destination: an
-            # older node, a newer dictionary, or simply not ours.
+            # A frame we cannot read is ordinary: an older node, a newer
+            # dictionary, or simply not ours.
             self.unreadable += 1
             return
         self._to_clients(xml.encode("utf-8"))
         self.received += 1
+
+    def _position_from_mesh(self, raw):
+        """Render a peer's position report as CoT for the local ATAK."""
+        fix = position_codec.decode(raw)
+        if fix is None:
+            return False
+        # Four bytes of identity is a lookup key here, not an identity.
+        # Membership is the table that turns it back into a whole destination
+        # hash, so a peer's track carries the same UID as everything else that
+        # node sends rather than a track of its own.
+        sender = self.registry.resolve_sender_id(fix.sender_id)
+        if sender is None:
+            self.unreadable += 1
+            return True
+        claims = self.registry.describe(sender) or {}
+        self._to_clients(cot_gateway.build_cot(
+            fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
+            POSITION_STALE_SECONDS))
+        self.positions_received += 1
+        return True
 
     def _to_clients(self, payload):
         """Write to every connected client without blocking the ones behind.
@@ -254,6 +301,12 @@ class CotBridge:
 
     # ---- ATAK -> mesh ----
     def _from_atak(self, xml):
+        # Our own position takes the typed path. The echo guard runs first --
+        # inside the pipeline -- for everything else, so this asks the same
+        # question the pipeline would before spending a packet on it.
+        if self.pipeline.atak_uid and cot_position.is_position(xml):
+            if not self.pipeline.is_echo(xml) and self._position_from_atak(xml):
+                return
         known = self.pipeline.atak_uid
         frame = self.pipeline.frame(xml, tier2.encode)
         if known is None and self.pipeline.atak_uid:
@@ -265,6 +318,23 @@ class CotBridge:
             # every mesh-side drop recorded above.
             return
         self.sent += self._fan_out(frame)
+
+    def _position_from_atak(self, xml):
+        """Send a position report as twenty-one bytes, if it is due.
+
+        True when this event was handled here, whether or not anything went on
+        the air: a suppressed report is handled, and must not then also be sent
+        as CoT.
+        """
+        fix = cot_position.fix_from_cot(xml, self.sender_id)
+        if fix is None:
+            # Shaped like a position and carrying none. Not ours to encode, so
+            # it falls through to tier 2 rather than being dropped.
+            return False
+        if not self.position_gate.allows(fix, time.time()):
+            return True
+        self.positions_sent += self._fan_out(position_codec.encode(fix))
+        return True
 
     def _fan_out(self, frame):
         """Send one frame to every member of the team. Returns how many went.
@@ -377,11 +447,12 @@ def main():
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
-        print("\n[bridge] sent %d, received %d, unreadable %d, refused %d, "
-              "unreachable %d, members %d"
-              % (bridge.sent, bridge.received, bridge.unreadable,
-                 bridge.pipeline.dropped, bridge.unreachable,
-                 len(bridge.registry)), flush=True)
+        print("\n[bridge] sent %d, received %d, positions %d/%d, unreadable %d, "
+              "refused %d, unreachable %d, suppressed %d, members %d"
+              % (bridge.sent, bridge.received,
+                 bridge.positions_sent, bridge.positions_received,
+                 bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
+                 bridge.position_gate.suppressed, len(bridge.registry)), flush=True)
 
 
 if __name__ == "__main__":
