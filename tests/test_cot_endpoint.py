@@ -205,5 +205,54 @@ class OutboundPipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.dropped, 5)
 
 
+class BoundedFramingTests(unittest.TestCase):
+    """The size bound applied to unterminated events only, which left two
+    ways for one malformed document to cost us good ones."""
+
+    def test_a_complete_oversized_event_is_not_emitted(self):
+        stream = CotStream(max_event_bytes=256)
+        self.assertEqual(stream.feed(b'<event uid="h">' + b"x" * 512 + b"</event>"), [])
+        self.assertEqual(stream.feed(B), [B])
+
+    def test_a_runaway_sharing_a_read_with_a_good_event_keeps_the_good_one(self):
+        """The close tag found after a runaway belongs to the *next* event, so
+        the span covers both. Dropping the span dropped the good event with
+        it; resynchronising at the next opening keeps it."""
+        stream = CotStream(max_event_bytes=256)
+        self.assertEqual(stream.feed(b'<event uid="runaway" ' + b"y" * 400 + B), [B])
+
+    def test_a_runaway_alone_does_not_cost_what_follows(self):
+        stream = CotStream(max_event_bytes=256)
+        self.assertEqual(stream.feed(b'<event uid="r" ' + b"y" * 400), [])
+        self.assertEqual(stream.feed(B), [B])
+
+    def test_resynchronising_always_makes_progress(self):
+        """A buffer of nothing but openings must not loop forever."""
+        stream = CotStream(max_event_bytes=64)
+        self.assertEqual(stream.feed(b"<event " * 200), [])
+        self.assertLessEqual(stream.pending, 64 + len(b"<event"))
+
+
+class StrictDecodingTests(unittest.TestCase):
+    """Malformed bytes must not be repaired into plausible content."""
+
+    def test_invalid_utf8_is_not_self_addressed(self):
+        own = "urtn-" + "ab" * 16
+        broken = ('<event uid="%s" type="a-f-G-U-C"><detail/></event>' % own).encode()
+        broken = broken[:30] + b"\xff\xfe" + broken[30:]
+        self.assertFalse(is_self_addressed(broken, own))
+
+    def test_invalid_utf8_is_dropped_and_counted_not_repaired(self):
+        """Replacement decoding rewrote the operator's content: a callsign with
+        one bad byte became a callsign with U+FFFD in it, and that is what the
+        rest of the team saw."""
+        pipeline = CotOutbound(OURS)
+        broken = PLI.encode("utf-8")
+        broken = broken.replace(b"LEXUS", b"LEX\xffS")
+        self.assertIsNone(pipeline.frame(broken, identity_encode))
+        self.assertEqual(pipeline.dropped, 1)
+        self.assertIsNone(pipeline.atak_uid)
+
+
 if __name__ == "__main__":
     unittest.main()

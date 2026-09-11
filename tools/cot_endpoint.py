@@ -58,15 +58,55 @@ class CotStream:
             end = self._buffer.find(EVENT_CLOSE)
             if end < 0:
                 if len(self._buffer) > self._max:
-                    # Abandon the oversized event rather than the connection:
-                    # a peer sending one runaway document should not cost us
-                    # the ones that follow it.
-                    self._buffer.clear()
+                    # Abandon the oversized event, not the connection and not
+                    # whatever followed it. Clearing the whole buffer threw
+                    # away any complete event that arrived in the same read as
+                    # a runaway one, so a peer sending a single unterminated
+                    # document cost us the good events behind it.
+                    #
+                    # `continue`, not `break`: resynchronising once per read
+                    # leaves the rest of an oversized read sitting in the
+                    # buffer, draining a few bytes per call. Looping here
+                    # discards until the buffer is either within the bound or
+                    # holds no further opening, so `pending` is bounded when
+                    # feed() returns. Each pass removes at least one byte, so
+                    # it terminates.
+                    self._resynchronise()
+                    continue
                 break
             end += len(EVENT_CLOSE)
+            if end > self._max:
+                # A *complete* event can be oversized too, and the bound was
+                # only ever applied to unterminated ones. There are two ways
+                # to get here: a genuinely enormous document, or -- more
+                # often -- an unterminated event followed by a real one, where
+                # this close tag belongs to the second and the span covers
+                # both. Either way the span is not one event, and forwarding
+                # it would put a megabyte of whatever it is on the air.
+                #
+                # Resynchronised from *inside* the span rather than past it:
+                # the close tag at the end may well belong to a good event, and
+                # dropping the whole span would discard that event too. Moving
+                # to the next '<event' drops only the runaway's opening, and
+                # the buffer shrinks by at least one byte, so this terminates.
+                self._resynchronise()
+                continue
             events.append(bytes(self._buffer[:end]))
             del self._buffer[:end]
         return events
+
+    def _resynchronise(self):
+        """Drop the current event and pick up at the next one that starts.
+
+        Not a clear(): the bytes after a runaway document are as likely to be
+        the start of a good event as anything else, and discarding them means a
+        single malformed document costs every event that shared a read with it.
+        """
+        nxt = self._buffer.find(EVENT_OPEN, 1)
+        if nxt < 0:
+            self._buffer.clear()
+        else:
+            del self._buffer[:nxt]
 
     @property
     def pending(self):
@@ -84,7 +124,14 @@ def is_self_addressed(cot_xml, own_uid):
     if not own_uid:
         return False
     if isinstance(cot_xml, (bytes, bytearray)):
-        cot_xml = bytes(cot_xml).decode("utf-8", errors="replace")
+        try:
+            cot_xml = bytes(cot_xml).decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            # Not our event if it is not even text. Decoding with replacement
+            # here turned malformed bytes into U+FFFD *inside* an otherwise
+            # valid event, which then passed every later check and went to the
+            # mesh carrying content nobody sent.
+            return False
     end = _start_tag_end(cot_xml)
     head = cot_xml if end < 0 else cot_xml[:end]
     span = _attribute_value_span(head, "uid")
@@ -238,7 +285,15 @@ class CotOutbound:
         something that is not CoT at all, and an event we could not encode.
         """
         if isinstance(cot_xml, (bytes, bytearray)):
-            cot_xml = bytes(cot_xml).decode("utf-8", errors="replace")
+            try:
+                cot_xml = bytes(cot_xml).decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                # Counted and dropped, never repaired. Replacement decoding
+                # silently rewrites the operator's content -- a callsign with
+                # one bad byte becomes a callsign with a U+FFFD in it, and
+                # that is what the rest of the team sees.
+                self.dropped += 1
+                return None
         # Validated here rather than relied on downstream. rewrite_self_uid
         # returns early -- without parsing -- until an ATAK UID has been
         # learned, so before the first self-report of a session nothing else in
