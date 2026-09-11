@@ -25,5 +25,27 @@
     "identity_key": "1c640d22658bf1a9329bc93f7df3450b88fc98cc8728bbda552c42b7eaf92a1babe9019de90531f73dd7dd338a27076f4289c5f8b3cc5d1ad945007be0f919ee",
     "aspect": "1679e76b5d19c38d7eb2f36cdc545d7c",
     "destination_hash": "65985cd6f565b5c40638d94c6b955281"
+  },
+  "membership": {
+    "secret": "a fleet secret long enough to pass",
+    "team": "Cyan",
+    "version": 2,
+    "team_tag": "1fcdd98639cfe4d7",
+    "team_tag_bytes": 8,
+    "callsign": "LEXUS",
+    "role": "Team Member",
+    "payload": "021fcdd98639cfe4d7050b4c455855535465616d204d656d626572",
+    "greet_min_interval_seconds": 20,
+    "expiry_seconds": 21600
+  },
+  "chat": {
+    "message": "<event access=\"Undefined\" how=\"h-g-i-g-o\" stale=\"2026-09-12T13:18:37.403Z\" start=\"2026-09-11T13:18:37.403Z\" time=\"2026-09-11T13:18:37.403Z\" type=\"b-t-f\" uid=\"GeoChat.ANDROID-3f5c91a27be4d068.S-1-5-21-481920573-1837465920-3094857261-1007.3e80bd07-fdd8-4c2d-aaf4-8119b1f23a56\" version=\"2.0\"><point ce=\"5.5\" hae=\"62.588\" lat=\"40.959697\" le=\"9999999.0\" lon=\"29.094804\"/><detail><__chat chatroom=\"Inquisitor\" groupOwner=\"false\" id=\"S-1-5-21-481920573-1837465920-3094857261-1007\" messageId=\"3e80bd07-fdd8-4c2d-aaf4-8119b1f23a56\" parent=\"RootContactGroup\" senderCallsign=\"LEXUS\"><chatgrp id=\"S-1-5-21-481920573-1837465920-3094857261-1007\" uid0=\"ANDROID-3f5c91a27be4d068\" uid1=\"S-1-5-21-481920573-1837465920-3094857261-1007\"/></__chat><link relation=\"p-p\" type=\"a-f-G-U-C\" uid=\"ANDROID-3f5c91a27be4d068\"/><__serverdestination destinations=\"10.0.0.1:4242:tcp:ANDROID-3f5c91a27be4d068\"/><remarks source=\"BAO.F.ATAK.ANDROID-3f5c91a27be4d068\" time=\"2026-09-11T13:18:37.403Z\" to=\"S-1-5-21-481920573-1837465920-3094857261-1007\">where u at</remarks><marti><dest callsign=\"Inquisitor\"/></marti></detail></event>",
+    "receipt_delivered": "<event access=\"Undefined\" how=\"m-g\" stale=\"2026-09-12T06:49:10.267Z\" start=\"2026-09-11T06:49:10.267Z\" time=\"2026-09-11T06:49:10.267Z\" type=\"b-t-f-d\" uid=\"cada9112-1c7d-42e5-82d9-9e26943631db\" version=\"2.0\"><point ce=\"9999999.0\" hae=\"46.829\" lat=\"40.954655\" le=\"9999999.0\" lon=\"29.093491\"/><detail><__chatreceipt chatroom=\"Inquisitor\" groupOwner=\"false\" id=\"S-1-5-21-481920573-1837465920-3094857261-1007\" messageId=\"cada9112-1c7d-42e5-82d9-9e26943631db\" parent=\"RootContactGroup\" senderCallsign=\"LEXUS\"><chatgrp id=\"S-1-5-21-481920573-1837465920-3094857261-1007\" uid0=\"ANDROID-3f5c91a27be4d068\" uid1=\"S-1-5-21-481920573-1837465920-3094857261-1007\"/></__chatreceipt><link relation=\"p-p\" type=\"a-f-G-U-C\" uid=\"ANDROID-3f5c91a27be4d068\"/><__serverdestination destinations=\"10.0.0.1:4242:tcp:ANDROID-3f5c91a27be4d068\"/><marti><dest callsign=\"Inquisitor\"/></marti></detail></event>",
+    "version": 3,
+    "kind_message": 0,
+    "kind_delivered": 1,
+    "kind_read": 2,
+    "message_frame": "0300112233443e80bd07fdd84c2daaf48119b1f23a560a000a496e7175697369746f7277686572652075206174",
+    "receipt_frame": "030111223344cada91121c7d42e582d99e26943631db0a0000496e7175697369746f72"
   }
 }
