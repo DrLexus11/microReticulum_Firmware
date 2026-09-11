@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Run a local CoT endpoint: ATAK on 127.0.0.1, a team on the mesh.
+
+    tools/cot_bridge.py --team Cyan --config ~/.impr-tak/bridge-rns
+
+The bridge owns its own Reticulum instance and refuses to run as a client of a
+shared one; see tools/cot_bridge.example.conf for the configuration and the
+reason. The fleet secret comes from the environment or ~/.impr-tak/fleet-secret,
+never from the command line.
+
+ATAK connects to 127.0.0.1:8087 and never to anybody's address. Everything it
+sends goes to the team's GROUP destination; everything the team sends is
+written back to every connected client. See docs/TAKNative.md.
+"""
+
+import argparse
+import os
+import socket
+import stat
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cot_tier2 as tier2
+import tak_groups as groups
+import tak_identity as tak_identity
+from cot_endpoint import CotOutbound, CotStream
+
+DEFAULT_PORT = 8087
+# This node's own Reticulum identity, kept beside the fleet secret. Created on
+# first run; losing it changes this node's UID, which to every peer reads as a
+# different responder rather than the same one returning.
+DEFAULT_IDENTITY_PATH = "~/.impr-tak/node-identity"
+# How long a single write to one ATAK client may take before that client is
+# treated as gone. Generous for a loopback socket carrying a few hundred bytes,
+# and short enough that one stalled client cannot hold up the mesh callback
+# thread that every other client's data arrives on.
+CLIENT_WRITE_TIMEOUT = 2.0
+# Loopback only, and not configurable. This endpoint applies no authentication
+# because it assumes only this device can reach it; binding it to a routable
+# address would hand the mesh to anyone who can open a socket.
+BIND_HOST = "127.0.0.1"
+
+
+def load_node_identity(path=None):
+    """This node's long-lived identity, created on first use.
+
+    Deliberately not the team identity. Everyone on a team derives that one
+    from the shared secret, so using it here would give every member the same
+    UID -- one track on the map for the whole team.
+    """
+    import RNS
+    identity_path = Path(path or DEFAULT_IDENTITY_PATH).expanduser()
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    # Opened once and read through that descriptor. Identity.from_file() reopens
+    # by name, so validating with lstat() and then handing the *pathname* to RNS
+    # checks one file and loads another -- a local process can swap the path in
+    # between and choose this node's identity for it. Same pattern as
+    # tools/tak_tasking.py.
+    try:
+        fd = os.open(identity_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        fd = None
+    except OSError as error:
+        raise ValueError("Node identity must be a regular file: %s (%s)"
+                         % (identity_path, error.strerror)) from error
+    if fd is not None:
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Node identity must be a regular file: %s" % identity_path)
+            if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                raise ValueError("Node identity is group- or world-accessible: %s"
+                                 % identity_path)
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                key = handle.read()
+        finally:
+            os.close(fd)
+        identity = RNS.Identity.from_bytes(key)
+        if identity is None:
+            raise ValueError("Node identity file is not a valid identity: %s" % identity_path)
+        return identity
+    identity = RNS.Identity()
+    # Written through a private-by-construction descriptor rather than written
+    # and then chmod'ed: the gap between the two is a window where the key is
+    # readable by anyone on the box.
+    handle = os.open(identity_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(handle)
+    identity.to_file(str(identity_path))
+    os.chmod(identity_path, 0o600)
+    return identity
+
+
+class CotBridge:
+    def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None):
+        import RNS
+        self.rns = RNS
+        self.team = team
+        self.port = port
+        self.clients = []
+        self.clients_lock = threading.Lock()
+        self.sent = self.received = 0
+        # Two separate counts. They mean different things: one is a
+        # frame off the mesh this build cannot read, which is ordinary
+        # on a shared destination; the other is an event ATAK sent that
+        # we refused. Collapsing them hides whichever is smaller.
+        self.unreadable = 0
+
+        # A GROUP destination is symmetric -- every member both speaks and
+        # listens on it, and command is a member rather than a hop -- but RNS
+        # still wants an IN and an OUT object. Both are built from the team's
+        # shared identity so every member lands on the same address.
+        self.group = groups.group_destination(team, secret, RNS.Destination.IN)
+        self.group.set_packet_callback(self._from_mesh)
+        self.out = groups.group_destination(team, secret, RNS.Destination.OUT)
+
+        # The UID names *this node*, not the team. Registered IN so the address
+        # a peer recovers from the UID is one this node actually answers on.
+        self.identity = load_node_identity(identity_path)
+        self.node = tak_identity.node_destination(self.identity, RNS.Destination.IN)
+        self.uid = tak_identity.uid_for(self.node.hash)
+        # One pipeline per bridge: it holds the learned ATAK UID, refuses our
+        # own events before they can teach it anything, and rewrites our
+        # self-reports. The order of those three is the whole of it.
+        self.pipeline = CotOutbound(self.uid)
+
+    # ---- mesh -> ATAK ----
+    def _from_mesh(self, data, packet):
+        try:
+            xml = tier2.decode(bytes(data))
+        except ValueError:
+            # A frame we cannot read is ordinary on a shared destination: an
+            # older node, a newer dictionary, or simply not ours.
+            self.unreadable += 1
+            return
+        self._to_clients(xml.encode("utf-8"))
+        self.received += 1
+
+    def _to_clients(self, payload):
+        """Write to every connected client without blocking the ones behind.
+
+        This runs on Reticulum's packet callback thread. sendall() blocks for as
+        long as a client refuses to read -- an ATAK that has stopped draining
+        its socket blocks forever -- and doing that while holding clients_lock
+        would stop every other client, the accept loop, and the mesh callback
+        that delivers the next packet. So the lock covers the snapshot only, and
+        a client that cannot keep up is dropped rather than allowed to stall the
+        bridge.
+        """
+        with self.clients_lock:
+            targets = list(self.clients)
+        dead = []
+        for client in targets:
+            try:
+                # A timeout rather than a blocking write, because "slow" and
+                # "gone" look identical from here and only one of them resolves
+                # itself. A client that cannot take a single CoT event inside
+                # this window is not keeping up with a live feed either.
+                client.settimeout(CLIENT_WRITE_TIMEOUT)
+                client.sendall(payload)
+            except OSError:
+                dead.append(client)
+        if not dead:
+            return
+        with self.clients_lock:
+            for client in dead:
+                if client in self.clients:
+                    self.clients.remove(client)
+        for client in dead:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+    # ---- ATAK -> mesh ----
+    def _from_atak(self, xml):
+        known = self.pipeline.atak_uid
+        frame = self.pipeline.frame(xml, tier2.encode)
+        if known is None and self.pipeline.atak_uid:
+            print("[bridge] this ATAK calls itself %s; peers will see %s"
+                  % (self.pipeline.atak_uid, self.uid), flush=True)
+        if frame is None:
+            # The pipeline keeps its own refusal count; reading it here rather
+            # than assigning it into a shared one, which silently discarded
+            # every mesh-side drop recorded above.
+            return
+        self.rns.Packet(self.out, frame).send()
+        self.sent += 1
+
+    def _serve_client(self, connection):
+        stream = CotStream()
+        with self.clients_lock:
+            self.clients.append(connection)
+        try:
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                for event in stream.feed(chunk):
+                    self._from_atak(event)
+        except OSError:
+            pass
+        finally:
+            with self.clients_lock:
+                if connection in self.clients:
+                    self.clients.remove(connection)
+            try:
+                connection.close()
+            except OSError:
+                pass
+
+    def serve_forever(self):
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((BIND_HOST, self.port))
+        listener.listen(8)
+        print("[bridge] team %r on %s" % (self.team, self.group.hash.hex()), flush=True)
+        print("[bridge] this node is %s" % self.uid, flush=True)
+        print("[bridge] point ATAK at %s:%d, TCP, no SSL" % (BIND_HOST, self.port), flush=True)
+        while True:
+            connection, _ = listener.accept()
+            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            threading.Thread(target=self._serve_client, args=(connection,), daemon=True).start()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--team", default=tak_identity.DEFAULT_TEAM)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--secret-file", default=None,
+                        help="path to the fleet secret; %s is preferred"
+                             % groups.SECRET_ENVIRONMENT)
+    parser.add_argument("--config", default=None, help="Reticulum config directory")
+    parser.add_argument("--identity", default=None,
+                        help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
+    args = parser.parse_args()
+
+    secret = groups.load_fleet_secret(args.secret_file)
+    import RNS
+    reticulum = RNS.Reticulum(args.config)
+    if reticulum.is_connected_to_shared_instance:
+        # Refused rather than warned about. A GROUP packet is dropped above one
+        # hop, and a shared-instance client sits one hop behind the daemon that
+        # owns the interfaces -- so a peer one hop from the daemon is two hops
+        # from here and every packet is dropped on delivery. Nothing reports
+        # it: the endpoint listens, the team address is right, counters move on
+        # the wire, and no CoT ever arrives. Measured 2026-09-11; it cost an
+        # afternoon, and it would cost it again every time.
+        print("[bridge] REFUSING to run as a client of a shared Reticulum instance.",
+              flush=True)
+        print("[bridge] Group traffic cannot survive the extra hop that adds. Give",
+              flush=True)
+        print("[bridge] the bridge its own config with share_instance = No and its",
+              flush=True)
+        print("[bridge] own interface, and point peers at that:  --config <dir>",
+              flush=True)
+        sys.exit(1)
+    bridge = CotBridge(args.team, secret, args.port, args.identity)
+    try:
+        bridge.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[bridge] sent %d, received %d, unreadable %d, refused %d"
+              % (bridge.sent, bridge.received, bridge.unreadable,
+                 bridge.pipeline.dropped), flush=True)
+
+
+if __name__ == "__main__":
+    main()

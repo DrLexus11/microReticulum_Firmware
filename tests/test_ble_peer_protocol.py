@@ -340,8 +340,6 @@ class DeckClientTests(unittest.TestCase):
         self.assertNotIn("ftype = TYPE_LONE", body)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class HeaderValidationTests(unittest.TestCase):
@@ -372,3 +370,5 @@ class HeaderValidationTests(unittest.TestCase):
     def test_a_lone_fragment_is_always_sequence_zero(self):
         rule = self.header_rule()
         self.assertIn("seq == 0 && total <= 1", rule)
+if __name__ == "__main__":
+    unittest.main()

@@ -450,8 +450,6 @@ class OzdisanAcceptanceTargetTests(unittest.TestCase):
         self.assertNotIn("firmware_reset_kiss_frame()", writer)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class CompactProvisioningTests(unittest.TestCase):
@@ -482,3 +480,5 @@ class CompactProvisioningTests(unittest.TestCase):
         # with no radio it never runs. OZD omits all of ns108, including the
         # sentinel that would serialise as 4294967295 bytes. See Backlog item 9.
         self.assertNotIn("PROV_METRICS_DEV_STACK", self.profile())
+if __name__ == "__main__":
+    unittest.main()

@@ -1,7 +1,10 @@
 import hashlib
 import os
+import sys
 import unittest
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from firmware_image import (
     esp_image_sha256,
     firmware_hash_kiss_frame,
