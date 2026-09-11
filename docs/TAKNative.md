@@ -490,6 +490,30 @@ routing decision is visible in the output rather than asserted.
 A marker keeps its own UID and a self-report gets the node's, which is pivot 1
 holding across a real exchange.
 
+### Chat, added 2026-09-11
+
+A GeoChat line crossed in both directions between the phone and the deck, each
+side rendering the other's callsign from the member registry rather than a raw
+identifier:
+
+```
+deck -> phone   type=b-t-f  from=ALPHA    text='where u at'
+phone -> deck   type=b-t-f  from=COLUMBA  text='on my way'
+```
+
+The measurement behind the codec is worth restating because it is stronger than
+"chat is expensive": a real GeoChat line from this lab compresses to **402
+bytes** against a 383-byte MDU. On tier 2 chat was not costly, it was
+**undeliverable** -- and after the frame bound was added it is refused outright,
+which before that fix meant an exception the client loop read as a dead socket.
+
+    message   1100 B raw   tier 2 refused   chat  45 B,  71 ms
+    receipt    879 B raw   tier 2 345 B     chat  35 B,  64 ms
+
+Real ATAK was connected to the phone's endpoint during this run -- the log line
+`This ATAK calls itself ANDROID-…` is the endpoint learning it -- though the
+events under test were injected rather than typed into the app.
+
 ### What this run does not establish
 
 - **Airtime.** The path was TCP over Wi-Fi. The 85%-against-32% figures that
