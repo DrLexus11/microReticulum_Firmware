@@ -155,3 +155,60 @@ large share of the resets were self-inflicted by the observer. That was true of
 the ones counted during console captures. It is not true in general, and the
 conclusion drawn from it -- that removing the observer might remove the resets --
 is wrong.
+
+## 4. ATAK's connection to the local CoT endpoint flaps
+
+**Status: open, found 2026-09-12 on the first end-to-end hardware run. This is
+the one that cost the evening.**
+
+Everything the endpoint rendered while ATAK was disconnected went nowhere, and
+nothing said so. The only evidence was a log line added while hunting it:
+
+    -> ATAK: 637 bytes to 0 client(s)
+
+Markers and chat were decoded and rebuilt correctly the entire time. The frames
+crossed the mesh, the renderer produced valid CoT, and it was written to an
+empty client list. From the operator's side that is indistinguishable from the
+mesh not working, which is exactly the wrong conclusion to reach on a hillside.
+
+**Leading hypothesis: the endpoint never answers ATAK's ping.** ATAK sends
+`<event type="t-x-c-t" …>` to its server as a liveness check, and a TAK server
+replies `t-x-c-t-r`. Ours ignores it, so ATAK concludes the server is dead and
+cycles the connection. Observed: a connection alive at 18:01:20, gone by
+18:02:30, back by 18:04:59.
+
+Worth checking before anything else, because it is cheap to test and would
+explain the whole pattern. If it is not the ping, the next candidates are the
+endpoint dropping clients on a write error and ATAK's own reconnect policy.
+
+**Why it matters more outdoors.** Indoors it costs a repeated test. In the
+field every drop is a hole in the picture that nothing reports, and it will
+read as a range problem during Outdoor Test 1.
+
+## 5. A node that restarts is invisible for up to thirty minutes
+
+**Status: open, found 2026-09-12. A one-line rule change, but it needs the
+rule agreed rather than patched.**
+
+Both implementations announce every 30 minutes and greet back when they hear a
+member that is **new to them**. That covers a node joining a running team. It
+does not cover the case that actually happened: a node *restarts*, losing its
+own membership registry, while everyone else still remembers it. Nobody greets
+it, because it is not new to anybody, so it hears nothing until the next
+scheduled announce.
+
+A node in that state is not visibly broken. It is on the air, its own announces
+go out, peers see it fine — and every frame it receives is dropped by
+`resolveSenderId(...) ?: Handled`, because it cannot turn a four-byte sender id
+back into a member it has never heard announce. Silent, one-directional, and it
+looks exactly like a codec fault.
+
+**The rule that fixes it:** greet on *any* member announce, rate-limited, not
+only on a new one. The existing greeting floor already bounds the traffic --
+a peer that greets back finds a known member and stops -- so the change is to
+the trigger, not to the rate limiting.
+
+`--announce-interval` was added to the bridge as the immediate lever: shorten
+it while bringing a team up, leave it long in the field where it is airtime.
+That is a workaround, not the fix.
+

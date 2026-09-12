@@ -126,6 +126,23 @@ identical. `tak_team_acceptance.sh` asserts on the path taken, not just the
 arrival, alongside a room receipt that must not arrive and a direct receipt
 that must. Thirteen checks pass between two live bridges.
 
+### First end-to-end run on hardware, 2026-09-12
+
+Deck bridge to phone, Columba to ATAK, over a real link. Chat and four markers
+rendered and delivered. Three faults came out of it that no bench test had
+shown, all recorded in `CarriedIssues.md`:
+
+- **ATAK's connection to the local endpoint flaps**, and everything written
+  while it is down is silently lost. The rendering was correct the whole time
+  and `-> ATAK: 637 bytes to 0 client(s)` was the only evidence. ATAK pings its
+  server with `t-x-c-t`, which this endpoint never answers; that is the first
+  thing to check.
+- **A node that restarts is invisible for up to 30 minutes.** Both sides greet
+  a *new* member, but a peer that rebooted is not new to anybody else, so
+  nobody greets it and it can resolve no sender ids. `--announce-interval`
+  shortens the window; the rule needs to change.
+- **A direct message arrived headed by its recipient.** Fixed here — see below.
+
 Still open, and honest about it: **a room line has no delivery guarantee and
 PR C does not give it one.** Reliable multicast over a partitionable mesh needs
 either an acknowledgement from every member or blind repetition. Neither is in
@@ -215,6 +232,20 @@ invalidates every range and reconnection measurement taken, and there is no way
 afterwards to tell which readings were poisoned.
 
 ---
+
+## Later: an assistant in the loop
+
+Raised 2026-09-12 and written up in `AssistantInTheLoop.md`: an operator asking
+from inside chat what is around them, what a bearing is pointing at, what the
+markers nearby are — and able to create markers and missions, with the model
+configurable so volume can go to a cheaper one.
+
+**Not scheduled, and deliberately last.** It is an interface onto the map and
+building data rather than a foundation, so it cannot be better than that data;
+built first it would sound confident and know nothing. It does, however, shape
+two things already decided — chat as the transport it rides, and the
+pull-for-one / push-for-the-area query API — so it is recorded now rather than
+discovered later.
 
 ## The sibling repo — `urban-tak`, ATAK domain work, no Reticulum
 

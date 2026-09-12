@@ -133,17 +133,31 @@ class TeamAnnounceHandler:
         self.on_new_member = on_new_member
 
     def received_announce(self, destination_hash, announced_identity, app_data):
-        if self.registry.remember(destination_hash, app_data) is membership.MEMBER_NEW:
-            if self.on_new_member:
-                self.on_new_member(destination_hash)
+        outcome = self.registry.remember(destination_hash, app_data)
+        if outcome is None:
+            # Heard on our own aspect and not one of ours. Said out loud
+            # because the alternative is silence, and silence is what a node
+            # that is not announcing at all also sounds like. Those two have
+            # completely different fixes -- a different fleet secret or a
+            # different team name against a client that is simply switched off
+            # -- and an operator on a hillside cannot tell them apart from a
+            # log that says nothing either way.
+            print("[bridge] announce from %s is not a member of this team "
+                  "(different fleet secret or team name)"
+                  % destination_hash.hex()[:16], flush=True)
+            return
+        if outcome is membership.MEMBER_NEW and self.on_new_member:
+            self.on_new_member(destination_hash)
 
 
 class CotBridge:
     def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None,
                  callsign="BRIDGE", role="Team Member",
-                 lxmf_storage=None, propagation_node=None):
+                 lxmf_storage=None, propagation_node=None,
+                 announce_interval=ANNOUNCE_INTERVAL_SECONDS):
         import RNS
         self.rns = RNS
+        self.announce_interval = announce_interval
         self.team = team
         self.secret = secret
         self.callsign = callsign
@@ -248,7 +262,7 @@ class CotBridge:
 
     def _announce_forever(self):
         while True:
-            time.sleep(ANNOUNCE_INTERVAL_SECONDS)
+            time.sleep(self.announce_interval)
             try:
                 self.announce()
             except Exception as error:                      # noqa: BLE001
@@ -612,6 +626,13 @@ def main():
     parser.add_argument("--role", default="Team Member")
     parser.add_argument("--identity", default=None,
                         help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
+    parser.add_argument("--announce-interval", type=int,
+                        default=ANNOUNCE_INTERVAL_SECONDS,
+                        help="seconds between announces (default %d). A node "
+                             "that restarts is invisible until the next one, "
+                             "so shorten it while bringing a team up and leave "
+                             "it long in the field, where it is airtime."
+                             % ANNOUNCE_INTERVAL_SECONDS)
     parser.add_argument("--lxmf-storage", default=None,
                         help="LXMF router storage directory; direct messages "
                              "go by LXMF when this is set, which is what gives "
@@ -664,7 +685,8 @@ def main():
     bridge = CotBridge(args.team, secret, args.port, args.identity,
                        args.callsign, args.role,
                        lxmf_storage=lxmf_storage,
-                       propagation_node=propagation_node)
+                       propagation_node=propagation_node,
+                       announce_interval=args.announce_interval)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:

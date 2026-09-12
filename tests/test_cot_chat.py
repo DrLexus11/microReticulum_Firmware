@@ -90,12 +90,29 @@ class RealEventTests(unittest.TestCase):
 
     def test_a_rebuilt_event_survives_another_round_trip(self):
         """What the far end hands ATAK has to be something this codec would
-        recognise again, or a message relayed twice would decay."""
+        recognise again, or a message relayed twice would decay.
+
+        Everything that *is* the message survives unchanged. The chatroom is
+        the one field that legitimately differs, because it names the other
+        party and that is a different string on each side of a direct message
+        -- see test_a_direct_message_is_headed_by_its_sender. It is
+        presentation, not content, and re-heading is idempotent from the second
+        application on.
+        """
         decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
         rebuilt = cot_chat.build_chat_cot(decoded, "urtn-" + "ab" * 16, "LEXUS",
                                           "2026-09-11T20:00:00.000Z")
         again = cot_chat.decode(cot_chat.chat_from_cot(rebuilt, SENDER))
-        self.assertEqual(again, decoded)
+        for field in ("kind", "sender_id", "message_id", "recipient", "text",
+                      "sent_unix"):
+            self.assertEqual(again[field], decoded[field], field)
+        self.assertEqual(again["room"], "LEXUS")
+
+        # Idempotent from here: relaying it again does not keep rewriting it.
+        third = cot_chat.decode(cot_chat.chat_from_cot(
+            cot_chat.build_chat_cot(again, "urtn-" + "ab" * 16, "LEXUS",
+                                    "2026-09-11T20:00:00.000Z"), SENDER))
+        self.assertEqual(third, again)
 
     def test_a_position_report_is_not_chat(self):
         self.assertIsNone(cot_chat.chat_from_cot(FIXTURES["tier2"]["cot"], SENDER))
@@ -228,6 +245,28 @@ class AddressingTests(unittest.TestCase):
         decoded = cot_chat.decode(cot_chat.chat_from_cot(self.addressed_to(peer), SENDER))
         self.assertEqual(decoded["recipient"], peer)
         self.assertIsNotNone(tak_identity.destination_for(decoded["recipient"]))
+
+    def test_a_direct_message_is_headed_by_its_sender(self):
+        """The chatroom names the other party, and that is a different string
+        on each side. Replaying the author's verbatim gave the recipient a
+        thread named after themselves -- seen on hardware 2026-09-12, where a
+        line from DECK opened a conversation headed COLUMBA on COLUMBA's own
+        phone."""
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        rebuilt = cot_chat.build_chat_cot(decoded, "urtn-x", "DECK",
+                                          "2026-09-12T09:00:00.000Z")
+        self.assertIn('chatroom="DECK"', rebuilt)
+        self.assertNotIn('chatroom="Inquisitor"', rebuilt)
+
+    def test_a_room_line_keeps_its_room(self):
+        """A room really is the same string for everybody, so re-heading one
+        would split a shared conversation into a thread per sender."""
+        event = self.addressed_to("All Chat Rooms").replace(
+            'chatroom="Inquisitor"', 'chatroom="All Chat Rooms"')
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(event, SENDER))
+        rebuilt = cot_chat.build_chat_cot(decoded, "urtn-x", "DECK",
+                                          "2026-09-12T09:00:00.000Z")
+        self.assertIn('chatroom="All Chat Rooms"', rebuilt)
 
     def test_threading_uses_a_uid_not_a_callsign(self):
         """chatgrp uid1 named the room, which is a callsign for a direct

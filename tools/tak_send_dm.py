@@ -96,7 +96,7 @@ def main():
         sock.sendall(
             ('<event version="2.0" uid="%s" type="a-f-G-U-C" how="m-g" '
              'time="%s" start="%s" stale="%s">'
-             '<point lat="41.0" lon="29.0" hae="30.0" ce="10.0" le="9999999.0"/>'
+             '<point lat="40.9540" lon="29.0900" hae="30.0" ce="10.0" le="9999999.0"/>'
              '<detail><takv device="T" os="36" platform="ATAK-CIV" version="5.6"/>'
              '<contact callsign="%s"/></detail></event>'
              % (args.from_uid, iso(datetime.now(timezone.utc)),
