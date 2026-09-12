@@ -595,11 +595,20 @@ private message was fanned out to every member. That is not a cost problem, it
 is a confidentiality one, and on a real callout it is the kind that is
 discovered by the wrong person reading something.
 
-The recipient now travels, and the fan-out narrows to that member when it
-resolves. This works because peers are announced under their Reticulum-rooted
-UID, so ATAK addresses them by it and `destination_for()` reverses it -- pivot 1
-paying for itself. A line to All Chat Rooms carries no recipient, because
-inventing one would narrow a broadcast to one person: the same bug reversed.
+The recipient now travels, and a line that names one goes to that member
+alone. This works because peers are announced under their Reticulum-rooted UID,
+so ATAK addresses them by it and `destination_for()` reverses it -- pivot 1
+paying for itself.
+
+Two ways of getting this wrong are worth naming, because both were written
+before they were caught. **Inventing a recipient** narrows a broadcast to one
+person, so a line to All Chat Rooms carries none, a chatgrp with a `uid2` is a
+room rather than a pair, and the addressee is read from the `id` attribute
+rather than from `uid1`, which in a room is merely whoever is listed second.
+**Falling back to the fan-out** when a recipient does not resolve is the
+original bug wearing a different hat: an unresolvable recipient is somebody who
+is not a peer of ours, and putting their private line on the air reaches
+everybody except them. It is counted and dropped.
 
 Compacting a `urtn-` recipient to sixteen raw bytes was considered and
 rejected. Twenty-one bytes on an event an operator types by hand did not justify
@@ -625,7 +634,10 @@ landed in the wrong group, and group colour is how an operator tells their own
 people apart at a glance.
 
 Firmware and Columba carry all three, and the cross-language frame fixtures
-still match byte for byte.
+still match byte for byte. `tools/tak_team_acceptance.sh` drives the addressing
+between two live bridges: a direct message reaches the member it names and
+threads on the uid, and a line addressed to a stranger does not arrive at the
+other node at all.
 
 ## After C: the plugin, and what HaLow changes
 
