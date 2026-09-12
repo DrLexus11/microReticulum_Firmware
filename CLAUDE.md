@@ -10,8 +10,11 @@ Sibling repositories, developed together:
   `app/src/main/java/network/columba/app/service/tak/`, and the two must stay
   byte-identical — `tak_native_v1.json` is copied between the repos and tested
   on both sides.
-- The ATAK domain plugin repo — urban navigation, address lookup, rubble,
-  building status. No Reticulum dependency. Runs in parallel.
+- `~/projects/urban-tak` — ATAK plugin for urban navigation, address lookup,
+  rubble and building status. **Public repo**, no Reticulum dependency, and it
+  must not acquire one. Runs in parallel with this work. Its
+  `docs/MeshContract.md` fixes the seam: that repo decides what a thing means,
+  this one decides how it travels.
 
 ## Read this before planning work
 

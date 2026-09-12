@@ -185,12 +185,16 @@ afterwards to tell which readings were poisoned.
 
 ---
 
-## The sibling repo — ATAK domain work, no Reticulum
+## The sibling repo — `urban-tak`, ATAK domain work, no Reticulum
 
-A separate repository owns the ATAK-side domain problem: urban navigation,
+`~/projects/urban-tak` owns the ATAK-side domain problem: urban navigation,
 address lookup, rubble, and eventually building status. It has no Reticulum
 dependency and **runs in parallel with PR C, starting immediately** — it is not
 scheduled after this work.
+
+It is a **public** repository. Nothing operational crosses into it: no fleet
+secrets, node hashes, callsigns, IFAC passphrases, exercise coordinates or team
+details, in any file or commit message.
 
 **Why it starts now.** Nobody on this project has shipped an ATAK plugin, and PR
 F is where that inexperience is most expensive: a bug there reads as "message
@@ -214,8 +218,16 @@ The requirement, as stated: Istanbul, urban theatre, earthquake response.
    addressing (mahalle / sokak / kapı no) is real work, not an import.
 3. **Rubble reporting.** Not a marker — an edge state change the router
    consumes and the mesh replicates. **This is the one item that spans both
-   repositories:** the sibling repo owns the model and the routing response,
-   this repo owns getting it to everyone, and the wire format is PR D's.
+   repositories:** `urban-tak` owns the model and the routing response, this
+   repo owns getting it to everyone, and the wire format is PR D's.
+
+   **PR D has a dependency on that repo, not the other way round.** The stable
+   edge identity — how a blocked edge is named so that two devices holding
+   different builds of the road graph agree, and so a report survives a graph
+   rebuild from a newer extract — is owed to this repo before the encoding is
+   designed. It is recorded as a debt in `urban-tak/docs/MeshContract.md`. Ask
+   for it rather than inventing one; an identifier chosen here that the router
+   cannot resolve is worse than no identifier.
 
 **Longer term:** clicking a building or road to report and query status, against
 government feed data, with Reticulum as the query API over NomadNet.
