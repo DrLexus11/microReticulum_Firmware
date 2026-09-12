@@ -240,6 +240,27 @@ check("a direct message reaches the member it names", seen,
 check("and threads on the uid rather than the callsign", seen or [""],
       lambda e: 'uid1="%s"' % bravo_uid in e)
 
+# Answering. The bug this catches reached hardware because every other check
+# passed while it was present: a message arrived, was rendered correctly, and
+# the reply the operator typed went nowhere. ATAK keys a conversation on the
+# other party -- the recipient in an event it wrote, the sender in one it is
+# handed -- so replying means addressing whatever the *rendered* event said the
+# conversation was. That is what this does; addressing alpha directly would
+# test nothing.
+rendered = [e for e in seen if "b-t-f" in e and "north gate" in e]
+match = re.search(r'<__chat[^>]*\bid="([^"]+)"', rendered[-1]) if rendered else None
+conversation = match.group(1) if match else ""
+check("a received message names its sender as the conversation", [""],
+      lambda _: conversation == alpha_uid,
+      "rendered event said the conversation was %r, expected %s"
+      % (conversation, alpha_uid))
+
+if conversation:
+    bravo.sendall(direct(conversation, "5b2e3f4a-6c7d-4e8f-9a0b-1c2d3e4f5a6b",
+                         "COLUMBA to DECK: acknowledged").encode())
+    check("and a reply to it reaches the original sender", drain(alpha, 15),
+          lambda e: "acknowledged" in e)
+
 # The recipient is real to ATAK and is not a member of this team: a server
 # contact, or somebody who has never announced here. Broadcasting it would
 # both leak a private line and fail to deliver it.
