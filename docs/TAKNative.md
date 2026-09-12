@@ -507,8 +507,13 @@ bytes** against a 383-byte MDU. On tier 2 chat was not costly, it was
 **undeliverable** -- and after the frame bound was added it is refused outright,
 which before that fix meant an exception the client loop read as a dead socket.
 
-    message   1100 B raw   tier 2 refused   chat  45 B,  71 ms
-    receipt    879 B raw   tier 2 345 B     chat  35 B,  64 ms
+    message   1095 B raw   tier 2 refused   chat  95 B, 107 ms
+    receipt    875 B raw   tier 2 343 B     chat  85 B, 100 ms
+
+These are the sizes after the fixes of 2026-09-12 below. The frames were 45 B
+and 35 B during the run recorded here; the growth is the recipient, which in
+this capture is a 44-character Windows SID, and carrying it is what stops a
+private line reaching the whole team.
 
 Real ATAK was connected to the phone's endpoint during this run -- the log line
 `This ATAK calls itself ANDROID-…` is the endpoint learning it -- though the
@@ -550,8 +555,8 @@ OpenTAKServer rather than composed for the purpose:
 | `b-m-p-s-m` spot marker | 799 B | 263 B | **53 B** |
 | `b-m-p-c-cp` checkpoint | 714 B | 234 B | **65 B** |
 | `b-m-p-s-p-i` SPI | 561 B | 193 B | **45 B** |
-| GeoChat line | 1100 B | *refused* | **45 B** |
-| Chat receipt | 879 B | 345 B | **35 B** |
+| GeoChat line | 1095 B | *refused* | **95 B** |
+| Chat receipt | 875 B | 343 B | **85 B** |
 
 Chat is the row that changes a conclusion: a real GeoChat line compresses to
 402 bytes against a 383-byte MDU, so on tier 2 it was not expensive, it was
@@ -577,6 +582,50 @@ makes a stream of them affordable.
 
 `tools/tak_team_acceptance.sh` drives the whole of PR B between two bridges:
 discovery, then each codec in turn. It passes.
+
+### Three things wrong with it, fixed 2026-09-12
+
+Found by asking whether an operator could actually use this, rather than
+whether the bytes moved. All three passed every test written at the time.
+
+**A private line went to the whole team.** ATAK puts the recipient's *callsign*
+in the chatroom field for a direct message, so the room alone cannot tell
+"everyone" from "one person" -- and the codec carried only the room. Every
+private message was fanned out to every member. That is not a cost problem, it
+is a confidentiality one, and on a real callout it is the kind that is
+discovered by the wrong person reading something.
+
+The recipient now travels, and the fan-out narrows to that member when it
+resolves. This works because peers are announced under their Reticulum-rooted
+UID, so ATAK addresses them by it and `destination_for()` reverses it -- pivot 1
+paying for itself. A line to All Chat Rooms carries no recipient, because
+inventing one would narrow a broadcast to one person: the same bug reversed.
+
+Compacting a `urtn-` recipient to sixteen raw bytes was considered and
+rejected. Twenty-one bytes on an event an operator types by hand did not justify
+a second encoding and a second way to get it wrong.
+
+**A replayed backlog would have looked simultaneous.** The codec carried no send
+time and the rebuild stamped the relay moment, so every line somebody missed
+while away would have arrived at once -- in order, at the wrong time, which is
+harder to read than no history at all. The author's time now travels, and an
+event that states no time encodes zero rather than now, so a receiver can tell
+"not stated" from a stamp. This is the piece propagated group chat needs, and it
+is cheaper to have in the wire format now than to add once nodes speak it.
+
+**A rendered peer was visible but not addressable.** Presence carried
+`<contact callsign="..."/>` and nothing else. ATAK uses the `endpoint`
+attribute to decide a contact is reachable, so a peer appeared on the map and
+was absent from the contact list -- the list an operator picks from to start a
+chat, send a marker, or dispatch a CASEVAC. The track looked healthy the whole
+time. Presence now carries `endpoint="*:-1:stcp"`, which is what ATAK itself
+writes for a contact reached over a stream, and the `__group` name comes from
+the bridge rather than being hard-coded to Cyan -- on any other team every peer
+landed in the wrong group, and group colour is how an operator tells their own
+people apart at a glance.
+
+Firmware and Columba carry all three, and the cross-language frame fixtures
+still match byte for byte.
 
 ## After C: the plugin, and what HaLow changes
 
