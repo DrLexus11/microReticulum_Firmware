@@ -3,8 +3,10 @@
 Reading NMEA from the GP-02 on a second UART, parsing a fix, and offering it to
 the node as a position source and a wall-time source.
 
-Status: **deferred, and deliberately not on the critical path for TAK.**
-Scheduled 2026-09-06. It is a feature in its own right, not a TAK prerequisite.
+Status: **scheduled in PR E, 2026-09-12.** It was deferred on 2026-09-06 as
+"deliberately not on the critical path for TAK", and that is no longer true --
+see *What changed* below. The reasoning for the original deferral is kept
+because it was right at the time and explains what the module is and is not for.
 
 ---
 
@@ -28,6 +30,22 @@ building first. Columba holds a mesh identity and can sign with it, and an
 Android device has a GNSS receiver, a battery and a screen. A responder carries
 one. Requiring a soldered header and a second UART to learn where that person is
 standing is work we do not need to do to prove the pipeline.
+
+## What changed: Outdoor Test 1
+
+Outdoor Test 1 puts a **stationary Rev 2 on long-range LoRa with no phone
+attached** -- a relay on a hill, holding the far end of the range test. That is
+precisely the unattended node this document reserved the module for, and it
+arrived as a requirement rather than as a nice-to-have.
+
+Without its own receiver that node cannot report its position at all, so the
+command post sees a link it cannot place on a map. The position-source
+abstraction is already there -- `Position.h` carries `NodePositionKind::GNSS`
+-- and what is missing is only the NMEA reader on the second UART.
+
+The hardware is a Boardoza board carrying the AI-Thinker GNSS IC, and the Rev 2
+with UART is already on a breadboard. Scheduled in
+[`TAKDeliveryPlan.md`](TAKDeliveryPlan.md) as part of PR E.
 
 ## Where it still earns its place
 

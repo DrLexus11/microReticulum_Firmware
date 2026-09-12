@@ -71,6 +71,33 @@ unknown. Attaching a console resets Rev 1 -- irrelevant here, because the reset
 is the event being waited for. Budget hours, not minutes, given the interval
 spread.
 
+### A variable that moves the interval, observed 2026-09-12
+
+The first thing found that changes how often this happens: **an ESP-NOW peer
+being present.**
+
+An OZD board averaged **~2 hours** between resets while a second OZD board was
+plugged in as an ESP-NOW peer. With that peer unplugged -- done to isolate a BLE
+test, not to chase this fault -- the same board reached a day, and **16 h 33 m**
+and counting after a hand restart.
+
+That is one observation and not yet a controlled A/B, so it is a lead rather
+than a cause. It is a good lead because it fits the shape this entry already
+established: load- or state-dependent, environment-independent, wildly variable
+interval. It also points at a specific place to read code -- whatever the
+ESP-NOW path does while holding a task, and both ESP-NOW and BLE are protocols
+this project implemented from scratch.
+
+**The controlled test worth running:** the same board, same power, same
+position, peer plugged and unplugged for matched multi-hour windows, with a
+console attached for the backtrace. If the correlation holds it converts this
+entry from "trigger unknown" to "trigger named".
+
+This is scheduled inside PR E -- see [`TAKDeliveryPlan.md`](TAKDeliveryPlan.md).
+It must land **before** Outdoor Test 1: a board that resets mid-test invalidates
+every range and reconnection measurement taken, with no way afterwards to tell
+which readings were poisoned.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a

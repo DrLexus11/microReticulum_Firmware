@@ -706,20 +706,19 @@ transmitter inches from a receiver and ETSI duty-cycle limits across both. That
 decision may pick the HAT, and it is cheaper to answer on paper than after a
 fabrication run.
 
-### Sequence
+### Sequence — moved
 
-| | | Depends on |
-| --- | --- | --- |
-| **G** | Merge Eridanus into Columba: one RNS host, one identity, `IRnsRrc` | nothing — can start whenever |
-| **H** | Export the RNS service behind a permission | G, so the surface is complete when it opens |
-| **I** | **Thin ATAK plugin**: mesh layer, peer panel, LXMF and RRC messaging, consent dialogs | C and H |
-| **J** | Tier 3 over HaLow: data packages, images at full size | D, and Vox hardware |
-| **V2** | Voice over HaLow | V1 measurement, G, and Vox hardware |
+The A–J sequence that used to close this document is **superseded by
+[`TAKDeliveryPlan.md`](TAKDeliveryPlan.md)**, which is now the single source of
+truth for what ships in which PR.
 
-G and H are software and gated on nothing but time. I is the payoff. J and V2
-wait on Vox, which is months out — but they wait on *hardware*, not on design,
-and that is the point of doing the tiering now.
+It was written before PR B measured what was actually missing, and it was wrong
+in two ways worth recording rather than deleting. It put the ATAK plugin at
+**I**, gated only on a permission surface — the plugin is now last, and gated on
+the transport being honest first, because a plugin over a lossy transport is
+still lossy. And it treated tier 3 as a HaLow-era item at **J**; tier 3 is
+needed on LoRa now, because without fragmentation drawings do not cross at all.
 
-A is the large one and the one worth doing next: it is what turns a position
-demo into TAK.
+What remains true and has simply moved: Eridanus merging into Columba, and the
+RNS service exported behind a permission, are gated on nothing but time.
 
