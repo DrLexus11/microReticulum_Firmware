@@ -1,6 +1,7 @@
 """GeoChat and receipts, the last of the 853 events without a typed codec."""
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -58,10 +59,16 @@ class RealEventTests(unittest.TestCase):
         self.assertIn("tier 3", str(caught.exception))
 
     def test_a_real_message_becomes_tens_of_bytes(self):
+        """This one addresses a WinTAK user, whose uid is a 44-character
+        Windows SID, so most of the frame is the recipient. Carrying it is what
+        stops a private line reaching the whole team, and it was measured
+        against compacting a urtn- recipient to sixteen raw bytes: twenty-one
+        bytes on an event an operator types by hand did not justify a second
+        encoding and a second way to get it wrong."""
         frame = cot_chat.chat_from_cot(CHAT["message"], SENDER)
         self.assertIsNotNone(frame)
-        self.assertLess(len(frame), 60)
-        self.assertLess(len(frame), len(CHAT["message"]) // 20)
+        self.assertLess(len(frame), 100)
+        self.assertLess(len(frame), len(CHAT["message"]) // 10)
 
     def test_a_real_message_keeps_what_matters(self):
         decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
@@ -163,6 +170,99 @@ class CodecTests(unittest.TestCase):
                                           "2026-09-11T20:00:00.000Z")
         again = cot_chat.decode(cot_chat.chat_from_cot(rebuilt, SENDER))
         self.assertEqual(again["text"], '</remarks><detail evil="1">')
+
+
+class AddressingTests(unittest.TestCase):
+    """ATAK puts the recipient's *callsign* in the chatroom field for a direct
+    message, so the room alone cannot tell "everyone" from "one person". Until
+    the recipient was carried separately, every private line was delivered to
+    the whole team -- not a cost problem, a confidentiality one."""
+
+    def test_a_direct_message_carries_who_it_is_for(self):
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        self.assertTrue(decoded["recipient"])
+        self.assertNotEqual(decoded["recipient"], decoded["room"])
+
+    def addressed_to(self, target):
+        """The captured message, readdressed. Derived from the fixture rather
+        than from a literal: the identifiers in it have been re-sanitised once
+        already, and a hard-coded copy silently stopped matching."""
+        recipient = CHAT["message_recipient"]
+        return CHAT["message"].replace(recipient, target)
+
+    def test_a_broadcast_carries_no_recipient(self):
+        """A line to everyone has no single addressee, and inventing one would
+        narrow a broadcast to one person -- the same bug in reverse."""
+        for room in ("All Chat Rooms", "All Streaming"):
+            event = self.addressed_to(room).replace('chatroom="Inquisitor"',
+                                                    'chatroom="%s"' % room)
+            decoded = cot_chat.decode(cot_chat.chat_from_cot(event, SENDER))
+            self.assertEqual(decoded["recipient"], "", room)
+
+    def test_a_uid_addressed_line_resolves_to_one_peer(self):
+        """Peers are announced under their Reticulum-rooted UID, so ATAK
+        addresses them by it and destination_for() reverses it. Pivot 1 paying
+        for itself."""
+        import tak_identity
+        peer = "urtn-" + "cd" * 16
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(self.addressed_to(peer), SENDER))
+        self.assertEqual(decoded["recipient"], peer)
+        self.assertIsNotNone(tak_identity.destination_for(decoded["recipient"]))
+
+    def test_threading_uses_a_uid_not_a_callsign(self):
+        """chatgrp uid1 named the room, which is a callsign for a direct
+        message. ATAK threads on the uid."""
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        rebuilt = cot_chat.build_chat_cot(decoded, "urtn-x", "PEER",
+                                          "2026-09-12T09:00:00.000Z")
+        self.assertIn('uid1="%s"' % decoded["recipient"], rebuilt)
+
+
+class SendTimeTests(unittest.TestCase):
+    """A backlog replayed to somebody who was away is worth nothing if every
+    line is stamped with the moment it was replayed."""
+
+    def test_the_authors_time_is_carried(self):
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        self.assertEqual(cot_chat._iso(decoded["sent_unix"]), "2026-09-11T13:18:37.000Z")
+
+    def test_a_replayed_line_keeps_its_own_time(self):
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        rebuilt = cot_chat.build_chat_cot(decoded, "urtn-x", "PEER",
+                                          "2026-09-12T09:00:00.000Z")
+        self.assertIn('time="2026-09-11T13:18:37.000Z"', rebuilt)
+        self.assertEqual(cot_chat.decode(cot_chat.chat_from_cot(rebuilt, SENDER))["sent_unix"],
+                         decoded["sent_unix"])
+
+    def test_an_event_with_no_time_says_so_rather_than_guessing(self):
+        """Zero rather than now: a receiver can tell "not stated" from a time,
+        and stamping the relay moment is what makes a backlog look simultaneous."""
+        event = re.sub(r'\s*time="[^"]*"', '', CHAT["message"])
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(event, SENDER))
+        self.assertEqual(decoded["sent_unix"], 0)
+
+
+class PresenceTests(unittest.TestCase):
+    """A peer with no endpoint appears on the map and is absent from the
+    contact list, so nobody can chat with them, send them a marker, or
+    dispatch them a CASEVAC."""
+
+    def build(self, team="Cyan"):
+        import cot_gateway
+        import cot_position
+        fix = cot_position.fix_from_cot(FIXTURES["tier2"]["cot"], SENDER)
+        return cot_gateway.build_cot(fix, "urtn-" + "ab" * 16, "PEER", 120,
+                                     team=team).decode("utf-8")
+
+    def test_a_rendered_peer_is_addressable(self):
+        self.assertIn('endpoint="*:-1:stcp"', self.build())
+
+    def test_the_team_is_the_one_this_node_is_on(self):
+        """Hard-coding Cyan put every peer in the wrong group on any other
+        team, and group colour is how an operator tells their own people apart."""
+        self.assertIn('name="Magenta"', self.build(team="Magenta"))
+
+
 
 
 if __name__ == "__main__":
