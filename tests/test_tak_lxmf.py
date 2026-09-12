@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 try:
+    import LXMF
     import tak_lxmf
 except ImportError:  # pragma: no cover - LXMF is not installed everywhere
     tak_lxmf = None
@@ -113,6 +114,75 @@ class AddressingTests(unittest.TestCase):
         # messaging app is what answers.
         self.assertEqual(tak_lxmf.LXMF_APP_NAME, "lxmf")
         self.assertEqual(tak_lxmf.LXMF_DELIVERY_ASPECT, "delivery")
+
+
+class FakeRouter:
+    def __init__(self):
+        self.sent = []
+
+    def handle_outbound(self, message):
+        self.sent.append((message.desired_method, message.state))
+
+
+class FakeMessage:
+    def __init__(self):
+        self.desired_method = None
+        self.state = None
+
+
+def carrier(propagation_node=None):
+    """A Carrier without a live LXMF router behind it.
+
+    Constructed field by field rather than through __init__, which would want
+    a Reticulum instance and a storage directory. What is under test is the
+    fallback decision, not LXMF's own propagation.
+    """
+    made = tak_lxmf.Carrier.__new__(tak_lxmf.Carrier)
+    made.router = FakeRouter()
+    made.propagation_node = propagation_node
+    made.sent = made.delivered = made.failed = made.propagated = 0
+    return made
+
+
+@unittest.skipIf(tak_lxmf is None, "LXMF is not installed in this interpreter")
+class PropagationTests(unittest.TestCase):
+    """What turns "they were out of range" into "they got it when they came
+    back". LXMF 1.1.1 has no try-propagation-on-fail of its own, so this
+    fallback is ours and has to be tested as ours."""
+
+    def test_a_failed_direct_message_is_retried_through_a_propagation_node(self):
+        made = carrier(propagation_node=b"\x11" * 16)
+        made._failed(FakeMessage())
+        self.assertEqual(made.propagated, 1)
+        self.assertEqual(made.failed, 0)
+        method, state = made.router.sent[0]
+        self.assertEqual(method, LXMF.LXMessage.PROPAGATED)
+        # Re-sending a message that has already been through the router needs
+        # its state reset, or LXMF declines to look at it again and the retry
+        # is silently a no-op.
+        self.assertEqual(state, LXMF.LXMessage.GENERATING)
+
+    def test_with_no_propagation_node_it_is_a_failure_rather_than_a_pretence(self):
+        """The honest outcome. A node with nowhere to propagate to cannot hold
+        a message for somebody, and counting it as propagated would report a
+        guarantee that was never made."""
+        made = carrier(propagation_node=None)
+        made._failed(FakeMessage())
+        self.assertEqual(made.failed, 1)
+        self.assertEqual(made.propagated, 0)
+        self.assertEqual(made.router.sent, [])
+
+    def test_a_propagation_that_itself_fails_is_counted_not_raised(self):
+        """Called from an LXMF callback, where raising would take the router's
+        thread down and stop every later message rather than this one."""
+        made = carrier(propagation_node=b"\x11" * 16)
+
+        def explode(_message):
+            raise OSError("no path")
+        made.router.handle_outbound = explode
+        made._failed(FakeMessage())
+        self.assertEqual(made.failed, 1)
+        self.assertEqual(made.propagated, 0)
 
 
 if __name__ == "__main__":

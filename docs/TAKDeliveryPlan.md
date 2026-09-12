@@ -144,6 +144,25 @@ shown, all recorded in `CarriedIssues.md`:
   shortens the window; the rule needs to change.
 - **A direct message arrived headed by its recipient.** Fixed here — see below.
 
+### What is wired but not yet exercised
+
+**Store-and-forward has nowhere to forward to.** `--propagation-node` exists on
+the bridge and the fallback is implemented and tested — a direct delivery that
+fails is re-sent with `PROPAGATED`, with the message state reset, because LXMF
+1.1.1 has no try-propagation-on-fail of its own. But no propagation node is
+configured, and none is reachable on the bridge's isolated instance, so **no
+message has yet survived an actual partition.**
+
+That matters because it is PR C's headline. The retry and the receipts are
+proven; the third guarantee is implemented and unproven.
+
+What it needs is a propagation node *on the mesh* — reachable by a node that is
+cut off from everything else, which rules out the three the phone knows about
+over the internet. The natural home is the Rev 2 at the command post: the
+firmware already has `LXMFPropagation.h`, and a node that is always on and
+always in range is exactly what the role wants. Worth doing before Outdoor Test
+1, because reconnection behaviour is what that test exists to measure.
+
 Still open, and honest about it: **a room line has no delivery guarantee and
 PR C does not give it one.** Reliable multicast over a partitionable mesh needs
 either an acknowledgement from every member or blind repetition. Neither is in
