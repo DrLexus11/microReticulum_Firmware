@@ -36,7 +36,7 @@ import cot_position
 import position_codec
 import tak_membership as membership
 import tak_payload
-from cot_endpoint import CotOutbound, CotStream
+from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 
 DEFAULT_PORT = 8087
 # This node's own Reticulum identity, kept beside the fleet secret. Created on
@@ -371,11 +371,15 @@ class CotBridge:
         """
         with self.clients_lock:
             targets = list(self.clients)
+        if not targets:
+            print("[bridge] ATAK delivery lost: %d bytes, no connected clients"
+                  % len(payload), flush=True)
         dead = []
         for client in targets:
             try:
                 client.sendall(payload)
-            except OSError:
+            except OSError as error:
+                print("[bridge] ATAK write failed: %s" % error, flush=True)
                 dead.append(client)
         if not dead:
             return
@@ -576,23 +580,32 @@ class CotBridge:
         connection.setsockopt(
             socket.SOL_SOCKET, socket.SO_SNDTIMEO,
             struct.pack("@qq", int(CLIENT_WRITE_TIMEOUT), 0))
+        client = CotClient(connection)
         with self.clients_lock:
-            self.clients.append(connection)
+            self.clients.append(client)
+            count = len(self.clients)
+        print("[bridge] ATAK connected: %d client(s)" % count, flush=True)
         try:
             while True:
                 chunk = connection.recv(4096)
                 if not chunk:
                     break
                 for event in stream.feed(chunk):
-                    self._from_atak(event)
-        except OSError:
-            pass
+                    reply = ping_reply(event)
+                    if reply is not None:
+                        client.sendall(reply)
+                    else:
+                        self._from_atak(event)
+        except OSError as error:
+            print("[bridge] ATAK connection failed: %s" % error, flush=True)
         finally:
             with self.clients_lock:
-                if connection in self.clients:
-                    self.clients.remove(connection)
+                if client in self.clients:
+                    self.clients.remove(client)
+                count = len(self.clients)
+            print("[bridge] ATAK disconnected: %d client(s)" % count, flush=True)
             try:
-                connection.close()
+                client.close()
             except OSError:
                 pass
 
