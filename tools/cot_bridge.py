@@ -188,6 +188,7 @@ class CotBridge:
         self.sender_id = self.registry.sender_id_for(self.node.hash)
         self.positions_sent = self.positions_received = 0
         self.chat_sent = self.chat_received = 0
+        self.chat_undeliverable = 0
         self.markers_sent = self.markers_received = 0
         # SPI is tier 1 by the classification in TAKNative.md -- a pointer
         # ATAK drags across the map, 121 of the 853 captured events, and
@@ -417,8 +418,19 @@ class CotBridge:
         # UID, so ATAK addresses them by it and destination_for() reverses it.
         # That is pivot 1 paying for itself.
         recipient = (decoded or {}).get("recipient") or ""
-        destination = tak_identity.destination_for(recipient)
-        if destination is not None:
+        if recipient:
+            destination = tak_identity.destination_for(recipient)
+            if destination is None:
+                # Addressed to somebody who is not a peer of ours: a server
+                # contact, or a callsign this mesh has never announced. The
+                # fan-out is not a fallback here -- broadcasting a line meant
+                # for one person is the bug this whole path exists to stop,
+                # and it would not deliver it either. Counted and dropped, and
+                # anything reachable another way is still reached that way.
+                self.chat_undeliverable += 1
+                print("[bridge] chat for %r is not a member of this team, not sent"
+                      % recipient, flush=True)
+                return True
             self.chat_sent += self._send_to(destination, frame)
             return True
         self.chat_sent += self._fan_out(frame)
@@ -574,12 +586,13 @@ def main():
     except KeyboardInterrupt:
         print("\n[bridge] sent %d, received %d, positions %d/%d, chat %d/%d, "
               "markers %d/%d, unreadable %d, refused %d, unreachable %d, "
-              "suppressed %d/%d, members %d"
+              "not a member %d, suppressed %d/%d, members %d"
               % (bridge.sent, bridge.received,
                  bridge.positions_sent, bridge.positions_received,
                  bridge.chat_sent, bridge.chat_received,
                  bridge.markers_sent, bridge.markers_received,
                  bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
+                 bridge.chat_undeliverable,
                  bridge.position_gate.suppressed, bridge.spi_gate.suppressed,
                  len(bridge.registry)), flush=True)
 

@@ -103,13 +103,16 @@ fi
 
 step "every codec, across the mesh"
 ALPHA_UID=$(sed -n 's/.*this node is \(urtn-[0-9a-f]*\).*/\1/p' "$WORK/alpha.log" | head -1)
+BRAVO_UID=$(sed -n 's/.*this node is \(urtn-[0-9a-f]*\).*/\1/p' "$WORK/bravo.log" | head -1)
 ALPHA_PORT="$ALPHA_PORT" BRAVO_PORT="$BRAVO_PORT" ALPHA_UID="$ALPHA_UID" \
+BRAVO_UID="$BRAVO_UID" \
 python3 - <<'PYEOF'
 import os, re, socket, sys, time
 
 alpha_port = int(os.environ["ALPHA_PORT"])
 bravo_port = int(os.environ["BRAVO_PORT"])
 alpha_uid = os.environ["ALPHA_UID"]
+bravo_uid = os.environ["BRAVO_UID"]
 failures = []
 
 
@@ -194,6 +197,41 @@ alpha.sendall(chat.encode())
 seen = drain(bravo, 15)
 check("a chat line arrives with its text", seen,
       lambda e: "moving now" in e and "b-t-f" in e)
+
+
+def direct(target, message_id, text):
+    """A chat line addressed to one uid, the way ATAK writes a DM: the
+    recipient's uid in the id field, their callsign as the chatroom."""
+    return ('<event uid="GeoChat.ANDROID-ALPHATEST.%s.%s" type="b-t-f" '
+            'how="h-g-i-g-o" version="2.0" time="2026-09-12T09:00:00.000Z">'
+            '<point lat="40.95" lon="29.09" hae="1" ce="1" le="1"/>'
+            '<detail><__chat chatroom="BRAVO" groupOwner="false" id="%s" '
+            'messageId="%s" parent="RootContactGroup" senderCallsign="ALPHA">'
+            '<chatgrp id="%s" uid0="%s" uid1="%s"/></__chat>'
+            '<remarks source="BAO.F.ATAK.x" to="BRAVO">%s</remarks>'
+            '</detail></event>'
+            % (target, message_id, target, message_id, target, alpha_uid,
+               target, text))
+
+
+alpha.sendall(direct(bravo_uid, "1b0c3d4e-5f60-4a71-8b92-c3d4e5f60718",
+                     "meet me at the north gate").encode())
+seen = drain(bravo, 15)
+check("a direct message reaches the member it names", seen,
+      lambda e: "north gate" in e)
+check("and threads on the uid rather than the callsign", seen or [""],
+      lambda e: 'uid1="%s"' % bravo_uid in e)
+
+# The recipient is real to ATAK and is not a member of this team: a server
+# contact, or somebody who has never announced here. Broadcasting it would
+# both leak a private line and fail to deliver it.
+alpha.sendall(direct("S-1-5-21-999999999-888888888-777777777-1001",
+                     "2c1d4e5f-6071-4b82-9ca3-d4e5f6071829",
+                     "this must not be broadcast").encode())
+seen = drain(bravo, 8)
+check("a line for a stranger is not broadcast to the team", [""],
+      lambda _: not any("must not be broadcast" in e for e in seen),
+      "bravo saw a message addressed to somebody else")
 
 alpha.close()
 bravo.close()

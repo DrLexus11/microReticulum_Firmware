@@ -185,8 +185,15 @@ def chat_from_cot(cot_xml, sender_id):
     # delivers private messages to the whole team.
     recipient = chat.get("id") or ""
     group = chat.find("chatgrp")
-    if group is not None and group.get("uid1"):
-        recipient = group.get("uid1")
+    if group is not None:
+        if group.get("uid2"):
+            # chatgrp enumerates participants, so a uid2 means three or more
+            # of them: a room, and no one person this line is for. Reading
+            # uid1 as a recipient there would narrow a room conversation to
+            # whoever happened to be listed second.
+            recipient = ""
+        elif not recipient:
+            recipient = group.get("uid1") or ""
     if recipient in _BROADCAST_IDS or recipient == room:
         recipient = ""
     text = ""

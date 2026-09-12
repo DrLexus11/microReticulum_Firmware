@@ -199,6 +199,26 @@ class AddressingTests(unittest.TestCase):
             decoded = cot_chat.decode(cot_chat.chat_from_cot(event, SENDER))
             self.assertEqual(decoded["recipient"], "", room)
 
+    def test_a_room_with_three_people_is_not_a_direct_message(self):
+        """chatgrp enumerates participants. Reading uid1 as a recipient in a
+        room would narrow the conversation to whoever is listed second, which
+        is the confidentiality bug pointing at the wrong person instead of at
+        everybody."""
+        event = CHAT["message"].replace(
+            'uid1="%s"' % CHAT["message_recipient"],
+            'uid1="%s" uid2="ANDROID-1111111111111111"' % CHAT["message_recipient"])
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(event, SENDER))
+        self.assertEqual(decoded["recipient"], "")
+
+    def test_a_team_room_is_not_a_direct_message(self):
+        """The room's own name in the id field is a room, not a person. ATAK
+        writes it that way for a team chat."""
+        event = (CHAT["message"]
+                 .replace('id="%s"' % CHAT["message_recipient"], 'id="Inquisitor"')
+                 .replace('uid1="%s"' % CHAT["message_recipient"], 'uid1="Inquisitor"'))
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(event, SENDER))
+        self.assertEqual(decoded["recipient"], "")
+
     def test_a_uid_addressed_line_resolves_to_one_peer(self):
         """Peers are announced under their Reticulum-rooted UID, so ATAK
         addresses them by it and destination_for() reverses it. Pivot 1 paying
