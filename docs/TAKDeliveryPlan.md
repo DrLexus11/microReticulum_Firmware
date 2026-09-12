@@ -57,7 +57,7 @@ where gain is the only constraint.
 | | | Contains | Gated on |
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
-| **C** | *Chat that survives a partition* | Addressed chat on LXMF; room receipts suppressed or aggregated at the endpoint | nothing |
+| **C** | *Chat that survives a partition* | **Built.** Addressed chat on LXMF; room receipts suppressed at the endpoint | nothing |
 | **D** | *Everything that does not fit one packet* | Tier 3 `Link`/`Resource` fragmentation; typed polyline codec for drawings; wire format for a blocked route edge | nothing |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
@@ -99,6 +99,37 @@ Gap identifiers match the standing record and `TAKNative.md`.
 Suppressing receipts creates the first state ATAK cannot render honestly. That
 is not a side effect — it is PR F's opening brief, and it should be written
 down as it appears.
+
+#### What was built, 2026-09-12
+
+A direct message goes by LXMF; a room line does not. That split is the one this
+document already drew, and it is a property of broadcast rather than a
+shortcut: a room has no member list to retry against and no receipt to wait
+for.
+
+**A direct message is also a real Columba message.** The frame rides upstream
+LXMF's own payload pair — `FIELD_CUSTOM_TYPE` (0xFB) tags it `tak.chat.v1` and
+`FIELD_CUSTOM_DATA` (0xFC) carries it — while the text travels as ordinary
+content, so the same line lands in the recipient's Columba conversation and in
+their ATAK. An operator who missed it in one can answer from the other. Room
+traffic never becomes an LXMF message at all, so team chatter cannot bury
+somebody's personal conversations.
+
+Both flat, deliberately. The nested alternative under `FIELD_CUSTOM_META`
+(0xFD) collides with the telemetry extras Columba already keeps there, and a
+nested value has to be pre-shaped with backend-private helpers Columba's app
+module cannot reach — so the Kotlin half could not have written the same shape.
+
+**Proving it needed a check the round trip cannot make.** A direct message
+arriving proves nothing: the bare-packet fallback delivers it too and looks
+identical. `tak_team_acceptance.sh` asserts on the path taken, not just the
+arrival, alongside a room receipt that must not arrive and a direct receipt
+that must. Thirteen checks pass between two live bridges.
+
+Still open, and honest about it: **a room line has no delivery guarantee and
+PR C does not give it one.** Reliable multicast over a partitionable mesh needs
+either an acknowledgement from every member or blind repetition. Neither is in
+this PR, and the plan above never claimed otherwise.
 
 ### PR D — everything that does not fit one packet
 
