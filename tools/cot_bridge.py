@@ -358,21 +358,30 @@ class CotBridge:
 
     # ---- ATAK -> mesh ----
     def _from_atak(self, xml):
-        # Our own position takes the typed path. The echo guard runs first --
-        # inside the pipeline -- for everything else, so this asks the same
-        # question the pipeline would before spending a packet on it.
-        if self.pipeline.atak_uid and not self.pipeline.is_echo(xml):
-            if cot_position.is_position(xml) and self._position_from_atak(xml):
-                return
-            if self._chat_from_atak(xml):
-                return
-            if self._marker_from_atak(xml):
-                return
+        # The echo guard first, for everything, before anything is learned from
+        # the event or spent on it. Our own self-report coming back is a
+        # well-formed self-report, and learning from it would teach this
+        # pipeline our own UID.
+        if self.pipeline.is_echo(xml):
+            return
+        # Then learn, and only then route. This used to be a side effect of the
+        # tier-2 path, which the typed codecs return before ever reaching --
+        # so a session that opened with an SPI put ANDROID-<device>.SPI1 on the
+        # air as tier 2, bypassing the very scrubbing the marker codec added.
+        # The typed handlers do not need the learned UID; only the tier-2
+        # rewrite does, and now both get it.
         known = self.pipeline.atak_uid
-        frame = self.pipeline.frame(xml, tier2.encode)
+        self.pipeline.observe(xml)
         if known is None and self.pipeline.atak_uid:
             print("[bridge] this ATAK calls itself %s; peers will see %s"
                   % (self.pipeline.atak_uid, self.uid), flush=True)
+        if cot_position.is_position(xml) and self._position_from_atak(xml):
+            return
+        if self._chat_from_atak(xml):
+            return
+        if self._marker_from_atak(xml):
+            return
+        frame = self.pipeline.frame(xml, tier2.encode)
         if frame is None:
             # The pipeline keeps its own refusal count; reading it here rather
             # than assigning it into a shared one, which silently discarded

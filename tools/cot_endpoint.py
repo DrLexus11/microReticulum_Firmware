@@ -292,6 +292,30 @@ class CotOutbound:
                 return False
         return is_self_addressed(cot_xml, self.our_uid)
 
+    def observe(self, cot_xml):
+        """Learn what this ATAK calls itself, without sending anything.
+
+        Separated from frame() because the typed codecs return early: a
+        session that opened with a marker or a chat line never reached frame()
+        at all, so nothing was ever learned, and every later self-report that
+        fell through to tier 2 kept the ANDROID-xxxx device identifier that
+        pivot 1 exists to remove.
+
+        Call it on every event that survives the echo guard, whichever codec
+        then handles it. Learning is once per session, so calling it twice
+        costs a parse and changes nothing.
+        """
+        if self.atak_uid is not None:
+            return
+        if isinstance(cot_xml, (bytes, bytearray)):
+            try:
+                cot_xml = bytes(cot_xml).decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                return
+        learned = learn_atak_uid(cot_xml)
+        if learned:
+            self.atak_uid = learned
+
     def frame(self, cot_xml, encode):
         """The frame to put on the mesh, or None if this event should not go.
 
@@ -326,10 +350,7 @@ class CotOutbound:
         # the one outcome this pipeline exists to prevent.
         if is_self_addressed(cot_xml, self.our_uid):
             return None
-        if self.atak_uid is None:
-            learned = learn_atak_uid(cot_xml)
-            if learned:
-                self.atak_uid = learned
+        self.observe(cot_xml)
         try:
             return encode(rewrite_self_uid(cot_xml, self.atak_uid, self.our_uid))
         except ValueError:

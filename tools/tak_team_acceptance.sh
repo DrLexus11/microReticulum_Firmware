@@ -153,8 +153,26 @@ pli = ('<event uid="ANDROID-ALPHATEST" type="a-f-G-U-C" how="m-g" version="2.0">
        '<detail><takv device="T" os="36" platform="ATAK-CIV" version="5.6"/>'
        '<contact callsign="ALPHA-EUD"/></detail></event>')
 
-# The first self-report teaches the endpoint its ATAK uid; the typed paths all
-# wait on that, so nothing before it is a fair test of them.
+# Before anything else, and deliberately: an SPI as the very first event of
+# the session, when nothing has been learned yet. The typed paths used to wait
+# on a learned ATAK uid, which is only set by a self-report -- so a session
+# that opened with a pointer sent it as tier 2 with ANDROID-<device>.SPI1
+# intact, putting on the air the identifier pivot 1 removed from everything
+# else. This check has to run first or it proves nothing.
+first_spi = ('<event uid="ANDROID-ALPHATEST.SPI1" type="b-m-p-s-p-i" how="h-e" '
+             'version="2.0" start="2026-09-11T20:00:00.000Z" '
+             'stale="2026-09-11T20:00:20.000Z">'
+             '<point lat="41.0100" lon="28.9000" hae="108.0" ce="9999999.0" '
+             'le="9999999.0"/>'
+             '<detail><contact callsign="ALPHA.DP0"/></detail></event>')
+alpha.sendall(first_spi.encode())
+seen = drain(bravo, 12)
+check("a pointer sent before any position leaks no device id", seen or [""],
+      lambda _: not any("ANDROID-ALPHATEST" in e for e in seen),
+      "bravo saw the sender's device identifier")
+
+# Now the self-report, which is what teaches the endpoint its ATAK uid. The
+# typed paths no longer wait on it -- only the tier-2 self-report rewrite does.
 alpha.sendall((pli % ("40.9549", "29.0934")).encode())
 drain(bravo, 8)
 

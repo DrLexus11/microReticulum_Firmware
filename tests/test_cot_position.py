@@ -96,6 +96,48 @@ class DiscriminatorTests(unittest.TestCase):
         self.assertIsNone(position_codec.decode(cot_tier2.encode(MARKER)))
 
 
+class HeadingTests(unittest.TestCase):
+    """CoT states a heading in degrees; the wire format carries tenths. Getting
+    that wrong is silent -- the frame encodes, decodes and renders, just
+    pointing somewhere else."""
+
+    def with_track(self, course):
+        return PLI.replace("<contact", '<track course="%s" speed="4.0"/><contact' % course)
+
+    def test_a_heading_is_carried_in_tenths_of_a_degree(self):
+        fix = cot_position.fix_from_cot(self.with_track("180.0"), 1)
+        self.assertEqual(fix.course_ddeg, 1800)
+
+    def test_a_heading_survives_the_whole_round_trip(self):
+        """Through the codec and back out as CoT. This is the assertion that
+        catches a scale error: due south went out as 18 degrees, which is
+        north-north-east, and nothing anywhere reported a fault."""
+        import cot_gateway
+        import xml.etree.ElementTree as ET
+        for degrees in (0.0, 12.0, 90.0, 180.0, 271.0, 359.0):
+            fix = cot_position.fix_from_cot(self.with_track("%.1f" % degrees), 1)
+            back = position_codec.decode(position_codec.encode(fix))
+            rendered = cot_gateway.build_cot(back, "urtn-x", "PEER", 120).decode("utf-8")
+            track = ET.fromstring(rendered).find("detail/track")
+            self.assertIsNotNone(track, "no track for %s" % degrees)
+            got = float(track.get("course"))
+            # The wire carries 2-degree units, so a heading lands within one.
+            self.assertLessEqual(min(abs(got - degrees), 360 - abs(got - degrees)), 2.0,
+                                 "%s degrees came back as %s" % (degrees, got))
+
+    def test_a_full_turn_is_north_not_south(self):
+        """360 degrees is due north. The firmware normalises before scaling for
+        this reason; the bridge has to hand it a value already in range."""
+        fix = cot_position.fix_from_cot(self.with_track("360.0"), 1)
+        self.assertEqual(fix.course_ddeg, 0)
+
+    def test_speed_is_centimetres_per_second(self):
+        # Checked beside course because it is the neighbouring field with its
+        # own scale, and a unit error there would look identical.
+        fix = cot_position.fix_from_cot(self.with_track("90.0"), 1)
+        self.assertEqual(fix.speed_cms, 400)
+
+
 class GateTests(unittest.TestCase):
     """The codec is necessary and not sufficient: ten nodes over four hops is
     85% of a LoRa channel as compressed CoT and 32% as this codec. Sending

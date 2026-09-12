@@ -170,6 +170,45 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(again["callsign"], '</contact><detail evil="1">')
 
 
+class RemarksTests(unittest.TestCase):
+    """A long note must not take the marker down with it."""
+
+    def marker_with(self, remarks):
+        return ('<event uid="7c9e6679-7425-40de-944b-e07fc1f90ae7" type="a-h-G" '
+                'how="h-g-i-g-o" version="2.0" '
+                'start="2026-09-12T09:00:00.000Z" stale="2026-09-12T09:05:00.000Z">'
+                '<point lat="40.9601" lon="29.1002" hae="48.0" ce="9.0" le="9.0"/>'
+                '<detail><contact callsign="HOSTILE.7"/>'
+                '<remarks>%s</remarks></detail></event>' % remarks)
+
+    def test_a_long_ascii_note_is_cut_and_the_marker_survives(self):
+        frame = cot_marker.marker_from_cot(self.marker_with("A" * 400), 1)
+        decoded = cot_marker.decode(frame)
+        self.assertIsNotNone(decoded)
+        self.assertTrue(decoded["remarks"].startswith("A"))
+        self.assertTrue(decoded["remarks"].endswith("\u2026"))
+
+    def test_a_note_cut_inside_a_turkish_character_still_decodes(self):
+        """The defect: slicing encoded bytes at a fixed index splits multibyte
+        characters, the far end decodes strictly, and the marker vanishes with
+        no error anywhere. Two-byte characters at every offset walk the cut
+        across a character boundary."""
+        for pad in range(0, 8):
+            note = ("x" * pad) + ("\u015f" * 200)   # s-cedilla, two bytes each
+            frame = cot_marker.marker_from_cot(self.marker_with(note), 1)
+            self.assertIsNotNone(frame, "no frame at pad %d" % pad)
+            decoded = cot_marker.decode(frame)
+            self.assertIsNotNone(decoded, "marker lost at pad %d" % pad)
+            # Decoded at all means the bytes were valid UTF-8, which is the
+            # whole point; the content is a prefix of what was typed.
+            self.assertTrue(note.startswith(decoded["remarks"].rstrip("\u2026")))
+
+    def test_a_short_note_is_untouched(self):
+        decoded = cot_marker.decode(
+            cot_marker.marker_from_cot(self.marker_with("3 kat, enkaz alt\u0131nda"), 1))
+        self.assertEqual(decoded["remarks"], "3 kat, enkaz alt\u0131nda")
+
+
 class PayloadKindTests(unittest.TestCase):
     def test_the_marker_kind_is_registered_and_distinct(self):
         kinds = [cot_tier2.VERSION, cot_marker.VERSION]

@@ -99,7 +99,13 @@ def fix_from_cot(cot_xml, sender_id):
         course = _number(track.get("course"))
         if course is not None:
             fix.course_known = True
-            fix.course_ddeg = int(round(course)) % 360
+            # CoT states a heading in degrees; the wire format carries tenths
+            # (PositionReport.h scales by 3600 per turn, not 360). Storing
+            # degrees unscaled made 180 encode and decode as 18, and small
+            # headings round to 0 -- a silent 162-degree error in the one
+            # field where a wrong direction is unrecoverable by the person
+            # reading the map.
+            fix.course_ddeg = int(round(course * 10)) % 3600
         speed = _number(track.get("speed"))
         if speed is not None and speed > 0:
             fix.speed_cms = int(round(speed * 100))

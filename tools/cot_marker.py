@@ -145,7 +145,7 @@ def marker_from_cot(cot_xml, sender_id):
             flags |= FLAG_COLOR
         except (TypeError, ValueError):
             argb = None
-    remarks_bytes = remarks_text.encode("utf-8")[:MAX_REMARKS]
+    remarks_bytes = _fit_utf8(remarks_text, MAX_REMARKS)
     if remarks_bytes:
         flags |= FLAG_REMARKS
 
@@ -294,6 +294,37 @@ def _stale_seconds(event):
     except ValueError:
         return 300
     return max(1, int((end - begin).total_seconds()))
+
+
+# Shown when a note was cut, so a reader can tell a truncated remark from one
+# that simply ended. Three bytes, reserved from the limit rather than added to
+# it.
+_ELLIPSIS = "\u2026".encode("utf-8")
+
+
+def _fit_utf8(text, limit):
+    """The note as UTF-8, cut at a character boundary if it is too long.
+
+    Slicing encoded bytes at an arbitrary index splits multibyte characters,
+    and the far end decodes strictly -- so one Turkish character landing on the
+    boundary made decode() reject the frame and the marker vanished with no
+    error anywhere. An operator loses the marker, not the tail of a sentence,
+    and never learns why.
+
+    Remarks truncate where chat text refuses (see cot_chat.encode) because they
+    are different things: a chat line *is* its text, so cutting it destroys the
+    message, while a note annotates a marker whose position and type are the
+    payload. Losing the marker to save the note is the wrong trade.
+    """
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return raw
+    cut = limit - len(_ELLIPSIS)
+    # A UTF-8 continuation byte is 0b10xxxxxx. While the first excluded byte is
+    # one, the cut is inside a character; step back until it is not.
+    while cut > 0 and (raw[cut] & 0xC0) == 0x80:
+        cut -= 1
+    return raw[:cut] + _ELLIPSIS
 
 
 def _stale_field(seconds):
