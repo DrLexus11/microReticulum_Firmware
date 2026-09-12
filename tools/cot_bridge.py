@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
+import tak_lxmf
 import cot_chat
 import cot_gateway
 import cot_marker
@@ -139,7 +140,8 @@ class TeamAnnounceHandler:
 
 class CotBridge:
     def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None,
-                 callsign="BRIDGE", role="Team Member"):
+                 callsign="BRIDGE", role="Team Member",
+                 lxmf_storage=None, propagation_node=None):
         import RNS
         self.rns = RNS
         self.team = team
@@ -196,6 +198,23 @@ class CotBridge:
         # codec makes each one cheap, the gate is what makes the stream of
         # them affordable.
         self.spi_gate = cot_position.PositionGate(interval_seconds=5)
+
+        # A direct message goes by LXMF, which brings the three things a bare
+        # Packet does not: proof-backed delivery, retry, and a propagation node
+        # that holds a line for somebody out of range. A room line does not --
+        # see tools/tak_lxmf.py for why that split is a property of broadcast
+        # rather than a shortcut.
+        self.lxmf = None
+        if lxmf_storage:
+            self.lxmf = tak_lxmf.Carrier(self.identity, lxmf_storage, self.callsign,
+                                         self._chat_from_lxmf,
+                                         propagation_node=propagation_node)
+        # Receipts for a room never leave this node. Every member answering a
+        # room line with a delivery and a read receipt is two thirds of group
+        # chat's airtime -- 7.2 s of the 11.1 s a ten-person room costs -- for
+        # one bit of meaning each. A direct message keeps both, because there
+        # it is one peer and the operator is waiting on exactly that answer.
+        self.receipts_suppressed = 0
 
     # ---- membership ----
     def announce(self):
@@ -427,6 +446,13 @@ class CotBridge:
         # UID, so ATAK addresses them by it and destination_for() reverses it.
         # That is pivot 1 paying for itself.
         recipient = (decoded or {}).get("recipient") or ""
+        if not recipient and (decoded or {}).get("kind") != cot_chat.KIND_MESSAGE:
+            # A receipt for a room line. Dropped here rather than sent: every
+            # member answering a broadcast with two receipts is two thirds of
+            # what group chat costs on the air, and none of it tells an
+            # operator anything they can act on. A direct receipt still goes.
+            self.receipts_suppressed += 1
+            return True
         if recipient:
             destination = tak_identity.destination_for(recipient)
             if destination is None:
@@ -440,10 +466,30 @@ class CotBridge:
                 print("[bridge] chat for %r is not a member of this team, not sent"
                       % recipient, flush=True)
                 return True
+            # LXMF first, because it is the only path that can promise the
+            # line arrives. The bare packet is the fallback for a peer whose
+            # identity we cannot recall, not the normal route.
+            identity = self.rns.Identity.recall(destination)
+            if self.lxmf is not None and identity is not None:
+                text = (decoded or {}).get("text") or ""
+                if self.lxmf.send_chat(identity, frame, text):
+                    self.chat_sent += 1
+                    return True
             self.chat_sent += self._send_to(destination, frame)
             return True
         self.chat_sent += self._fan_out(frame)
         return True
+
+    def _chat_from_lxmf(self, frame, source_hash):
+        """A chat line that arrived over LXMF rather than as a bare packet.
+
+        Same rendering as the packet path: the frame is the protocol, whichever
+        carrier brought it. The LXMF content is for the human reading Columba
+        and is deliberately never parsed back here -- that is what stops a
+        rendered message being read as a new one.
+        """
+        if self._chat_from_mesh(frame):
+            self.received += 1
 
     def _marker_from_atak(self, xml):
         """Send a point marker as tens of bytes, if it is one.
@@ -566,6 +612,19 @@ def main():
     parser.add_argument("--role", default="Team Member")
     parser.add_argument("--identity", default=None,
                         help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
+    parser.add_argument("--lxmf-storage", default=None,
+                        help="LXMF router storage directory; direct messages "
+                             "go by LXMF when this is set, which is what gives "
+                             "them receipts, retry and store-and-forward. "
+                             "Defaults to <config>/lxmf.")
+    parser.add_argument("--no-lxmf", action="store_true",
+                        help="send direct messages as bare packets, as PR B "
+                             "did. Best effort, and nothing will say when a "
+                             "line is lost.")
+    parser.add_argument("--propagation-node", default=None,
+                        help="destination hash of an LXMF propagation node, "
+                             "which is what holds a line for a peer who is out "
+                             "of range until they come back")
     args = parser.parse_args()
 
     secret = groups.load_fleet_secret(args.secret_file)
@@ -588,22 +647,47 @@ def main():
         print("[bridge] own interface, and point peers at that:  --config <dir>",
               flush=True)
         sys.exit(1)
+    # LXMF keeps its own store -- the queue for a peer who is out of range is
+    # the whole point, and a queue that does not outlive a restart is not one.
+    lxmf_storage = None
+    if not args.no_lxmf:
+        lxmf_storage = args.lxmf_storage or os.path.join(
+            os.path.expanduser(args.config or "~/.reticulum"), "lxmf")
+        os.makedirs(lxmf_storage, exist_ok=True)
+    propagation_node = None
+    if args.propagation_node:
+        try:
+            propagation_node = bytes.fromhex(args.propagation_node)
+        except ValueError:
+            sys.exit("--propagation-node is not a hex destination hash: %r"
+                     % args.propagation_node)
     bridge = CotBridge(args.team, secret, args.port, args.identity,
-                       args.callsign, args.role)
+                       args.callsign, args.role,
+                       lxmf_storage=lxmf_storage,
+                       propagation_node=propagation_node)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
         print("\n[bridge] sent %d, received %d, positions %d/%d, chat %d/%d, "
               "markers %d/%d, unreadable %d, refused %d, unreachable %d, "
-              "not a member %d, suppressed %d/%d, members %d"
+              "not a member %d, receipts dropped %d, lxmf %d/%d/%d, "
+              "suppressed %d/%d, members %d"
               % (bridge.sent, bridge.received,
                  bridge.positions_sent, bridge.positions_received,
                  bridge.chat_sent, bridge.chat_received,
                  bridge.markers_sent, bridge.markers_received,
                  bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
-                 bridge.chat_undeliverable,
+                 bridge.chat_undeliverable, bridge.receipts_suppressed,
+                 (bridge.lxmf.sent if bridge.lxmf else 0),
+                 (bridge.lxmf.delivered if bridge.lxmf else 0),
+                 (bridge.lxmf.failed if bridge.lxmf else 0),
                  bridge.position_gate.suppressed, bridge.spi_gate.suppressed,
                  len(bridge.registry)), flush=True)
+        # The LXMF store holds anything still queued for a peer who is out of
+        # range. Closing the router is what flushes it to disk, so a queue
+        # survives the restart it exists to survive.
+        if bridge.lxmf is not None:
+            bridge.lxmf.stop()
 
 
 if __name__ == "__main__":

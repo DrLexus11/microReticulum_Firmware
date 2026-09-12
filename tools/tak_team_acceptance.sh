@@ -251,11 +251,55 @@ check("a line for a stranger is not broadcast to the team", [""],
       lambda _: not any("must not be broadcast" in e for e in seen),
       "bravo saw a message addressed to somebody else")
 
+# A receipt for a room line. Every member answering a broadcast with a delivery
+# and a read receipt is two thirds of what group chat costs on the air -- 7.2 s
+# of the 11.1 s a ten-person room spends -- for one bit of meaning each. These
+# stop at the endpoint that produced them.
+room_receipt = ('<event uid="3f8e1c2d-4a5b-4c6d-8e9f-0a1b2c3d4e5f" type="b-t-f-d" '
+                'how="h-g-i-g-o" version="2.0" time="2026-09-12T09:10:00.000Z">'
+                '<point lat="40.95" lon="29.09" hae="1" ce="1" le="1"/>'
+                '<detail><__chatreceipt chatroom="Cyan" groupOwner="false" id="Cyan" '
+                'messageId="3f8e1c2d-4a5b-4c6d-8e9f-0a1b2c3d4e5f" '
+                'parent="RootContactGroup" senderCallsign="ALPHA">'
+                '<chatgrp id="Cyan" uid0="a" uid1="Cyan"/></__chatreceipt>'
+                '</detail></event>')
+alpha.sendall(room_receipt.encode())
+seen = drain(bravo, 8)
+check("a receipt for a room line never reaches the team", [""],
+      lambda _: not any("3f8e1c2d-4a5b-4c6d-8e9f-0a1b2c3d4e5f" in e for e in seen),
+      "bravo received a room receipt")
+
+# The direct receipt still goes, because there it is one peer and the operator
+# is waiting on exactly that answer.
+direct_receipt = ('<event uid="4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" type="b-t-f-d" '
+                  'how="h-g-i-g-o" version="2.0" time="2026-09-12T09:11:00.000Z">'
+                  '<point lat="40.95" lon="29.09" hae="1" ce="1" le="1"/>'
+                  '<detail><__chatreceipt chatroom="BRAVO" groupOwner="false" '
+                  'id="%s" messageId="4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" '
+                  'parent="RootContactGroup" senderCallsign="ALPHA">'
+                  '<chatgrp id="%s" uid0="%s" uid1="%s"/></__chatreceipt>'
+                  '</detail></event>' % (bravo_uid, bravo_uid, alpha_uid, bravo_uid))
+alpha.sendall(direct_receipt.encode())
+seen = drain(bravo, 15)
+check("a receipt for a direct message still arrives", seen,
+      lambda e: "4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" in e)
+
 alpha.close()
 bravo.close()
 sys.exit(1 if failures else 0)
 PYEOF
 [ $? -eq 0 ] || FAILED=1
+
+step "the reliable path was the one taken"
+# A direct message crossing proves nothing on its own: the bare-packet
+# fallback delivers it too, and the round trip looks identical. This is what
+# separates "it arrived" from "it arrived by the path that can promise to".
+if grep -q "direct message sent over LXMF" "$WORK/alpha.log"; then
+    pass "a direct message went by LXMF, not as a bare packet"
+else
+    fail "the direct message fell back to a bare packet"
+    grep -i "lxmf" "$WORK/alpha.log" | tail -5
+fi
 
 step "result"
 if [ "$FAILED" = "0" ]; then
