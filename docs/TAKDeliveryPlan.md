@@ -144,6 +144,28 @@ shown, all recorded in `CarriedIssues.md`:
   shortens the window; the rule needs to change.
 - **A direct message arrived headed by its recipient.** Fixed here — see below.
 
+### The loop closed on hardware, 2026-09-12
+
+Deck bridge to phone, Columba to ATAK, an operator typing a reply, and back.
+Every hop is production code; nothing in the path is simulated.
+
+    deck  -> [lxmf] direct message sent over LXMF (113 bytes, 39 of text)
+    phone -> TAK chat arrived over LXMF, 113 bytes
+    deck  <- b-t-f-d   delivery receipt
+    deck  <- b-t-f-r   read receipt
+    deck  <- b-t-f     the reply, 997 bytes, rendered for the local ATAK
+
+The reply's event uid is
+`GeoChat.urtn-da4d8be3….urtn-da4d8be3….5115990b-…`, which is the conversation
+fix visible on the wire: the deck renders a message *from* the phone, so the
+conversation is keyed on the phone. Before the fix that slot held the deck's
+own uid and the reply was refused as "not a member of this team".
+
+Both receipts came back, which is the other half of PR C's receipt policy
+working as intended: a **direct** receipt is delivered because one peer is
+waiting on exactly that answer, while a room receipt never leaves the endpoint
+that made it.
+
 ### What is wired but not yet exercised
 
 **Store-and-forward has nowhere to forward to.** `--propagation-node` exists on
