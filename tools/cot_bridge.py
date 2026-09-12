@@ -569,6 +569,21 @@ class CotBridge:
             self.rns.Transport.request_path(destination_hash)
             self.unreachable += 1
             return 0
+        # Knowing who somebody is does not mean knowing how to reach them, and
+        # the two expire on different clocks. On a four-hop LoRa path with a
+        # thirty-minute announce interval, a member stays known long after its
+        # path has gone -- and sending then is worse than failing, because
+        # Packet.send() does not raise for a destination with no path. The
+        # frame leaves, nothing carries it, nothing says so. Measured on
+        # hardware 2026-09-12: positions crossed from the phone to the deck
+        # while every marker and chat line sent the other way vanished, with
+        # "could not reach" printed zero times.
+        if not self.rns.Transport.has_path(destination_hash):
+            self.rns.Transport.request_path(destination_hash)
+            self.unreachable += 1
+            print("[bridge] no path to %s yet; asked for one"
+                  % destination_hash.hex()[:16], flush=True)
+            return 0
         try:
             destination = tak_identity.node_destination(identity,
                                                         self.rns.Destination.OUT)

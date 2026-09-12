@@ -166,6 +166,41 @@ working as intended: a **direct** receipt is delivered because one peer is
 waiting on exactly that answer, while a room receipt never leaves the endpoint
 that made it.
 
+### Two LoRa hops, 2026-09-12
+
+The whole path, with no WiFi shortcut anywhere:
+
+    phone --BLE--> Rev 1 --LoRa--> Rev 2 --UDP--> deck rrcd --TCP--> bridge
+
+Forced by disabling the deck's UDP interface to Rev 1, so Rev 1 was reachable
+only through Rev 2's radio. Rev 1's own configuration was left alone.
+
+| | |
+| --- | --- |
+| Link RTT over the path | **2.16 s** |
+| Rev 1's radio | −56 dBm RSSI, 9.5 dB SNR |
+| Hops, deck to phone | 4 |
+| Discovery | works |
+| Position, phone → deck | works, every ~3 minutes |
+| Markers, deck → phone | all four, ~1 s apart |
+| Chat over LXMF | works, ~30 s end to end |
+
+**The failure it exposed is the one worth keeping.** Before the fix below,
+positions crossed from the phone to the deck while every marker and chat line
+sent the other way vanished — and `could not reach` was printed **zero** times.
+
+`Packet.send()` does not raise for a destination with no path. Knowing who
+somebody is and knowing how to reach them expire on different clocks, and on a
+four-hop path with a thirty-minute announce interval a member stays known long
+after its path has gone. The bridge asked for a path only when it could not
+recall the identity, which is the *other* failure. So it addressed a known peer
+over a route it did not have, the frame left, nothing carried it, and nothing
+said so.
+
+It now checks `Transport.has_path()` before sending, asks for one when it is
+missing, and says so. After that, markers and chat both crossed on the first
+attempt.
+
 ### What is wired but not yet exercised
 
 **Store-and-forward has nowhere to forward to.** `--propagation-node` exists on
