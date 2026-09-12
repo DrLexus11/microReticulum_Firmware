@@ -93,6 +93,21 @@ position, peer plugged and unplugged for matched multi-hour windows, with a
 console attached for the backtrace. If the correlation holds it converts this
 entry from "trigger unknown" to "trigger named".
 
+**A natural experiment already ran, noticed 2026-09-12.** The Rev 2 boards have
+been soaking for two weeks. Rev 2-2 reports its ESP-NOW interface **down**, with
+zero peers and zero discoveries, and has not reset in that time. The OZD board,
+with one ESP-NOW peer plugged in, averaged about two hours.
+
+Two weeks against two hours, on the same firmware family, with ESP-NOW the
+variable that differs. That is not a controlled test -- different boards,
+different loads -- but it is the same direction as the plugged/unplugged
+observation and much longer. Taken together the two make ESP-NOW the leading
+candidate rather than one of several.
+
+**Read the boards' bootlogs before reflashing them.** Two weeks of clean uptime
+is the evidence this entry has been missing since August, and a flash spends it.
+`bootlog.txt` is persisted, but confirm it survived rather than assuming.
+
 This is scheduled inside PR E -- see [`TAKDeliveryPlan.md`](TAKDeliveryPlan.md).
 It must land **before** Outdoor Test 1: a board that resets mid-test invalidates
 every range and reconnection measurement taken, with no way afterwards to tell
