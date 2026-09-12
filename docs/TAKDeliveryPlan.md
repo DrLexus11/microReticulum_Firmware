@@ -135,8 +135,9 @@ shown, all recorded in `CarriedIssues.md`:
 - **ATAK's connection to the local endpoint flaps**, and everything written
   while it is down is silently lost. The rendering was correct the whole time
   and `-> ATAK: 637 bytes to 0 client(s)` was the only evidence. ATAK pings its
-  server with `t-x-c-t`, which this endpoint never answers; that is the first
-  thing to check.
+  server with `t-x-c-t`. Both endpoints now reply locally with `t-x-c-t-r`,
+  serialize socket writes, and log disconnects and delivery loss. Regression
+  tests cover the fix; the hardware stability run remains pending (issue 4).
 - **A node that restarts is invisible for up to 30 minutes.** Both sides greet
   a *new* member, but a peer that rebooted is not new to anybody else, so
   nobody greets it and it can resolve no sender ids. `--announce-interval`

@@ -103,16 +103,15 @@ class RealEventTests(unittest.TestCase):
         rebuilt = cot_chat.build_chat_cot(decoded, "urtn-" + "ab" * 16, "LEXUS",
                                           "2026-09-11T20:00:00.000Z")
         again = cot_chat.decode(cot_chat.chat_from_cot(rebuilt, SENDER))
-        for field in ("kind", "sender_id", "message_id", "recipient", "text",
-                      "sent_unix"):
+        # The words and the identity of the line survive intact.
+        for field in ("kind", "sender_id", "message_id", "text", "sent_unix"):
             self.assertEqual(again[field], decoded[field], field)
+        # Two fields legitimately turn around, because a rebuilt event is the
+        # *other side* of the conversation: it is headed by the sender, and
+        # reading it back the way the endpoint reads what ATAK writes gives a
+        # line addressed to that sender. That is a reply, and it is the point.
         self.assertEqual(again["room"], "LEXUS")
-
-        # Idempotent from here: relaying it again does not keep rewriting it.
-        third = cot_chat.decode(cot_chat.chat_from_cot(
-            cot_chat.build_chat_cot(again, "urtn-" + "ab" * 16, "LEXUS",
-                                    "2026-09-11T20:00:00.000Z"), SENDER))
-        self.assertEqual(third, again)
+        self.assertEqual(again["recipient"], "urtn-" + "ab" * 16)
 
     def test_a_position_report_is_not_chat(self):
         self.assertIsNone(cot_chat.chat_from_cot(FIXTURES["tier2"]["cot"], SENDER))
@@ -245,6 +244,31 @@ class AddressingTests(unittest.TestCase):
         decoded = cot_chat.decode(cot_chat.chat_from_cot(self.addressed_to(peer), SENDER))
         self.assertEqual(decoded["recipient"], peer)
         self.assertIsNotNone(tak_identity.destination_for(decoded["recipient"]))
+
+    def test_a_received_message_is_a_conversation_with_its_sender(self):
+        """ATAK keys a conversation on the other party. In an event the local
+        ATAK wrote that is the recipient; in one it is handed it is the sender.
+        Naming it after the recipient put the operator in a conversation with
+        themselves, and their reply then carried their own UID and was dropped
+        at the far end as not a member -- messages in, replies nowhere, and
+        nothing in between saying why. Hardware, 2026-09-12."""
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        peer = "urtn-" + "ab" * 16
+        rebuilt = cot_chat.build_chat_cot(decoded, peer, "DECK",
+                                          "2026-09-12T09:00:00.000Z")
+        self.assertIn('id="%s"' % peer, rebuilt)
+        self.assertNotIn('id="%s"' % decoded["recipient"], rebuilt)
+
+    def test_a_reply_to_a_received_message_goes_back_to_its_sender(self):
+        """The test that would have caught it: read the rebuilt event back the
+        way the endpoint reads what ATAK writes, and check the addressee is the
+        peer rather than ourselves."""
+        decoded = cot_chat.decode(cot_chat.chat_from_cot(CHAT["message"], SENDER))
+        peer = "urtn-" + "ab" * 16
+        rebuilt = cot_chat.build_chat_cot(decoded, peer, "DECK",
+                                          "2026-09-12T09:00:00.000Z")
+        reply = cot_chat.decode(cot_chat.chat_from_cot(rebuilt, SENDER))
+        self.assertEqual(reply["recipient"], peer)
 
     def test_a_direct_message_is_headed_by_its_sender(self):
         """The chatroom names the other party, and that is a different string

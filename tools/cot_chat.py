@@ -233,22 +233,32 @@ def build_chat_cot(decoded, sender_uid, callsign, when):
     # in. A room line keeps its room, because there the room really is the
     # same string for everybody.
     room = _escape(callsign if decoded.get("recipient") else decoded["room"])
-    # A message's uid is three identifiers concatenated, which is how ATAK
-    # threads a conversation; a receipt's uid is the id of the message it is
-    # about, which is how ATAK matches it to the line on screen.
-    # The recipient as it will appear to ATAK: the peer's own uid for a direct
-    # message, the room for a broadcast. Threading depends on this being a uid
-    # and not a callsign, which is what it used to be.
-    target = _escape(decoded.get("recipient") or "") or room
-    uid = ("GeoChat.%s.%s.%s" % (sender, target, message_id) if kind == KIND_MESSAGE
-           else message_id)
+    # The conversation this belongs to, as ATAK keys it: **the other party**.
+    #
+    # That is the recipient in an event the local ATAK *wrote*, and the sender
+    # in one it is being *handed* -- which is what this function builds. Naming
+    # it after the recipient put the receiving operator in a conversation with
+    # themselves, and then their reply was addressed to their own UID and
+    # dropped by the far end as "not a member of this team". Seen on hardware
+    # 2026-09-12: messages arrived, replies went nowhere, and nothing in
+    # between said why.
+    #
+    # A room is the other party for everybody at once, so a broadcast keeps it.
+    recipient = _escape(decoded.get("recipient") or "")
+    conversation = sender if recipient else room
+    # uid0 and uid1 are the two ends. Keeping our own UID as uid1 is what lets
+    # a reply parsed back out of ATAK carry the sender as its recipient, which
+    # is the whole point of answering.
+    other_end = recipient if recipient else room
+    uid = ("GeoChat.%s.%s.%s" % (sender, conversation, message_id)
+           if kind == KIND_MESSAGE else message_id)
     element = "__chat" if kind == KIND_MESSAGE else "__chatreceipt"
     body = (
         '<%s chatroom="%s" groupOwner="false" id="%s" messageId="%s" '
         'parent="RootContactGroup" senderCallsign="%s">'
         '<chatgrp id="%s" uid0="%s" uid1="%s"/></%s>'
-        % (element, room, target, message_id, _escape(callsign),
-           target, sender, target, element)
+        % (element, room, conversation, message_id, _escape(callsign),
+           conversation, sender, other_end, element)
     )
     body += '<link relation="p-p" type="a-f-G-U-C" uid="%s"/>' % sender
     if kind == KIND_MESSAGE:
@@ -257,7 +267,7 @@ def build_chat_cot(decoded, sender_uid, callsign, when):
         sent = decoded.get("sent_unix") or 0
         stamp = _iso(sent) if sent else when
         body += ('<remarks source="BAO.F.ATAK.%s" time="%s" to="%s">%s</remarks>'
-                 % (sender, stamp, target, _escape(decoded["text"])))
+                 % (sender, stamp, other_end, _escape(decoded["text"])))
     body += '<marti><dest callsign="%s"/></marti>' % room
     return ('<event version="2.0" uid="%s" type="%s" how="h-g-i-g-o" '
             'time="%s" start="%s" stale="%s">'
