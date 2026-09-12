@@ -378,7 +378,7 @@ Each of these is a PR, and each leaves something demonstrable behind.
 | | | Unlocks |
 | --- | --- | --- |
 | **A** | Local CoT endpoint on both ends; group destinations; dictionary-compressed CoT broadcast on the group | **The indoor test.** Chat, markers and drawings both ways, no server address typed anywhere. Every CoT type works, none of them cheaply. |
-| **B** | Typed codecs: position, chat and receipts, point markers | 850 of the 853 observed events. Makes A affordable on LoRa. |
+| **B** | Typed codecs: position, chat and receipts, point markers; membership replacing the group address | 850 of the 853 observed events. Makes A affordable on LoRa, and addressable at all past one hop. |
 | **C** | Drawings: typed geometry codec, and tier 2 spill to `Resource` past the MTU | **The outdoor minimal test** passes here. |
 | **D** | Tier 3: descriptors, thumbnails, fetch-on-demand, cost consent | QuickPic and data packages. |
 | **E** | Teams and missions as group destinations, with membership and mission content | Mission-based operation. |
@@ -457,6 +457,188 @@ agreement between implementations; they cannot pin agreement with the intent.
   means a setting on both ends, and addressing individual peers is what B and E
   are for. Worth knowing before reading the UID work as finished.
 
+## Acceptance record -- PR B, 2026-09-11
+
+Membership replaces the group address, and position leaves the tier 2 path.
+Verified deck-to-deck between two bridges on separate Reticulum instances, and
+then deck-to-phone with Columba on the same team.
+
+### Mutual discovery
+
+```
+phone : Team member ALPHA is urtn-45a0122763d01e4bc3f6fca2d59073db
+ALPHA : team member COLUMBA is urtn-da4d8be3a2260eb1e6ca927bd7da293a
+```
+
+Neither was configured with the other. Each announces its own node destination
+carrying an HMAC of the team, and each recognised the other's.
+
+### Traffic, both directions
+
+| | Sent | Arrived as |
+| --- | --- | --- |
+| Deck marker -> phone | `a-h-G`, uid `deck-marker-1` | same uid, `40.9601, 29.1002` |
+| Phone position -> deck | `a-f-G-U-C`, uid `ANDROID-PHONE` | uid `urtn-da4d8be3…`, `40.9549, 29.0934` |
+| Phone position -> deck | second report | uid `urtn-da4d8be3…`, `40.9750000, 29.1150000` |
+
+The third row is the one worth reading closely. `40.9549` is ATAK's own string,
+carried through tier 2 as CoT; `40.9750000` is seven-decimal reconstruction from
+the twenty-one byte codec. The first position went as CoT because the endpoint
+had not yet learned the ATAK UID, and the second took the typed path -- so the
+routing decision is visible in the output rather than asserted.
+
+A marker keeps its own UID and a self-report gets the node's, which is pivot 1
+holding across a real exchange.
+
+### Chat, added 2026-09-11
+
+A GeoChat line crossed in both directions between the phone and the deck, each
+side rendering the other's callsign from the member registry rather than a raw
+identifier:
+
+```
+deck -> phone   type=b-t-f  from=ALPHA    text='where u at'
+phone -> deck   type=b-t-f  from=COLUMBA  text='on my way'
+```
+
+The measurement behind the codec is worth restating because it is stronger than
+"chat is expensive": a real GeoChat line from this lab compresses to **402
+bytes** against a 383-byte MDU. On tier 2 chat was not costly, it was
+**undeliverable** -- and after the frame bound was added it is refused outright,
+which before that fix meant an exception the client loop read as a dead socket.
+
+    message   1095 B raw   tier 2 refused   chat  95 B, 107 ms
+    receipt    875 B raw   tier 2 343 B     chat  85 B, 100 ms
+
+These are the sizes after the fixes of 2026-09-12 below. The frames were 45 B
+and 35 B during the run recorded here; the growth is the recipient, which in
+this capture is a 44-character Windows SID, and carrying it is what stops a
+private line reaching the whole team.
+
+Real ATAK was connected to the phone's endpoint during this run -- the log line
+`This ATAK calls itself ANDROID-…` is the endpoint learning it -- though the
+events under test were injected rather than typed into the app.
+
+### What this run does not establish
+
+- **Airtime.** The path was TCP over Wi-Fi. The 85%-against-32% figures that
+  justify the typed codec are computed from the firmware's model, not measured
+  on a radio.
+- **More than one hop.** Both topologies were one hop by construction. Multi-hop
+  is the whole reason for pivot 5 and is still untested end to end.
+- **A real ATAK.** The harness speaks the same socket, and the events come from
+  a real ATAK capture, but no map has drawn one of these.
+- **Chat and receipts.** 10 of the 853 observed events still have no typed
+  codec and fall through to tier 2.
+
+### Two things found while running it
+
+The backends drop announces whose aspect they do not recognise, and neither knew
+the TAK node aspect. Team announces would have been discarded before reaching
+the app, and a team would never have discovered itself with nothing logged to
+say why. The two aspect lists -- Kotlin and Python -- were "kept in sync by
+hand"; there is now a test that reads both.
+
+A bridge started under `nohup` does not print its closing counters on SIGINT, so
+the send/receive/suppressed figures are only available from a foreground run.
+Not fixed; recorded so the next person does not read an empty summary as zero
+traffic.
+
+### Markers and chat, added 2026-09-11
+
+The remaining typed codecs, measured against real events pulled from this lab's
+OpenTAKServer rather than composed for the purpose:
+
+| | Raw | Tier 2 | Typed |
+| --- | ---: | ---: | ---: |
+| `a-h-G` hostile marker | 759 B | 242 B | **57 B** |
+| `b-m-p-s-m` spot marker | 799 B | 263 B | **53 B** |
+| `b-m-p-c-cp` checkpoint | 714 B | 234 B | **65 B** |
+| `b-m-p-s-p-i` SPI | 561 B | 193 B | **45 B** |
+| GeoChat line | 1095 B | *refused* | **95 B** |
+| Chat receipt | 875 B | 343 B | **85 B** |
+
+Chat is the row that changes a conclusion: a real GeoChat line compresses to
+402 bytes against a 383-byte MDU, so on tier 2 it was not expensive, it was
+**undeliverable**.
+
+Two findings came out of writing these.
+
+**SPI was leaking a device identifier.** ATAK names it
+`ANDROID-<device id>.SPI1`, and forwarding that uid verbatim would have put the
+sender's device id on the air -- the thing pivot 1 removed from everything else,
+carried past it by the one event type nobody had looked at. It is 121 of the 853
+captured events, so it was also the most frequent thing doing it. A uid that is
+not a UUID now travels as its suffix alone.
+
+**Sixteen bits of seconds is eighteen hours**, and ATAK writes a stale a year
+out for a spot marker. Clamping turned a permanent marker into one that vanished
+overnight. The field now carries a unit flag: seconds where they fit, because an
+SPI lives twenty of them, minutes where they do not.
+
+SPI is tier 1 by the classification above -- a pointer being dragged, latest-wins
+-- so it is gated like position. The codec makes one cheap; the gate is what
+makes a stream of them affordable.
+
+`tools/tak_team_acceptance.sh` drives the whole of PR B between two bridges:
+discovery, then each codec in turn. It passes.
+
+### Three things wrong with it, fixed 2026-09-12
+
+Found by asking whether an operator could actually use this, rather than
+whether the bytes moved. All three passed every test written at the time.
+
+**A private line went to the whole team.** ATAK puts the recipient's *callsign*
+in the chatroom field for a direct message, so the room alone cannot tell
+"everyone" from "one person" -- and the codec carried only the room. Every
+private message was fanned out to every member. That is not a cost problem, it
+is a confidentiality one, and on a real callout it is the kind that is
+discovered by the wrong person reading something.
+
+The recipient now travels, and a line that names one goes to that member
+alone. This works because peers are announced under their Reticulum-rooted UID,
+so ATAK addresses them by it and `destination_for()` reverses it -- pivot 1
+paying for itself.
+
+Two ways of getting this wrong are worth naming, because both were written
+before they were caught. **Inventing a recipient** narrows a broadcast to one
+person, so a line to All Chat Rooms carries none, a chatgrp with a `uid2` is a
+room rather than a pair, and the addressee is read from the `id` attribute
+rather than from `uid1`, which in a room is merely whoever is listed second.
+**Falling back to the fan-out** when a recipient does not resolve is the
+original bug wearing a different hat: an unresolvable recipient is somebody who
+is not a peer of ours, and putting their private line on the air reaches
+everybody except them. It is counted and dropped.
+
+Compacting a `urtn-` recipient to sixteen raw bytes was considered and
+rejected. Twenty-one bytes on an event an operator types by hand did not justify
+a second encoding and a second way to get it wrong.
+
+**A replayed backlog would have looked simultaneous.** The codec carried no send
+time and the rebuild stamped the relay moment, so every line somebody missed
+while away would have arrived at once -- in order, at the wrong time, which is
+harder to read than no history at all. The author's time now travels, and an
+event that states no time encodes zero rather than now, so a receiver can tell
+"not stated" from a stamp. This is the piece propagated group chat needs, and it
+is cheaper to have in the wire format now than to add once nodes speak it.
+
+**A rendered peer was visible but not addressable.** Presence carried
+`<contact callsign="..."/>` and nothing else. ATAK uses the `endpoint`
+attribute to decide a contact is reachable, so a peer appeared on the map and
+was absent from the contact list -- the list an operator picks from to start a
+chat, send a marker, or dispatch a CASEVAC. The track looked healthy the whole
+time. Presence now carries `endpoint="*:-1:stcp"`, which is what ATAK itself
+writes for a contact reached over a stream, and the `__group` name comes from
+the bridge rather than being hard-coded to Cyan -- on any other team every peer
+landed in the wrong group, and group colour is how an operator tells their own
+people apart at a glance.
+
+Firmware and Columba carry all three, and the cross-language frame fixtures
+still match byte for byte. `tools/tak_team_acceptance.sh` drives the addressing
+between two live bridges: a direct message reaches the member it names and
+threads on the uid, and a line addressed to a stranger does not arrive at the
+other node at all.
+
 ## After C: the plugin, and what HaLow changes
 
 ### The plugin is real, and C is the right gate
@@ -524,20 +706,19 @@ transmitter inches from a receiver and ETSI duty-cycle limits across both. That
 decision may pick the HAT, and it is cheaper to answer on paper than after a
 fabrication run.
 
-### Sequence
+### Sequence — moved
 
-| | | Depends on |
-| --- | --- | --- |
-| **G** | Merge Eridanus into Columba: one RNS host, one identity, `IRnsRrc` | nothing — can start whenever |
-| **H** | Export the RNS service behind a permission | G, so the surface is complete when it opens |
-| **I** | **Thin ATAK plugin**: mesh layer, peer panel, LXMF and RRC messaging, consent dialogs | C and H |
-| **J** | Tier 3 over HaLow: data packages, images at full size | D, and Vox hardware |
-| **V2** | Voice over HaLow | V1 measurement, G, and Vox hardware |
+The A–J sequence that used to close this document is **superseded by
+[`TAKDeliveryPlan.md`](TAKDeliveryPlan.md)**, which is now the single source of
+truth for what ships in which PR.
 
-G and H are software and gated on nothing but time. I is the payoff. J and V2
-wait on Vox, which is months out — but they wait on *hardware*, not on design,
-and that is the point of doing the tiering now.
+It was written before PR B measured what was actually missing, and it was wrong
+in two ways worth recording rather than deleting. It put the ATAK plugin at
+**I**, gated only on a permission surface — the plugin is now last, and gated on
+the transport being honest first, because a plugin over a lossy transport is
+still lossy. And it treated tier 3 as a HaLow-era item at **J**; tier 3 is
+needed on LoRa now, because without fragmentation drawings do not cross at all.
 
-A is the large one and the one worth doing next: it is what turns a position
-demo into TAK.
+What remains true and has simply moved: Eridanus merging into Columba, and the
+RNS service exported behind a permission, are gated on nothing but time.
 

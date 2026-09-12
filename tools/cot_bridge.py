@@ -15,6 +15,8 @@ written back to every connected client. See docs/TAKNative.md.
 
 import argparse
 import os
+import struct
+from datetime import datetime, timedelta, timezone
 import socket
 import stat
 import sys
@@ -26,6 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
+import cot_chat
+import cot_gateway
+import cot_marker
+import cot_position
+import position_codec
+import tak_membership as membership
+import tak_payload
 from cot_endpoint import CotOutbound, CotStream
 
 DEFAULT_PORT = 8087
@@ -36,8 +45,23 @@ DEFAULT_IDENTITY_PATH = "~/.impr-tak/node-identity"
 # How long a single write to one ATAK client may take before that client is
 # treated as gone. Generous for a loopback socket carrying a few hundred bytes,
 # and short enough that one stalled client cannot hold up the mesh callback
-# thread that every other client's data arrives on.
+# thread that every other client's data arrives on. Applied with SO_SNDTIMEO so
+# it bounds sends only; see _serve_client for why that distinction matters.
 CLIENT_WRITE_TIMEOUT = 2.0
+# How often this node re-announces its membership.
+#
+# Announces are deliberately expensive in Reticulum -- they are how the network
+# learns paths -- so this is not a heartbeat. It is slow enough to be cheap and
+# frequent enough that a node restarting is found again without anyone doing
+# anything. Members are kept far longer than this (see tak_membership), so a
+# missed announce costs nothing.
+ANNOUNCE_INTERVAL_SECONDS = 30 * 60
+# How long a position is worth drawing before the track should go grey.
+#
+# Twice the report floor: one missed report is a radio being a radio, two is
+# worth an operator noticing. A stale track that never expires is the failure
+# that matters here -- a marker where somebody used to be, still being trusted.
+POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
 # Loopback only, and not configurable. This endpoint applies no authentication
 # because it assumes only this device can reach it; binding it to a routable
 # address would hand the mesh to anyone who can open a socket.
@@ -93,11 +117,35 @@ def load_node_identity(path=None):
     return identity
 
 
+class TeamAnnounceHandler:
+    """Learns team members from the announces every node already hears.
+
+    Reticulum hands every announce on our aspect to this, most of which are not
+    ours: another team, or software that is not this project at all. The
+    registry decides, and a payload it does not recognise is ordinary.
+    """
+
+    def __init__(self, registry, on_new_member=None):
+        self.aspect_filter = "%s.%s" % (tak_identity.NODE_APP,
+                                        ".".join(tak_identity.NODE_ASPECTS))
+        self.registry = registry
+        self.on_new_member = on_new_member
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        if self.registry.remember(destination_hash, app_data) is membership.MEMBER_NEW:
+            if self.on_new_member:
+                self.on_new_member(destination_hash)
+
+
 class CotBridge:
-    def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None):
+    def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None,
+                 callsign="BRIDGE", role="Team Member"):
         import RNS
         self.rns = RNS
         self.team = team
+        self.secret = secret
+        self.callsign = callsign
+        self.role = role
         self.port = port
         self.clients = []
         self.clients_lock = threading.Lock()
@@ -107,36 +155,175 @@ class CotBridge:
         # on a shared destination; the other is an event ATAK sent that
         # we refused. Collapsing them hides whichever is smaller.
         self.unreadable = 0
-
-        # A GROUP destination is symmetric -- every member both speaks and
-        # listens on it, and command is a member rather than a hop -- but RNS
-        # still wants an IN and an OUT object. Both are built from the team's
-        # shared identity so every member lands on the same address.
-        self.group = groups.group_destination(team, secret, RNS.Destination.IN)
-        self.group.set_packet_callback(self._from_mesh)
-        self.out = groups.group_destination(team, secret, RNS.Destination.OUT)
+        self.unreachable = 0
 
         # The UID names *this node*, not the team. Registered IN so the address
-        # a peer recovers from the UID is one this node actually answers on.
+        # a peer recovers from the UID is one this node actually answers on --
+        # and so team traffic addressed to us arrives here.
         self.identity = load_node_identity(identity_path)
         self.node = tak_identity.node_destination(self.identity, RNS.Destination.IN)
+        self.node.set_packet_callback(self._from_mesh)
         self.uid = tak_identity.uid_for(self.node.hash)
+
+        # No GROUP destination. Pivot 5: a group packet reaches only peers on
+        # the same interface as the sender -- any intermediary at all spends
+        # its single hop -- so a team is a membership set and traffic for it is
+        # addressed to each member. See docs/TAKIntegrationPivots.md.
+        self.registry = membership.MemberRegistry(team, secret, own_hash=self.node.hash)
+        self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined)
+        RNS.Transport.register_announce_handler(self.announce_handler)
+
         # One pipeline per bridge: it holds the learned ATAK UID, refuses our
         # own events before they can teach it anything, and rewrites our
         # self-reports. The order of those three is the whole of it.
         self.pipeline = CotOutbound(self.uid)
+        self._announce_thread = None
+
+        # Position does not go through tier 2. 94% of what ATAK emits is a
+        # position report, and at ten nodes over four hops that is 85% of a
+        # LoRa channel as compressed CoT against 32% as this codec -- neither
+        # survivable alone, which is why the gate matters as much as the
+        # encoding. See tools/cot_position.py for the measurements.
+        self.position_gate = cot_position.PositionGate()
+        self.sender_id = self.registry.sender_id_for(self.node.hash)
+        self.positions_sent = self.positions_received = 0
+        self.chat_sent = self.chat_received = 0
+        self.chat_undeliverable = 0
+        self.markers_sent = self.markers_received = 0
+        # SPI is tier 1 by the classification in TAKNative.md -- a pointer
+        # ATAK drags across the map, 121 of the 853 captured events, and
+        # latest-wins. Gated like position, and for the same reason: the
+        # codec makes each one cheap, the gate is what makes the stream of
+        # them affordable.
+        self.spi_gate = cot_position.PositionGate(interval_seconds=5)
+
+    # ---- membership ----
+    def announce(self):
+        """Say who we are, so peers can address us.
+
+        Without this the UID derived in pivot 1 decodes to a destination
+        nothing has a path to: correct, and unreachable. The payload carries an
+        HMAC of the team rather than its name, so the announce does not undo
+        what group_aspects went to trouble to hide.
+        """
+        self.node.announce(membership.member_payload(self.team, self.secret,
+                                                     self.callsign, self.role))
+
+    def _member_joined(self, destination_hash):
+        claims = self.registry.describe(destination_hash) or {}
+        print("[bridge] team member %s is %s"
+              % (claims.get("callsign", "?"), tak_identity.uid_for(destination_hash)),
+              flush=True)
+        # Say who we are back. A node that starts late hears everyone who
+        # announces after it and nobody who announced before, so without this
+        # the first node up stays invisible to the second until the next
+        # re-announce -- half an hour of a team that cannot see its own
+        # members. The registry rate-limits, and greeting only happens for a
+        # member that was not already known, so the reply this provokes finds a
+        # known member and goes no further.
+        if self.registry.should_greet():
+            try:
+                self.announce()
+            except Exception as error:                      # noqa: BLE001
+                print("[bridge] greeting announce failed: %s" % error, flush=True)
+
+    def _announce_forever(self):
+        while True:
+            time.sleep(ANNOUNCE_INTERVAL_SECONDS)
+            try:
+                self.announce()
+            except Exception as error:                      # noqa: BLE001
+                # A failed announce is not worth losing the bridge over; the
+                # next one is half an hour away and members are kept far longer.
+                print("[bridge] announce failed: %s" % error, flush=True)
 
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
+        raw = bytes(data)
+        # Byte zero says which codec produced this. One namespace shared by all
+        # of them rather than three independent version counters -- see
+        # tools/tak_payload.py for why that distinction matters.
+        kind = tak_payload.kind_of(raw)
+        if kind == tak_payload.POSITION_V2:
+            if self._position_from_mesh(raw):
+                return
+        elif kind == tak_payload.CHAT_V1:
+            if self._chat_from_mesh(raw):
+                return
+        elif kind == tak_payload.MARKER_V1:
+            if self._marker_from_mesh(raw):
+                return
         try:
-            xml = tier2.decode(bytes(data))
+            xml = tier2.decode(raw)
         except ValueError:
-            # A frame we cannot read is ordinary on a shared destination: an
-            # older node, a newer dictionary, or simply not ours.
+            # A frame we cannot read is ordinary: an older node, a newer
+            # dictionary, or simply not ours.
             self.unreadable += 1
             return
         self._to_clients(xml.encode("utf-8"))
         self.received += 1
+
+    def _marker_from_mesh(self, raw):
+        """Render a peer's marker as CoT for the local ATAK."""
+        decoded = cot_marker.decode(raw)
+        if decoded is None:
+            return False
+        sender = self.registry.resolve_sender_id(decoded["sender_id"])
+        if sender is None:
+            # A marker from a node this team has never heard announce. Drawing
+            # it under an invented identity would put an object on the map that
+            # nobody can be asked about.
+            self.unreadable += 1
+            return True
+        claims = self.registry.describe(sender) or {}
+        now = datetime.now(timezone.utc)
+        self._to_clients(cot_marker.build_marker_cot(
+            decoded, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
+            cot_gateway.cot_time(now),
+            cot_gateway.cot_time(now + timedelta(seconds=decoded["stale_seconds"]))
+        ).encode("utf-8"))
+        self.markers_received += 1
+        return True
+
+    def _chat_from_mesh(self, raw):
+        """Render a peer's chat line or receipt as CoT for the local ATAK."""
+        decoded = cot_chat.decode(raw)
+        if decoded is None:
+            return False
+        sender = self.registry.resolve_sender_id(decoded["sender_id"])
+        if sender is None:
+            # Chat from a node this team has never heard announce. Dropping it
+            # is the honest option: rendering it under an invented identity
+            # would put words on the screen attributed to nobody.
+            self.unreadable += 1
+            return True
+        claims = self.registry.describe(sender) or {}
+        self._to_clients(cot_chat.build_chat_cot(
+            decoded, tak_identity.uid_for(sender),
+            claims.get("callsign", "UNKNOWN"),
+            cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
+        self.chat_received += 1
+        return True
+
+    def _position_from_mesh(self, raw):
+        """Render a peer's position report as CoT for the local ATAK."""
+        fix = position_codec.decode(raw)
+        if fix is None:
+            return False
+        # Four bytes of identity is a lookup key here, not an identity.
+        # Membership is the table that turns it back into a whole destination
+        # hash, so a peer's track carries the same UID as everything else that
+        # node sends rather than a track of its own.
+        sender = self.registry.resolve_sender_id(fix.sender_id)
+        if sender is None:
+            self.unreadable += 1
+            return True
+        claims = self.registry.describe(sender) or {}
+        self._to_clients(cot_gateway.build_cot(
+            fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
+            POSITION_STALE_SECONDS, team=self.team))
+        self.positions_received += 1
+        return True
 
     def _to_clients(self, payload):
         """Write to every connected client without blocking the ones behind.
@@ -154,11 +341,6 @@ class CotBridge:
         dead = []
         for client in targets:
             try:
-                # A timeout rather than a blocking write, because "slow" and
-                # "gone" look identical from here and only one of them resolves
-                # itself. A client that cannot take a single CoT event inside
-                # this window is not keeping up with a live feed either.
-                client.settimeout(CLIENT_WRITE_TIMEOUT)
                 client.sendall(payload)
             except OSError:
                 dead.append(client)
@@ -176,21 +358,164 @@ class CotBridge:
 
     # ---- ATAK -> mesh ----
     def _from_atak(self, xml):
+        # The echo guard first, for everything, before anything is learned from
+        # the event or spent on it. Our own self-report coming back is a
+        # well-formed self-report, and learning from it would teach this
+        # pipeline our own UID.
+        if self.pipeline.is_echo(xml):
+            return
+        # Then learn, and only then route. This used to be a side effect of the
+        # tier-2 path, which the typed codecs return before ever reaching --
+        # so a session that opened with an SPI put ANDROID-<device>.SPI1 on the
+        # air as tier 2, bypassing the very scrubbing the marker codec added.
+        # The typed handlers do not need the learned UID; only the tier-2
+        # rewrite does, and now both get it.
         known = self.pipeline.atak_uid
-        frame = self.pipeline.frame(xml, tier2.encode)
+        self.pipeline.observe(xml)
         if known is None and self.pipeline.atak_uid:
             print("[bridge] this ATAK calls itself %s; peers will see %s"
                   % (self.pipeline.atak_uid, self.uid), flush=True)
+        if cot_position.is_position(xml) and self._position_from_atak(xml):
+            return
+        if self._chat_from_atak(xml):
+            return
+        if self._marker_from_atak(xml):
+            return
+        frame = self.pipeline.frame(xml, tier2.encode)
         if frame is None:
             # The pipeline keeps its own refusal count; reading it here rather
             # than assigning it into a shared one, which silently discarded
             # every mesh-side drop recorded above.
             return
-        self.rns.Packet(self.out, frame).send()
-        self.sent += 1
+        self.sent += self._fan_out(frame)
+
+    def _position_from_atak(self, xml):
+        """Send a position report as twenty-one bytes, if it is due.
+
+        True when this event was handled here, whether or not anything went on
+        the air: a suppressed report is handled, and must not then also be sent
+        as CoT.
+        """
+        fix = cot_position.fix_from_cot(xml, self.sender_id)
+        if fix is None:
+            # Shaped like a position and carrying none. Not ours to encode, so
+            # it falls through to tier 2 rather than being dropped.
+            return False
+        if not self.position_gate.allows(fix, time.time()):
+            return True
+        self.positions_sent += self._fan_out(position_codec.encode(fix))
+        return True
+
+    def _chat_from_atak(self, xml):
+        """Send a chat line or a receipt as tens of bytes, if it is one.
+
+        True when this event was handled here. Chat is worth its own codec for
+        a reason tier 2 makes plain: a real GeoChat line compresses to 402
+        bytes against a 383-byte MDU, so before this it was not expensive, it
+        was undeliverable.
+        """
+        frame = cot_chat.chat_from_cot(xml, self.sender_id)
+        if frame is None:
+            return False
+        decoded = cot_chat.decode(frame)
+        # A direct message goes to one member, not to the team. ATAK puts the
+        # recipient's callsign in the chatroom field, so without the recipient
+        # carried separately every private line was fanned out to everybody --
+        # not a cost problem, a confidentiality one.
+        #
+        # This works because peers are announced under their Reticulum-rooted
+        # UID, so ATAK addresses them by it and destination_for() reverses it.
+        # That is pivot 1 paying for itself.
+        recipient = (decoded or {}).get("recipient") or ""
+        if recipient:
+            destination = tak_identity.destination_for(recipient)
+            if destination is None:
+                # Addressed to somebody who is not a peer of ours: a server
+                # contact, or a callsign this mesh has never announced. The
+                # fan-out is not a fallback here -- broadcasting a line meant
+                # for one person is the bug this whole path exists to stop,
+                # and it would not deliver it either. Counted and dropped, and
+                # anything reachable another way is still reached that way.
+                self.chat_undeliverable += 1
+                print("[bridge] chat for %r is not a member of this team, not sent"
+                      % recipient, flush=True)
+                return True
+            self.chat_sent += self._send_to(destination, frame)
+            return True
+        self.chat_sent += self._fan_out(frame)
+        return True
+
+    def _marker_from_atak(self, xml):
+        """Send a point marker as tens of bytes, if it is one.
+
+        SPI passes through a cadence gate first. It is a pointer being dragged
+        across a map, so most of what ATAK emits is a position it has already
+        superseded, and sending every one would spend the channel on a cursor.
+        """
+        frame = cot_marker.marker_from_cot(xml, self.sender_id)
+        if frame is None:
+            return False
+        decoded = cot_marker.decode(frame)
+        if decoded and decoded["type"] == cot_marker.SPI_TYPE:
+            fix = position_codec.PositionFix(lat_e7=decoded["lat_e7"],
+                                             lon_e7=decoded["lon_e7"])
+            if not self.spi_gate.allows(fix, time.time()):
+                # Handled: suppressed rather than passed on to tier 2, which
+                # would spend more airtime than the codec just saved.
+                return True
+        self.markers_sent += self._fan_out(frame)
+        return True
+
+    def _send_to(self, destination_hash, frame):
+        """Send one frame to one node. Returns 1 if it went, 0 if it did not.
+
+        Shared with the fan-out so an addressed line and a broadcast line take
+        the same path -- a second copy of this would be a second place for the
+        recall-and-request-path dance to be got wrong.
+        """
+        identity = self.rns.Identity.recall(destination_hash)
+        if identity is None:
+            # Heard the announce, lost the identity -- possible after a
+            # restart. Ask for the path; the next event will find it.
+            self.rns.Transport.request_path(destination_hash)
+            self.unreachable += 1
+            return 0
+        try:
+            destination = tak_identity.node_destination(identity,
+                                                        self.rns.Destination.OUT)
+            self.rns.Packet(destination, frame).send()
+            return 1
+        except OSError as error:
+            # An oversized frame is refused by encode() long before here, so
+            # this is a transport problem: no path, or an interface that has
+            # gone. Counted rather than fatal -- one unreachable member must
+            # not cost the others their copy.
+            self.unreachable += 1
+            print("[bridge] could not reach %s: %s"
+                  % (destination_hash.hex(), error), flush=True)
+            return 0
+
+    def _fan_out(self, frame):
+        """Send one frame to every member of the team. Returns how many went.
+
+        One routed unicast each, because that is the only thing that crosses a
+        hop. The airtime is real and is the reason position does not come this
+        way: a marker is an operator action and rare, a position report is a
+        beacon. See pivot 5 for the costing.
+        """
+        return sum(self._send_to(member, frame) for member in self.registry.members())
 
     def _serve_client(self, connection):
         stream = CotStream()
+        # SO_SNDTIMEO, not settimeout(). A timeout set with settimeout() belongs
+        # to the whole socket, so the write bound also bounds recv() -- and this
+        # loop reads on the same object, catching the resulting timeout as a
+        # dead client. Every client was disconnected two seconds after receiving
+        # its first message, which on the bench looked like chat not working.
+        # SO_SNDTIMEO bounds sends in the kernel and leaves reads blocking.
+        connection.setsockopt(
+            socket.SOL_SOCKET, socket.SO_SNDTIMEO,
+            struct.pack("@qq", int(CLIENT_WRITE_TIMEOUT), 0))
         with self.clients_lock:
             self.clients.append(connection)
         try:
@@ -216,8 +541,11 @@ class CotBridge:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((BIND_HOST, self.port))
         listener.listen(8)
-        print("[bridge] team %r on %s" % (self.team, self.group.hash.hex()), flush=True)
-        print("[bridge] this node is %s" % self.uid, flush=True)
+        print("[bridge] team %r, this node is %s (%s)"
+              % (self.team, self.uid, self.callsign), flush=True)
+        self.announce()
+        self._announce_thread = threading.Thread(target=self._announce_forever, daemon=True)
+        self._announce_thread.start()
         print("[bridge] point ATAK at %s:%d, TCP, no SSL" % (BIND_HOST, self.port), flush=True)
         while True:
             connection, _ = listener.accept()
@@ -233,6 +561,9 @@ def main():
                         help="path to the fleet secret; %s is preferred"
                              % groups.SECRET_ENVIRONMENT)
     parser.add_argument("--config", default=None, help="Reticulum config directory")
+    parser.add_argument("--callsign", default="BRIDGE",
+                        help="how this node identifies itself to the team")
+    parser.add_argument("--role", default="Team Member")
     parser.add_argument("--identity", default=None,
                         help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
     args = parser.parse_args()
@@ -257,13 +588,22 @@ def main():
         print("[bridge] own interface, and point peers at that:  --config <dir>",
               flush=True)
         sys.exit(1)
-    bridge = CotBridge(args.team, secret, args.port, args.identity)
+    bridge = CotBridge(args.team, secret, args.port, args.identity,
+                       args.callsign, args.role)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
-        print("\n[bridge] sent %d, received %d, unreadable %d, refused %d"
-              % (bridge.sent, bridge.received, bridge.unreadable,
-                 bridge.pipeline.dropped), flush=True)
+        print("\n[bridge] sent %d, received %d, positions %d/%d, chat %d/%d, "
+              "markers %d/%d, unreadable %d, refused %d, unreachable %d, "
+              "not a member %d, suppressed %d/%d, members %d"
+              % (bridge.sent, bridge.received,
+                 bridge.positions_sent, bridge.positions_received,
+                 bridge.chat_sent, bridge.chat_received,
+                 bridge.markers_sent, bridge.markers_received,
+                 bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
+                 bridge.chat_undeliverable,
+                 bridge.position_gate.suppressed, bridge.spi_gate.suppressed,
+                 len(bridge.registry)), flush=True)
 
 
 if __name__ == "__main__":
