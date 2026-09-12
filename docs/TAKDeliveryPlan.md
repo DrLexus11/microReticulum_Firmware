@@ -250,9 +250,16 @@ authority (the deck is where an OTS client certificate meets a fleet secret,
 which makes it a trust boundary). Until that is designed: markers and reports
 cross, commands do not.
 
-Not in PR C. It depends on PR D for fragmentation and PR E for the deck's
-transit role, and it wants its own PR before Outdoor Test 1 if the command post
-is to see the field during that test.
+**Clarified: the command post is the deck plus a Rev 2, both on the mesh, so it
+already sees the field.** The Tailscale participants are spectators, which
+makes the piece needed before Outdoor Test 1 a *one-directional* feed — mesh to
+server, nothing inward. That is safe by construction: no identity to vouch for,
+no trust boundary crossed, no echo possible, and no inbound airtime to gate.
+Small, and worth doing before the test.
+
+The two-way design stands for the day somebody at the far end needs to act
+rather than watch. That one depends on PR D for fragmentation and PR E for the
+deck's transit role.
 
 ## Later: an assistant in the loop
 

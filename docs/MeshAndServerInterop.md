@@ -32,7 +32,33 @@ least likely to be carrying a RAD.
 The deck already *is* the meeting point. It has a Reticulum identity, a team
 membership and an OTS instance on the same machine.
 
-## The deck is a member of both, and a policy point between them
+## Clarified 2026-09-12: the command post is on the mesh
+
+The command post is **the deck plus a Rev 2 at home** — both mesh members. It
+already sees the field, and needs nothing from this document.
+
+The Tailscale participants are **spectators**. That is a much smaller problem
+than the one described below, and it collapses all three hard parts:
+
+| | Two-way gateway | Spectator feed |
+| --- | --- | --- |
+| Direction | both | mesh → server only |
+| Identity | vouched UID per server-side operator | none needed; mesh events already carry `urtn-` UIDs |
+| Authority | a trust boundary to design | none crossed; nothing comes inward |
+| Echo | a real risk | impossible; nothing returns |
+| Airtime inward | an allow-list to design and gate | zero |
+
+**A spectator feed is one-directional and therefore safe by construction.** The
+deck connects to its own OTS as a CoT client and publishes what it already
+renders for its local ATAK; Tailscale clients watch. Nothing they do reaches
+the mesh, which is exactly what "spectator" means.
+
+That is a small piece of work and it is the one worth doing before Outdoor Test
+1. The rest of this document stands as the design for the day somebody at the
+far end of a Tailscale link needs to *act* rather than watch — and the moment
+that is wanted, the authority section is the part to read first.
+
+## If it were two-way: the deck as a policy point between them
 
 Not a tunnel. **A gateway between a fat pipe and a thin one is a policy
 decision, not a wire**, and the traffic asymmetry is not a detail:
