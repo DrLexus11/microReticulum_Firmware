@@ -126,14 +126,29 @@ class TeamAnnounceHandler:
     registry decides, and a payload it does not recognise is ordinary.
     """
 
-    def __init__(self, registry, on_new_member=None):
+    def __init__(self, registry, on_new_member=None, on_member_heard=None):
         self.aspect_filter = "%s.%s" % (tak_identity.NODE_APP,
                                         ".".join(tak_identity.NODE_ASPECTS))
         self.registry = registry
         self.on_new_member = on_new_member
+        self.on_member_heard = on_member_heard
 
     def received_announce(self, destination_hash, announced_identity, app_data):
         outcome = self.registry.remember(destination_hash, app_data)
+        if outcome is not None and self.on_member_heard:
+            # Every member announce, not only a new one. Greeting only new
+            # members covers a node *joining* a running team and misses the
+            # case that actually happens: a node **restarts**, loses its own
+            # membership, and is still remembered by everybody else -- so
+            # nobody greets it, and it spends up to an announce interval
+            # unable to resolve a single sender id. It is not visibly broken
+            # while that lasts: its own announces go out, peers see it, and
+            # every frame it receives is dropped for an identity it cannot
+            # name. CarriedIssues #5, found on hardware 2026-09-12.
+            #
+            # The rate limit is what keeps this bounded, and it was already
+            # here -- only the trigger was too narrow.
+            self.on_member_heard(destination_hash, outcome)
         if outcome is None:
             # Heard on our own aspect and not one of ours. Said out loud
             # because the alternative is silence, and silence is what a node
@@ -186,7 +201,8 @@ class CotBridge:
         # its single hop -- so a team is a membership set and traffic for it is
         # addressed to each member. See docs/TAKIntegrationPivots.md.
         self.registry = membership.MemberRegistry(team, secret, own_hash=self.node.hash)
-        self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined)
+        self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined,
+                                                    self._member_heard)
         RNS.Transport.register_announce_handler(self.announce_handler)
 
         # One pipeline per bridge: it holds the learned ATAK UID, refuses our
@@ -247,13 +263,22 @@ class CotBridge:
         print("[bridge] team member %s is %s"
               % (claims.get("callsign", "?"), tak_identity.uid_for(destination_hash)),
               flush=True)
-        # Say who we are back. A node that starts late hears everyone who
-        # announces after it and nobody who announced before, so without this
-        # the first node up stays invisible to the second until the next
-        # re-announce -- half an hour of a team that cannot see its own
-        # members. The registry rate-limits, and greeting only happens for a
-        # member that was not already known, so the reply this provokes finds a
-        # known member and goes no further.
+        # Greeting happens in _member_heard, for every announce rather than
+        # only this one.
+
+    def _member_heard(self, destination_hash, outcome):
+        """Say who we are back, whoever just spoke.
+
+        A node that starts late hears everyone who announces after it and
+        nobody who announced before. A node that *restarts* is worse: it is
+        still remembered by its peers, so greeting only new members leaves it
+        greeted by nobody at all.
+
+        The rate limit is what stops this becoming a storm. Ten nodes powering
+        up together greet once each within the floor rather than nine times, and
+        the greeting a peer sends back finds a member it already knows -- which
+        is still worth answering, but not within the same few seconds.
+        """
         if self.registry.should_greet():
             try:
                 self.announce()
