@@ -256,3 +256,11 @@ the trigger, not to the rate limiting.
 it while bringing a team up, leave it long in the field where it is airtime.
 That is a workaround, not the fix.
 
+**Fixed 2026-09-12, in PR C.** The trigger now fires on any member announce
+rather than only a new one, on both implementations. The bound did not move:
+the greeting floor was already there and is what keeps ten nodes powering up
+together to one greeting each rather than nine. Separating trigger from floor
+is the point -- the trigger is broad so a restarted node is answered, and the
+floor is what keeps it cheap. The arrival log stays narrow, because it is about
+arrival rather than about every announce.
+

@@ -234,6 +234,26 @@ afterwards to tell which readings were poisoned.
 
 ---
 
+## Open: the mesh and the server are two pictures
+
+Team members arrive over Tailscale and talk to OpenTAKServer on the deck; the
+mesh talks to `cot_bridge.py` on the same machine. **Nothing crosses between
+them today.** Written up in `MeshAndServerInterop.md`, with the shape of the
+answer: the deck is a member of both and a *policy point* between them, not a
+tunnel — everything outward, an explicit allow-list inward, because a single
+server-side client reports position faster than a LoRa channel can carry ten
+mesh nodes.
+
+Its hard parts are identity (a vouched `urtn-` UID per server-side operator, so
+no device identifier reaches the air and no one collapses into "the deck") and
+authority (the deck is where an OTS client certificate meets a fleet secret,
+which makes it a trust boundary). Until that is designed: markers and reports
+cross, commands do not.
+
+Not in PR C. It depends on PR D for fragmentation and PR E for the deck's
+transit role, and it wants its own PR before Outdoor Test 1 if the command post
+is to see the field during that test.
+
 ## Later: an assistant in the loop
 
 Raised 2026-09-12 and written up in `AssistantInTheLoop.md`: an operator asking
