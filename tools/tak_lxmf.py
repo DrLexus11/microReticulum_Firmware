@@ -32,10 +32,10 @@ A direct message has exactly one recipient, so all three guarantees are cheap.
 
 ## Why a direct message is also a real Columba message
 
-The frame travels in `FIELD_CUSTOM_META`, which upstream LXMF documents as the
-extension point other clients ignore. The **text also travels as ordinary LXMF
-content**, so the same line appears in the recipient's Columba conversation and
-in their ATAK. One person is one conversation whichever app is open, and an
+The frame travels in `FIELD_CUSTOM_DATA`, tagged by `FIELD_CUSTOM_TYPE` --
+upstream LXMF's own pair for an application's payload, which any other client
+skips. The **text also travels as ordinary LXMF content**, so the same line
+appears in the recipient's Columba conversation and in their ATAK. One person is one conversation whichever app is open, and an
 operator who missed a message in ATAK can still answer it from the phone.
 
 Room traffic carries no content for the same reason in reverse: operational
@@ -50,13 +50,20 @@ distinction absolute is what stops a rendered message being parsed back as one.
 import RNS
 import LXMF
 
-# Upstream LXMF's documented extension point for app-specific metadata that
-# other clients should ignore (0xFD). Columba already carries its own
-# telemetry extras here under string keys -- "cease", "expires",
-# "approxRadius" -- so this uses a distinct key rather than a second field id,
-# which would risk colliding with whatever upstream assigns next.
-FIELD_CUSTOM_META = 0xFD
-TAK_META_KEY = "tak"
+# Upstream LXMF's own pair for an application's payload: CUSTOM_TYPE names
+# whose data it is, CUSTOM_DATA carries it. Both are flat, which matters more
+# than it looks -- the nested alternative (a dict under CUSTOM_META, 0xFD)
+# collides with the telemetry extras Columba already keeps there, and a nested
+# structure has to be pre-shaped with backend-private helpers the app module
+# cannot reach. A flat pair crosses both of Columba's backends unchanged, and
+# CUSTOM_DATA is the semantically right field besides: this is an app's data,
+# not metadata about somebody's message.
+FIELD_CUSTOM_TYPE = 0xFB
+FIELD_CUSTOM_DATA = 0xFC
+
+# What CUSTOM_TYPE says, so a client that does not know us skips the payload
+# rather than guessing at it.
+TAK_CUSTOM_TYPE = "tak.chat.v1"
 
 LXMF_APP_NAME = "lxmf"
 LXMF_DELIVERY_ASPECT = "delivery"
@@ -81,10 +88,12 @@ def frame_from_message(message):
     has nothing to do with TAK.
     """
     fields = getattr(message, "fields", None) or {}
-    meta = fields.get(FIELD_CUSTOM_META)
-    if not isinstance(meta, dict):
+    kind = fields.get(FIELD_CUSTOM_TYPE)
+    if isinstance(kind, (bytes, bytearray)):
+        kind = kind.decode("utf-8", errors="replace")
+    if kind != TAK_CUSTOM_TYPE:
         return None
-    frame = meta.get(TAK_META_KEY)
+    frame = fields.get(FIELD_CUSTOM_DATA)
     if isinstance(frame, (bytes, bytearray)) and frame:
         return bytes(frame)
     return None
@@ -138,7 +147,8 @@ class Carrier:
                 # line carries no content precisely so that it never becomes a
                 # Columba conversation.
                 content=text or "",
-                fields={FIELD_CUSTOM_META: {TAK_META_KEY: bytes(frame)}},
+                fields={FIELD_CUSTOM_TYPE: TAK_CUSTOM_TYPE,
+                        FIELD_CUSTOM_DATA: bytes(frame)},
                 # Link-based, so it is proof-backed and retried. A chat line is
                 # an operator action and rare; the link is affordable here in a
                 # way it would not be for a position beacon.
