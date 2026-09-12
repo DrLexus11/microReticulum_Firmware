@@ -320,7 +320,7 @@ class CotBridge:
         claims = self.registry.describe(sender) or {}
         self._to_clients(cot_gateway.build_cot(
             fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
-            POSITION_STALE_SECONDS))
+            POSITION_STALE_SECONDS, team=self.team))
         self.positions_received += 1
         return True
 
@@ -407,6 +407,20 @@ class CotBridge:
         frame = cot_chat.chat_from_cot(xml, self.sender_id)
         if frame is None:
             return False
+        decoded = cot_chat.decode(frame)
+        # A direct message goes to one member, not to the team. ATAK puts the
+        # recipient's callsign in the chatroom field, so without the recipient
+        # carried separately every private line was fanned out to everybody --
+        # not a cost problem, a confidentiality one.
+        #
+        # This works because peers are announced under their Reticulum-rooted
+        # UID, so ATAK addresses them by it and destination_for() reverses it.
+        # That is pivot 1 paying for itself.
+        recipient = (decoded or {}).get("recipient") or ""
+        destination = tak_identity.destination_for(recipient)
+        if destination is not None:
+            self.chat_sent += self._send_to(destination, frame)
+            return True
         self.chat_sent += self._fan_out(frame)
         return True
 
@@ -431,6 +445,35 @@ class CotBridge:
         self.markers_sent += self._fan_out(frame)
         return True
 
+    def _send_to(self, destination_hash, frame):
+        """Send one frame to one node. Returns 1 if it went, 0 if it did not.
+
+        Shared with the fan-out so an addressed line and a broadcast line take
+        the same path -- a second copy of this would be a second place for the
+        recall-and-request-path dance to be got wrong.
+        """
+        identity = self.rns.Identity.recall(destination_hash)
+        if identity is None:
+            # Heard the announce, lost the identity -- possible after a
+            # restart. Ask for the path; the next event will find it.
+            self.rns.Transport.request_path(destination_hash)
+            self.unreachable += 1
+            return 0
+        try:
+            destination = tak_identity.node_destination(identity,
+                                                        self.rns.Destination.OUT)
+            self.rns.Packet(destination, frame).send()
+            return 1
+        except OSError as error:
+            # An oversized frame is refused by encode() long before here, so
+            # this is a transport problem: no path, or an interface that has
+            # gone. Counted rather than fatal -- one unreachable member must
+            # not cost the others their copy.
+            self.unreachable += 1
+            print("[bridge] could not reach %s: %s"
+                  % (destination_hash.hex(), error), flush=True)
+            return 0
+
     def _fan_out(self, frame):
         """Send one frame to every member of the team. Returns how many went.
 
@@ -439,29 +482,7 @@ class CotBridge:
         way: a marker is an operator action and rare, a position report is a
         beacon. See pivot 5 for the costing.
         """
-        sent = 0
-        for destination_hash in self.registry.members():
-            identity = self.rns.Identity.recall(destination_hash)
-            if identity is None:
-                # Heard the announce, lost the identity -- possible after a
-                # restart. Ask for the path; the next marker will find it.
-                self.rns.Transport.request_path(destination_hash)
-                self.unreachable += 1
-                continue
-            try:
-                destination = tak_identity.node_destination(identity,
-                                                            self.rns.Destination.OUT)
-                self.rns.Packet(destination, frame).send()
-                sent += 1
-            except OSError as error:
-                # An oversized frame is refused by encode() long before here,
-                # so this is a transport problem: no path, or an interface that
-                # has gone. Counted rather than fatal -- one unreachable member
-                # must not cost the others their copy.
-                self.unreachable += 1
-                print("[bridge] could not reach %s: %s"
-                      % (destination_hash.hex(), error), flush=True)
-        return sent
+        return sum(self._send_to(member, frame) for member in self.registry.members())
 
     def _serve_client(self, connection):
         stream = CotStream()

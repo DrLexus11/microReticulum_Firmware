@@ -91,7 +91,7 @@ def cot_time(when):
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def build_cot(fix, uid, callsign, stale_seconds, received_at=None):
+def build_cot(fix, uid, callsign, stale_seconds, received_at=None, team="Cyan"):
     """One CoT event from one decoded report.
 
     `stale` is the field that matters most here. It is what makes ATAK drop a
@@ -133,8 +133,17 @@ def build_cot(fix, uid, callsign, stale_seconds, received_at=None):
     })
 
     detail = ET.SubElement(event, "detail")
-    ET.SubElement(detail, "contact", {"callsign": callsign})
-    ET.SubElement(detail, "__group", {"name": "Cyan", "role": "Team Member"})
+    # The endpoint is what makes a peer *addressable* in ATAK rather than just
+    # visible. Without it a track appears on the map and the same peer is
+    # absent from the contact list, so an operator cannot start a chat with
+    # them, send them a marker, or dispatch them a CASEVAC. "*:-1:stcp" is what
+    # ATAK itself writes for a contact reached over a stream rather than
+    # directly, which is exactly what a peer behind this endpoint is.
+    ET.SubElement(detail, "contact", {"callsign": callsign, "endpoint": "*:-1:stcp"})
+    # The team this node is on, not a constant. Hard-coding "Cyan" put every
+    # peer in the wrong group on any other team, and group colour is how an
+    # operator tells their own people apart at a glance.
+    ET.SubElement(detail, "__group", {"name": team, "role": "Team Member"})
     if fix.alt_known:
         ET.SubElement(detail, "precisionlocation", {"altsrc": "GPS"})
     # Track goes in only when there is something to say. An absent track is
