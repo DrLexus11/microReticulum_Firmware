@@ -1,5 +1,6 @@
 """The LXMF carrier: what a direct message rides, and what it must not disturb."""
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -18,6 +19,25 @@ class Message:
     def __init__(self, fields=None, source_hash=b"\x01" * 16):
         self.fields = fields or {}
         self.source_hash = source_hash
+
+
+FIXTURES = json.loads(
+    (Path(__file__).resolve().parent / "fixtures" / "tak_native_v1.json").read_text())
+
+
+@unittest.skipIf(tak_lxmf is None, "LXMF is not installed in this interpreter")
+class CrossLanguageTests(unittest.TestCase):
+    """The field ids and the tag are hand-written in two languages. This is
+    what stops them drifting: both sides assert against one fixture, and the
+    fixture is copied byte-for-byte between the repositories."""
+
+    def test_the_carrier_constants_match_the_fixture(self):
+        lxmf = FIXTURES["lxmf"]
+        self.assertEqual(tak_lxmf.FIELD_CUSTOM_TYPE, lxmf["field_custom_type"])
+        self.assertEqual(tak_lxmf.FIELD_CUSTOM_DATA, lxmf["field_custom_data"])
+        self.assertEqual(tak_lxmf.TAK_CUSTOM_TYPE, lxmf["custom_type_tag"])
+        self.assertEqual(tak_lxmf.LXMF_APP_NAME, lxmf["app_name"])
+        self.assertEqual(tak_lxmf.LXMF_DELIVERY_ASPECT, lxmf["delivery_aspect"])
 
 
 @unittest.skipIf(tak_lxmf is None, "LXMF is not installed in this interpreter")
