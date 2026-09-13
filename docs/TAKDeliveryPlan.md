@@ -265,6 +265,72 @@ The node's own limits *are* ours: 8 KB per message against a default of 256,
 because at SF7/BW250 a 256 KB message is minutes of continuous air — not a
 message, an outage.
 
+### The partition survived LoRa, 2026-09-13
+
+The bench proof repeated over the real path: deck → Rev 2 (UDP) → Rev 1 (LoRa)
+→ phone (BLE), three hops, with the recipient genuinely gone — Columba and its
+service closed, not simulated.
+
+```
+08:27:27  sent to a peer that was no longer there
+08:29:47  direct delivery gave up; escalated to the propagation node
+          416 B held
+          Columba reopened
+          collected, store empty; node counted 3 received / 3 served
+```
+
+**Escalation took 140 s here against 60 s on the bench**, and the difference is
+the finding. The path table still held a valid three-hop route to the phone —
+set to expire 2026-09-20, a week out — so LXMF spent its five delivery attempts
+against a route that looked healthy and was not. *A path outlives the peer it
+points at.* Anything that reports "queued for whom" to an operator has to
+expect a two-minute silence before the queue admits the message, and PR F must
+not render that silence as success.
+
+### Two findings from the same run
+
+**1. RNS throttles announces to one per hour by default, and it costs identity
+rather than airtime.** `DEFAULT_AR_TARGET = 3600` is applied to every interface
+of a transport-enabled node; after a grace of 5, everything else is dropped
+silently. The bridge announces every 45 s, so `rrcd` passed five and went quiet:
+zero bytes outbound on the radio across 60 s while announces arrived at 0.2 Hz.
+
+The symptom was a chat line that crossed three hops, decoded correctly, and was
+discarded with `LXMF frame did not render: Handled` — because the phone had
+never heard of the sender. **A node that restarts, or a handset that toggles its
+endpoint, keeps an empty registry for up to an hour, and every frame it receives
+in that window is dropped for an identity it cannot name.** It is not visibly
+broken while that lasts. That is CarriedIssues #5 again, caused one layer
+further down, and it is exactly the kind of inherited protocol politeness the
+disaster-first rule says to decide rather than accept.
+
+Set explicitly on the deck: **30 s** on radio interfaces, **1 s** on the LAN hop
+where airtime is free. An announce is 118 ms at SF7/BW250/CR4:5, so a 30 s
+ceiling bounds one destination to 3.95% of channel across ten nodes — a ceiling
+for a node that has gone wrong, not an operating point.
+
+*Trap worth keeping:* `announce_rate_target = 0` does **not** mean no limit. RNS
+reads 0 as unset and applies the 3600 default, so writing 0 to disable
+throttling silently selects the strictest throttle available.
+
+**2. The endpoint is the server and ATAK is the client — and nothing enforced
+it.** ATAK was found holding `0.0.0.0:8087` with a connection open from itself
+to itself, which locked Columba's endpoint out permanently. Whichever binds
+first wins: while Columba was up it held the port and ATAK connected as a
+client, and the moment Columba closed, an ATAK **input** on the same port took
+it and did not give it back. This is very likely the cause of the intermittent
+"local disconnections to the ATAK server config" reported 2026-09-11.
+
+**Provisioning rule, per device:** ATAK gets an *outgoing* connection to
+`127.0.0.1:8087` and **no input on that port**. Columba now says so on the
+settings screen rather than reporting a bare `EADDRINUSE`, which was true and
+unactionable.
+
+**This is not plugin territory and cannot be.** A plugin runs inside ATAK's
+process and has no veto over ATAK's own network subsystem binding a port from
+its own configuration. The plugin phase adds port pressure rather than relieving
+it. Transport semantics live below ATAK, and a port collision is below ATAK.
+
 ### What is still wired but not exercised
 
 **A room line has no delivery guarantee and PR C does not give it one.**
@@ -272,10 +338,11 @@ Reliable multicast over a partitionable mesh needs either an acknowledgement
 from every member or blind repetition. Neither is in this PR, and the plan above
 never claimed otherwise.
 
-**The partition proof is bench, not LoRa.** The semantics are proven; the
-transport is proven separately. Doing it on one machine is deliberate — a
-partition can be made exactly, on demand. The same run over the air, with the
-phone as the returning peer, belongs to Outdoor Test 1.
+**The ATAK half of the LoRa partition run is still owed.** The message survived
+the partition and reached Columba; it did not reach ATAK, because ATAK held the
+endpoint's port throughout. Repeat once that provisioning rule is applied, and
+confirm the replay buffer hands it over on reconnect — the two have never been
+exercised together.
 
 **A propagation node on a Rev 2 is still the right home for the field.** The
 deck is the command post in the Outdoor Test 1 topology, which makes it the
