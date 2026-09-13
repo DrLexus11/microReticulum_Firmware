@@ -61,3 +61,9 @@ Design rationale and hardware acceptance records are in `docs/TAKNative.md` and
   shell. Find the PID first, act on the number.
 - Airtime figures come from `tools/position_budget.py`, which is the firmware's
   own `packet_airtime_ms()`. Use it rather than estimating.
+- Store-and-forward needs a propagation node running: `lxmd -p --config
+  ~/.impr-tak/lxmd --rnsconfig ~/.reticulum`, with the bridge given its hash
+  via `--propagation-node`. Template and reasoning in
+  `tools/lxmd_propagation.example.conf`. **Run `tools/tak_partition_check.py`
+  after any change to the LXMF carrier** — the fallback was broken from the day
+  it was written and the unit tests could not see it.
