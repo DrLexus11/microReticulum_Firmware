@@ -338,6 +338,10 @@ class CotBridge:
         self._replay = collections.deque(maxlen=REPLAY_MAX_EVENTS)
         self._replay_lock = threading.Lock()
         self.replayed = 0
+        # The newest fix time seen from each sender, so an older one arriving
+        # late does not put a track back where somebody used to be.
+        self._last_fix = {}
+        self.positions_out_of_order = 0
 
     # ---- membership ----
     def announce(self):
@@ -486,6 +490,24 @@ class CotBridge:
         if sender is None:
             self.unreadable += 1
             return True
+        # An older fix must not overwrite a newer one.
+        #
+        # Position is latest-wins, and "latest" was taken to mean "last to
+        # arrive". On a mesh those are different things: a retry, a slower
+        # route, or a message held while a peer was out of range all deliver
+        # fixes out of order, and drawing the older one puts a track back where
+        # somebody used to be. Reported from hardware 2026-09-13 as a position
+        # that "reverts, then comes back".
+        #
+        # The codec has carried fix_unix_s from the beginning precisely so this
+        # can be judged; nothing read it. Same principle that keeps position
+        # out of the replay buffer -- a stale fix drawn as current is a lie,
+        # whether it is stale because it was held or because it overtook.
+        last = self._last_fix.get(fix.sender_id)
+        if last is not None and fix.fix_unix_s < last:
+            self.positions_out_of_order += 1
+            return True
+        self._last_fix[fix.sender_id] = fix.fix_unix_s
         claims = self.registry.describe(sender) or {}
         self._to_clients(cot_gateway.build_cot(
             fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
