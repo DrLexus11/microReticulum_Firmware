@@ -287,6 +287,39 @@ points at.* Anything that reports "queued for whom" to an operator has to
 expect a two-minute silence before the queue admits the message, and PR F must
 not render that silence as success.
 
+### The replay buffer held a message for ten minutes, 2026-09-13
+
+The half that had never been exercised on hardware. ATAK closed, a chat line
+arriving over LXMF and rendered with nothing on the socket to take it:
+
+```
+09:08:31  TAK chat arrived over LXMF, 127 bytes
+09:08:31  rendered, 1038 bytes, no ATAK attached -- held
+09:18:38  ATAK connected
+09:18:38  Replaying 2 held event(s) to a new client
+```
+
+Ten minutes, inside the fifteen-minute window, and the operator saw the message
+appear on opening ATAK with nothing re-sent from the deck. A position arriving
+in the same gap was correctly not held.
+
+**Two things the run corrected.**
+
+*The log said "lost" for a message it had just held.* Columba printed `ATAK
+delivery lost: 1038 bytes, no connected clients` for the very line it had put in
+the replay buffer. Lost and held are opposite outcomes, and that sentence was
+read in the one situation where which of them happened is the entire question.
+The bridge already picked its wording from `keep`; this side grew the buffer and
+kept the old sentence. Fixed.
+
+*Closing Columba does not take a node off the mesh.* Android restarted the
+`:reticulum` foreground service on its own — a new PID, an announce, and a path
+refreshed on the deck seconds later — so a partition test built on closing the
+app is not testing a partition. **Turn Bluetooth off instead:** it cuts BLE to
+the Rev 1 and does not fight Android's restart policy. Worth knowing
+operationally too, and not only for tests: a node an operator believes they have
+shut down is still announcing.
+
 ### Two findings from the same run
 
 **1. RNS throttles announces to one per hour by default, and it costs identity
