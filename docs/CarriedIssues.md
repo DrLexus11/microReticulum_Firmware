@@ -460,3 +460,33 @@ Owed, in order:
 3. Re-run `tools/tak_link_soak.py` after each change. The number to move is the
    establishment rate, and it is now measurable rather than argued about.
 
+### Result, same afternoon
+
+All three were done and the soak re-run on the same path, same hops, same
+radios:
+
+```
+                  before        after
+established       5/15  (33%)   14/15  (93%)
+median establish  1.4s          1.4s
+worst establish   5.4s          3.7s
+expected delay    ~20s          ~1s
+channel traffic   5.21 KB/min   1.27 KB/min
+announce airtime  0.27%         0.05%
+```
+
+**The median link was never slow -- 1.4 s before and after.** What changed is
+how often a handshake found a clear channel. That is the signature of
+congestion rather than of distance or a bad radio, and it is what turns the
+diagnosis from a correlation into an explanation.
+
+The congestion was ours. Two of the three sources were added the same day, both
+correct fixes for real problems, both sized without asking what the channel
+costs. **On this transport, when you retry is a design decision with an airtime
+price, not an implementation detail.**
+
+Caveats on the number: fifteen attempts is a small sample with one failure in
+it, and at the time of measurement the handset still ran the build from before
+the retrieval backoff -- so 93% is what the deck's announce cuts bought on
+their own. A longer soak with both halves deployed is what should replace it.
+
