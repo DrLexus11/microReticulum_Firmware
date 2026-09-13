@@ -15,6 +15,12 @@ Sibling repositories, developed together:
   must not acquire one. Runs in parallel with this work. Its
   `docs/MeshContract.md` fixes the seam: that repo decides what a thing means,
   this one decides how it travels.
+- **A second plugin repo is decided but not yet created** — PR F's Reticulum
+  plugin (delivery state, queues, reachability, cost) does not belong in
+  `urban-tak`, which must stay free of Reticulum, nor here, which is firmware.
+  Recommended name `mesh-tak`, awaiting confirmation. See *The second plugin
+  repo* in `docs/TAKDeliveryPlan.md`. Do not add Android plugin work to this
+  repo on the assumption it has a home here.
 
 ## Read this before planning work
 

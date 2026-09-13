@@ -61,7 +61,7 @@ where gain is the only constraint.
 | **D** | *Everything that does not fit one packet* | Tier 3 `Link`/`Resource` fragmentation; typed polyline codec for drawings; wire format for a blocked route edge | nothing |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
-| **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent | Outdoor Test 1, and plugin know-how from the sibling repo |
+| **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
 
 C and D collapse into one PR cleanly if a single review is preferred. **E stays
 separate regardless**, because it is not yet known whether it is a
@@ -405,6 +405,52 @@ a pushed delta for the area. **Pull for the one building an operator tapped;
 push for the neighbourhood they are standing in.**
 
 ---
+
+## The second plugin repo — the Reticulum plugin is not `urban-tak`
+
+Settled 2026-09-13. **There are two plugins, and they need two repositories.**
+That was not previously written down: the plan gave `urban-tak` a repo and left
+PR F's plugin implicitly inside this one, which is wrong on three counts.
+
+| | `urban-tak` | PR F's plugin | this repo |
+| --- | --- | --- | --- |
+| Answers | *where can I walk, what is this address, what is rubble* | *did it arrive, who is it queued for, how far away are they, what will this cost* | *how does it travel* |
+| Reticulum dependency | **must never acquire one** | **is the whole point** | is the implementation |
+| Build | Android, ATAK SDK, plugin signing | Android, ATAK SDK, plugin signing | C++/ESP32 + Python tools |
+| Ships as | signed APK, sideloaded | signed APK, sideloaded | flashed firmware |
+| Public | yes | yes | yes |
+
+**It cannot go in `urban-tak`.** That repo's defining constraint is no Reticulum
+dependency, so that it stays useful to any ATAK user on any transport. A plugin
+whose entire subject is Reticulum delivery state would destroy that on the first
+commit, and the constraint is load-bearing — it is what makes the navigation
+work publishable and reusable.
+
+**It cannot sensibly go here.** This repo is ESP32 firmware and its Python
+tools. An Android plugin here shares no toolchain, no build, no test runner and
+no release cadence with anything already in it: firmware is flashed, a plugin is
+a signed APK. The only thing the two share is the wire format, and a wire format
+is a contract between repositories, not a reason to merge them — the same
+argument already keeps Columba separate.
+
+**Recommended name: `mesh-tak`** — parallel to `urban-tak`, says what it does,
+carries no operational detail. Confirm or replace before the repo is created;
+the naming call is not the agent's.
+
+The same public-repo discipline applies as for `urban-tak`: no fleet secrets,
+node hashes, callsigns, IFAC passphrases, exercise coordinates or team details,
+in any file or commit message. It has a stronger reason to be careful, because
+it handles identity and reachability rather than map data — **it may name the
+concepts, never the fleet.**
+
+**When it is created:** not yet. PR F is gated on Outdoor Test 1, and the
+scaffold should be written against a transport whose behaviour is known rather
+than one still being hardened. The decision is recorded now so that PR D and PR
+E stop accreting Android-shaped work on the assumption it has somewhere to live
+here.
+
+---
+
 
 ## Standing constraints these plans assume
 
