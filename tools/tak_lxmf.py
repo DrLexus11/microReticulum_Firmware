@@ -131,6 +131,23 @@ class Carrier:
             # close cleanly must not stop the endpoint from closing.
             pass
 
+    def build(self, destination, frame, text, method):
+        """One LXMF message carrying one TAK frame.
+
+        Shared by the direct send and by the propagation fallback so the two
+        cannot drift: an escalated message that carried different fields would
+        arrive as a different message, or as nothing a TAK endpoint recognises.
+        """
+        return LXMF.LXMessage(
+            destination, self.destination,
+            # Content is for the human; the field is the protocol. A room line
+            # carries no content precisely so that it never becomes a Columba
+            # conversation.
+            content=text or "",
+            fields={FIELD_CUSTOM_TYPE: TAK_CUSTOM_TYPE,
+                    FIELD_CUSTOM_DATA: bytes(frame)},
+            desired_method=method)
+
     def send_chat(self, identity, frame, text=""):
         """Send one chat frame to one peer. Returns True if it was accepted.
 
@@ -141,18 +158,16 @@ class Carrier:
         """
         try:
             destination = delivery_destination(identity, RNS.Destination.OUT)
-            message = LXMF.LXMessage(
-                destination, self.destination,
-                # Content is for the human; the field is the protocol. A room
-                # line carries no content precisely so that it never becomes a
-                # Columba conversation.
-                content=text or "",
-                fields={FIELD_CUSTOM_TYPE: TAK_CUSTOM_TYPE,
-                        FIELD_CUSTOM_DATA: bytes(frame)},
-                # Link-based, so it is proof-backed and retried. A chat line is
-                # an operator action and rare; the link is affordable here in a
-                # way it would not be for a position beacon.
-                desired_method=LXMF.LXMessage.DIRECT)
+            # Link-based, so it is proof-backed and retried. A chat line is an
+            # operator action and rare; the link is affordable here in a way it
+            # would not be for a position beacon.
+            message = self.build(destination, frame, text,
+                                 LXMF.LXMessage.DIRECT)
+            # What the fallback needs to build a *fresh* message if this one
+            # fails, carried on the message itself so it cannot outlive it.
+            # See _failed for why a second message is required rather than a
+            # second attempt at this one.
+            message.tak_rebuild = (destination, bytes(frame), text or "")
             message.register_delivery_callback(self._delivered)
             message.register_failed_callback(self._failed)
             self.router.handle_outbound(message)
@@ -184,18 +199,64 @@ class Carrier:
         what turns "they were out of range" into "they got it when they came
         back". LXMF 1.1.1 has no try-propagation-on-fail of its own, so the
         fallback is explicit here rather than assumed.
+
+        **A new message, not the same one re-aimed.** That is upstream's
+        constraint, not a preference. `LXMessage.pack()` is one-shot and raises
+        on a second call, and `transient_id` -- which the propagation stamp is
+        computed over -- is only ever assigned in pack()'s PROPAGATED branch. A
+        message packed for DIRECT therefore has no transient_id and cannot
+        acquire one, so asking the router to propagate it lands in
+        `get_propagation_stamp`, which calls `pack()` again and raises inside
+        LXMF's own stamp thread. Observed on the bench 2026-09-13: every
+        escalation died there, which is why nothing ever reached the message
+        store. Flipping `desired_method` and resetting `state` looked like
+        enough and was not.
+
+        Escalated once, and once only: the fresh message carries
+        `_propagation_failed`, not this callback. Leaving this one on it would
+        mean a propagation node that is itself unreachable produces an
+        unbounded loop -- escalate, fail, escalate -- each turn regenerating a
+        proof-of-work stamp (0.59-1.70 s of CPU on the deck at LXMF's minimum
+        cost of 13) and putting another Link attempt on the air. A propagation
+        node is unreachable exactly when the mesh is partitioned, which is
+        exactly when this path runs, so the loop would begin at the moment the
+        channel can least afford it.
         """
         if not self.propagation_node:
             self.failed += 1
             return
+        ingredients = getattr(message, "tak_rebuild", None)
+        if ingredients is None:
+            # Somebody else's message on a shared router, or one from before a
+            # restart. Not ours to rebuild, and guessing at its fields would
+            # put a message on the air that nothing can read.
+            self.failed += 1
+            return
+        destination, frame, text = ingredients
         try:
-            message.desired_method = LXMF.LXMessage.PROPAGATED
-            message.state = LXMF.LXMessage.GENERATING
-            self.router.handle_outbound(message)
+            escalated = self.build(destination, frame, text,
+                                   LXMF.LXMessage.PROPAGATED)
+            escalated.register_delivery_callback(self._delivered)
+            escalated.register_failed_callback(self._propagation_failed)
+            self.router.handle_outbound(escalated)
             self.propagated += 1
         except Exception as error:
             self.failed += 1
             print("[lxmf] could not propagate chat: %s" % error, flush=True)
+
+    def _propagation_failed(self, message):
+        """The escalation did not land either, and there is nowhere left.
+
+        Counted as a failure rather than left as a propagation, because
+        `propagated` is read as "somebody is holding this for them" -- and
+        after this, nobody is. PR F renders that distinction to an operator as
+        queued-for-whom, so it has to mean what it says.
+        """
+        if self.propagated > 0:
+            self.propagated -= 1
+        self.failed += 1
+        print("[lxmf] message could not be propagated either; "
+              "no node is holding it", flush=True)
 
     def _inbound(self, message):
         frame = frame_from_message(message)

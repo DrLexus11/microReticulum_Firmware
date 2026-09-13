@@ -710,6 +710,34 @@ class CotBridge:
             except OSError:
                 pass
 
+    def _report_propagation(self):
+        """Say out loud whether a message can survive a partition.
+
+        Store-and-forward was configurable and completely silent: a wrong hash,
+        or a node nothing has a route to, looked exactly like a working one
+        until an operator walked out of range and a message vanished. That is
+        the worst possible moment to discover it, so it is said at startup
+        instead.
+
+        A path is requested rather than merely checked, because at startup
+        there usually is not one yet and asking is what makes one exist before
+        it is needed -- resolving it during a partition means resolving it over
+        the link that is already in trouble.
+        """
+        if self.lxmf is None:
+            return
+        node = self.lxmf.propagation_node
+        if not node:
+            print("[bridge] no propagation node: a direct message to somebody "
+                  "out of range will fail rather than wait for them",
+                  flush=True)
+            return
+        known = self.rns.Transport.has_path(node)
+        print("[bridge] propagation node %s, path %s"
+              % (node.hex(), "known" if known else "not yet known"), flush=True)
+        if not known:
+            self.rns.Transport.request_path(node)
+
     def serve_forever(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -721,6 +749,7 @@ class CotBridge:
         self._announce_thread = threading.Thread(target=self._announce_forever, daemon=True)
         self._announce_thread.start()
         print("[bridge] point ATAK at %s:%d, TCP, no SSL" % (BIND_HOST, self.port), flush=True)
+        self._report_propagation()
         while True:
             connection, _ = listener.accept()
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
