@@ -163,11 +163,6 @@ class Carrier:
             # would not be for a position beacon.
             message = self.build(destination, frame, text,
                                  LXMF.LXMessage.DIRECT)
-            # What the fallback needs to build a *fresh* message if this one
-            # fails, carried on the message itself so it cannot outlive it.
-            # See _failed for why a second message is required rather than a
-            # second attempt at this one.
-            message.tak_rebuild = (destination, bytes(frame), text or "")
             message.register_delivery_callback(self._delivered)
             message.register_failed_callback(self._failed)
             self.router.handle_outbound(message)
@@ -200,45 +195,53 @@ class Carrier:
         back". LXMF 1.1.1 has no try-propagation-on-fail of its own, so the
         fallback is explicit here rather than assumed.
 
-        **A new message, not the same one re-aimed.** That is upstream's
-        constraint, not a preference. `LXMessage.pack()` is one-shot and raises
-        on a second call, and `transient_id` -- which the propagation stamp is
-        computed over -- is only ever assigned in pack()'s PROPAGATED branch. A
-        message packed for DIRECT therefore has no transient_id and cannot
-        acquire one, so asking the router to propagate it lands in
-        `get_propagation_stamp`, which calls `pack()` again and raises inside
-        LXMF's own stamp thread. Observed on the bench 2026-09-13: every
-        escalation died there, which is why nothing ever reached the message
-        store. Flipping `desired_method` and resetting `state` looked like
+        **The packed state has to be cleared, not just the method flipped.**
+        That is upstream's constraint, not a preference. `LXMessage.pack()`
+        raises rather than packing a second time, and `transient_id` -- which
+        the propagation stamp is computed over -- is assigned *only* in
+        pack()'s PROPAGATED branch. A message packed for DIRECT therefore has
+        no transient_id and no way to acquire one while `packed` is set, so the
+        router's stamp thread calls pack(), hits the guard, and dies inside
+        LXMF. Observed on the bench 2026-09-13: every escalation died there,
+        the message store stayed empty, and the bridge log filled with re-pack
+        tracebacks. Flipping `desired_method` and resetting `state` looked like
         enough and was not.
 
-        Escalated once, and once only: the fresh message carries
-        `_propagation_failed`, not this callback. Leaving this one on it would
-        mean a propagation node that is itself unreachable produces an
-        unbounded loop -- escalate, fail, escalate -- each turn regenerating a
-        proof-of-work stamp (0.59-1.70 s of CPU on the deck at LXMF's minimum
-        cost of 13) and putting another Link attempt on the air. A propagation
-        node is unreachable exactly when the mesh is partitioned, which is
-        exactly when this path runs, so the loop would begin at the moment the
-        channel can least afford it.
+        This is the same sequence Columba's `event_bridge.py` already uses, and
+        deliberately so. Rebuilding a *new* message also works and is simpler,
+        but it gets a new LXMF hash -- so a direct delivery that actually
+        landed and only lost its proof would show the operator the same line
+        twice in their Columba conversation. Clearing and re-packing keeps one
+        message with one identity, which is what makes the duplicate
+        impossible rather than unlikely.
+
+        Escalated once, and once only: the failed callback is swapped for
+        `_propagation_failed` before the message goes back to the router.
+        handle_outbound reports its outcome through whatever callback is on the
+        message, so leaving this one there means an unreachable propagation
+        node produces an unbounded loop -- escalate, fail, escalate -- each
+        turn regenerating a proof-of-work stamp (0.59-1.70 s of CPU on the deck
+        at LXMF's minimum cost of 13) and putting another Link attempt on the
+        air. A propagation node is unreachable exactly when the mesh is
+        partitioned, which is exactly when this path runs, so the loop would
+        begin at the moment the channel can least afford it.
         """
         if not self.propagation_node:
             self.failed += 1
             return
-        ingredients = getattr(message, "tak_rebuild", None)
-        if ingredients is None:
-            # Somebody else's message on a shared router, or one from before a
-            # restart. Not ours to rebuild, and guessing at its fields would
-            # put a message on the air that nothing can read.
-            self.failed += 1
-            return
-        destination, frame, text = ingredients
         try:
-            escalated = self.build(destination, frame, text,
-                                   LXMF.LXMessage.PROPAGATED)
-            escalated.register_delivery_callback(self._delivered)
-            escalated.register_failed_callback(self._propagation_failed)
-            self.router.handle_outbound(escalated)
+            # Everything pack() refuses to redo while it is still set. The
+            # stamp goes too: it is computed over the transient_id this
+            # message does not have yet.
+            message.packed = None
+            message.propagation_packed = None
+            message.propagation_stamp = None
+            message.defer_propagation_stamp = True
+            message.delivery_attempts = 0
+            message.desired_method = LXMF.LXMessage.PROPAGATED
+            message.state = LXMF.LXMessage.GENERATING
+            message.register_failed_callback(self._propagation_failed)
+            self.router.handle_outbound(message)
             self.propagated += 1
         except Exception as error:
             self.failed += 1
