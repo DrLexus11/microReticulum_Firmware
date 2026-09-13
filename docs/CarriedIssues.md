@@ -485,8 +485,23 @@ correct fixes for real problems, both sized without asking what the channel
 costs. **On this transport, when you retry is a design decision with an airtime
 price, not an implementation detail.**
 
-Caveats on the number: fifteen attempts is a small sample with one failure in
-it, and at the time of measurement the handset still ran the build from before
-the retrieval backoff -- so 93% is what the deck's announce cuts bought on
-their own. A longer soak with both halves deployed is what should replace it.
+With the handset's retrieval backoff deployed as well, over thirty attempts:
+
+```
+                  baseline      deck only     both halves
+established       5/15  (33%)   14/15 (93%)   30/30 (100%)
+median establish  1.4s          1.4s          1.5s
+worst establish   5.4s          3.7s          2.9s
+rtt median        1.33s         1.30s         1.40s
+```
+
+**The worst case fell every round while the median did not move at all.** A
+congested channel does not make a handshake slower; it makes a handshake fail to
+find a gap. So the tail is the whole signal, and watching it collapse from 5.4 s
+to 2.9 s is what distinguishes this from a radio that was simply weak.
+
+Still worth saying: thirty consecutive successes is a good sample on a quiet
+bench and says nothing about a channel with ten nodes on it. The figure to carry
+forward is the *method* -- measure the tail, not the median -- rather than
+"100%".
 
