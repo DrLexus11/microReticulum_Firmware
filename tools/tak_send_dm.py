@@ -38,6 +38,17 @@ def build(sender_uid, recipient_uid, callsign, room, text, message_id, now):
     recipient separately.
     """
     stamp = iso(now)
+    # Every interpolated value is escaped, not only the text. A callsign, room
+    # or UID carrying " < > or & otherwise closes an attribute early and the
+    # event becomes malformed CoT or a different event entirely -- and these
+    # arrive from a command line, which is exactly where an apostrophe or an
+    # ampersand in somebody's callsign turns up first. The codecs in
+    # cot_chat.py and cot_marker.py have always done this; this tool had not.
+    sender_uid = escape(sender_uid)
+    recipient_uid = escape(recipient_uid)
+    callsign = escape(callsign)
+    room = escape(room)
+    message_id = escape(message_id)
     return (
         '<event version="2.0" uid="GeoChat.%s.%s.%s" type="b-t-f" how="h-g-i-g-o" '
         'time="%s" start="%s" stale="%s">'

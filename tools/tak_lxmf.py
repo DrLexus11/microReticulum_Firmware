@@ -123,6 +123,28 @@ class Carrier:
             self.router.set_outbound_propagation_node(propagation_node)
         self.propagation_node = propagation_node
 
+    def announce(self):
+        """Announce this node's LXMF inbox.
+
+        A peer that knows our identity still needs a *path* to this particular
+        destination hash before it can open a link to it, and the TAK node
+        announce says nothing about this one -- they are separate destinations
+        with separate paths. Without it the first direct message in either
+        direction waits on a path request crossing every hop and coming back.
+
+        Left to the caller's cadence rather than run on a timer here: the
+        bridge already has an announce loop with an interval an operator can
+        choose, and a second timer inside the carrier would spend airtime on a
+        schedule nobody set.
+        """
+        try:
+            self.destination.announce()
+        except Exception as error:
+            # An announce that will not go is not worth losing the endpoint
+            # over; the node announce beside it may still have gone, and the
+            # next interval comes round anyway.
+            print("[lxmf] could not announce the inbox: %s" % error, flush=True)
+
     def stop(self):
         try:
             self.router.exit_handler()

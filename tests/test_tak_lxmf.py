@@ -270,5 +270,35 @@ class PropagationTests(unittest.TestCase):
         self.assertEqual(made.failed, 1)
 
 
+@unittest.skipIf(tak_lxmf is None, "LXMF is not installed in this interpreter")
+class InboxAnnounceTests(unittest.TestCase):
+    """The LXMF inbox is a different destination from the TAK node, with its
+    own path. Announcing only the node left every direct message waiting on a
+    path request across every hop before it could even be attempted."""
+
+    def test_announcing_the_carrier_announces_the_inbox(self):
+        made = tak_lxmf.Carrier.__new__(tak_lxmf.Carrier)
+        announced = []
+
+        class Inbox:
+            def announce(self):
+                announced.append(True)
+        made.destination = Inbox()
+        made.announce()
+        self.assertEqual(len(announced), 1)
+
+    def test_an_announce_that_will_not_go_is_not_fatal(self):
+        """The node announce beside it may still have gone, and the next
+        interval comes round anyway. Losing the endpoint over this would trade
+        a slow first message for no messages at all."""
+        made = tak_lxmf.Carrier.__new__(tak_lxmf.Carrier)
+
+        class Inbox:
+            def announce(self):
+                raise OSError("no interfaces")
+        made.destination = Inbox()
+        made.announce()     # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

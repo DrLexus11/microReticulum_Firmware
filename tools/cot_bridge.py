@@ -32,7 +32,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
-import tak_lxmf
 import cot_chat
 import cot_gateway
 import cot_marker
@@ -52,6 +51,10 @@ from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 # 18087 is clear of every ATAK default (8087, 8089 TLS, 6969 UDP SA, 4242,
 # 8080).
 DEFAULT_PORT = 18087
+
+# What RNS truncates a destination hash to. Used to reject a --propagation-node
+# that decodes as hex but is not a destination.
+DESTINATION_HASH_BYTES = 16
 
 # What the endpoint holds for a client that is not attached yet.
 #
@@ -261,6 +264,14 @@ class CotBridge:
         # rather than a shortcut.
         self.lxmf = None
         if lxmf_storage:
+            # Imported here rather than at module scope. --no-lxmf documents
+            # bare-packet mode as a supported way to run, and
+            # tests/test_tak_lxmf.py already treats LXMF as optional -- but a
+            # top-level import made the whole module unimportable without it,
+            # so the mode that exists to survive LXMF's absence could not start
+            # without LXMF installed. The dependency is real when it is asked
+            # for, and only then.
+            import tak_lxmf
             self.lxmf = tak_lxmf.Carrier(self.identity, lxmf_storage, self.callsign,
                                          self._chat_from_lxmf,
                                          propagation_node=propagation_node)
@@ -288,9 +299,26 @@ class CotBridge:
         nothing has a path to: correct, and unreachable. The payload carries an
         HMAC of the team rather than its name, so the announce does not undo
         what group_aspects went to trouble to hide.
+
+        Both destinations, because there are two. The TAK node carries mesh
+        frames; the LXMF inbox is where a direct message actually lands, and it
+        is a different hash with its own path. Announcing only the first left
+        the second reachable solely through a path request -- which works, and
+        pays for a request-and-response round trip across every hop before the
+        first direct message can even be attempted. On a four-hop LoRa path
+        that is the difference between a chat line leaving now and leaving
+        after a conversation about where its recipient lives. tools/
+        tak_partition_check.py had to announce this by hand to be reachable at
+        all, which is the tell.
+
+        It costs one more announce: 118 ms on air at SF7/BW250/CR4:5, against
+        the 118 ms the node announce already spends. Cheap for a destination
+        every addressed message has to resolve.
         """
         self.node.announce(membership.member_payload(self.team, self.secret,
                                                      self.callsign, self.role))
+        if self.lxmf is not None:
+            self.lxmf.announce()
 
     def _member_joined(self, destination_hash):
         claims = self.registry.describe(destination_hash) or {}
@@ -577,17 +605,7 @@ class CotBridge:
                 print("[bridge] chat for %r is not a member of this team, not sent"
                       % recipient, flush=True)
                 return True
-            # LXMF first, because it is the only path that can promise the
-            # line arrives. The bare packet is the fallback for a peer whose
-            # identity we cannot recall, not the normal route.
-            identity = self.rns.Identity.recall(destination)
-            if self.lxmf is not None and identity is not None:
-                text = (decoded or {}).get("text") or ""
-                if self.lxmf.send_chat(identity, frame, text):
-                    self.chat_sent += 1
-                    return True
-            self.chat_sent += self._send_to(destination, frame)
-            return True
+            return self._dispatch_addressed_chat(destination, frame, decoded)
         self.chat_sent += self._fan_out(frame)
         return True
 
@@ -621,6 +639,38 @@ class CotBridge:
                 # would spend more airtime than the codec just saved.
                 return True
         self.markers_sent += self._fan_out(frame)
+        return True
+
+    def _dispatch_addressed_chat(self, destination, frame, decoded):
+        """Send one addressed line to one peer, by the strongest route there is.
+
+        LXMF first, because it is the only path that can promise the line
+        arrives. The bare packet is the fallback for a peer whose identity we
+        cannot recall, and for a bridge running --no-lxmf -- not for an LXMF
+        failure.
+
+        That distinction is the whole method. Falling through to a packet when
+        LXMF declines looks like graceful degradation and is not: the packet
+        has no proof, no retry and no propagation node, so the sender is told
+        the line went while the one guarantee they were relying on has quietly
+        been dropped, and the two outcomes are indistinguishable from outside
+        the process. It also fires on a *construction* error, where a second
+        attempt at the same frame is no likelier to work. --no-lxmf is how
+        somebody chooses best effort; it is not something to hand them by
+        accident.
+        """
+        identity = self.rns.Identity.recall(destination)
+        if self.lxmf is not None and identity is not None:
+            text = (decoded or {}).get("text") or ""
+            if self.lxmf.send_chat(identity, frame, text):
+                self.chat_sent += 1
+                return True
+            self.chat_undeliverable += 1
+            print("[bridge] LXMF would not take a direct message for %s; "
+                  "not falling back to a bare packet, which cannot promise "
+                  "delivery" % destination.hex()[:16], flush=True)
+            return True
+        self.chat_sent += self._send_to(destination, frame)
         return True
 
     def _send_to(self, destination_hash, frame):
@@ -803,6 +853,35 @@ def main():
                              "of range until they come back")
     args = parser.parse_args()
 
+    # type=int accepts 0 and negatives. Zero turns _announce_forever into a
+    # spin that floods the channel with announces -- which on a transport node
+    # gets this destination rate-limited into silence, so the result of
+    # announcing too hard is not being heard at all. A negative raises inside a
+    # daemon thread, where nothing is watching, and periodic announces simply
+    # stop with the bridge still reporting itself healthy.
+    if args.announce_interval <= 0:
+        sys.exit("--announce-interval must be a positive number of seconds, "
+                 "not %d" % args.announce_interval)
+
+    propagation_node = None
+    if args.propagation_node:
+        try:
+            propagation_node = bytes.fromhex(args.propagation_node)
+        except ValueError:
+            sys.exit("--propagation-node is not a hex destination hash: %r"
+                     % args.propagation_node)
+        # fromhex() accepts any even-length string, so "deadbeef" gets this far
+        # and is handed to the router as a destination. A bridge then starts,
+        # reports a propagation node, and holds nothing for anybody -- which is
+        # only discovered when somebody walks out of range, having been told
+        # they were covered. A Reticulum destination hash is
+        # TRUNCATED_HASHLENGTH/8 bytes; anything else is a typo, not a node.
+        if len(propagation_node) != DESTINATION_HASH_BYTES:
+            sys.exit("--propagation-node must be %d bytes (%d hex characters), "
+                     "not %d: %r"
+                     % (DESTINATION_HASH_BYTES, DESTINATION_HASH_BYTES * 2,
+                        len(propagation_node), args.propagation_node))
+
     secret = groups.load_fleet_secret(args.secret_file)
     import RNS
     reticulum = RNS.Reticulum(args.config)
@@ -830,13 +909,6 @@ def main():
         lxmf_storage = args.lxmf_storage or os.path.join(
             os.path.expanduser(args.config or "~/.reticulum"), "lxmf")
         os.makedirs(lxmf_storage, exist_ok=True)
-    propagation_node = None
-    if args.propagation_node:
-        try:
-            propagation_node = bytes.fromhex(args.propagation_node)
-        except ValueError:
-            sys.exit("--propagation-node is not a hex destination hash: %r"
-                     % args.propagation_node)
     bridge = CotBridge(args.team, secret, args.port, args.identity,
                        args.callsign, args.role,
                        lxmf_storage=lxmf_storage,

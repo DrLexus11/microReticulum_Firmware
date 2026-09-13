@@ -55,7 +55,7 @@ through the mesh when it is reachable.
 
 "What is around me" is answerable only if the node *knows* what is around it.
 That is the `urban-tak` data — roads, buildings, addresses — plus the live
-marker and position picture. **The assistant is a interface onto that data, and
+marker and position picture. **The assistant is an interface onto that data, and
 it cannot be better than the data underneath.** Building it before the map data
 exists would produce something that sounds confident and knows nothing, which
 in a rescue is worse than no answer.
