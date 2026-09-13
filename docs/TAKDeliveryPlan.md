@@ -57,7 +57,7 @@ where gain is the only constraint.
 | | | Contains | Gated on |
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
-| **C** | *Chat that survives a partition* | **Built.** Addressed chat on LXMF; room receipts suppressed at the endpoint | nothing |
+| **C** | *Chat that survives a partition* | **Built and proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK; store-and-forward proven end to end 2026-09-13 | nothing |
 | **D** | *Everything that does not fit one packet* | Tier 3 `Link`/`Resource` fragmentation; typed polyline codec for drawings; wire format for a blocked route edge | nothing |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
@@ -201,29 +201,86 @@ It now checks `Transport.has_path()` before sending, asks for one when it is
 missing, and says so. After that, markers and chat both crossed on the first
 attempt.
 
-### What is wired but not yet exercised
+### Store-and-forward, proven 2026-09-13
 
-**Store-and-forward has nowhere to forward to.** `--propagation-node` exists on
-the bridge and the fallback is implemented and tested — a direct delivery that
-fails is re-sent with `PROPAGATED`, with the message state reset, because LXMF
-1.1.1 has no try-propagation-on-fail of its own. But no propagation node is
-configured, and none is reachable on the bridge's isolated instance, so **no
-message has yet survived an actual partition.**
+This section used to say the third guarantee was "implemented and unproven".
+That was too generous. Standing up a propagation node showed it was **broken,
+and had been since it was written** — the retry and the receipts were real, and
+partition survival was a claim with nothing behind it.
 
-That matters because it is PR C's headline. The retry and the receipts are
-proven; the third guarantee is implemented and unproven.
+**The propagation node.** `lxmd -p` on the deck, against the system daemon
+(`rrcd`) rather than the bridge's private instance: the bridge sets
+`share_instance = No` and owns its instance exclusively, and `rrcd` is the
+transport node holding the UDP interfaces to the RADs, which is what makes the
+node reachable from the mesh rather than only from the bridge. The
+GROUP-destination hop problem that forced the bridge onto its own instance does
+not apply — propagation runs over SINGLE destinations and Links, which are
+routed. Config and its reasoning live in `~/.impr-tak/lxmd/config`.
 
-What it needs is a propagation node *on the mesh* — reachable by a node that is
-cut off from everything else, which rules out the three the phone knows about
-over the internet. The natural home is the Rev 2 at the command post: the
-firmware already has `LXMFPropagation.h`, and a node that is always on and
-always in range is exactly what the role wants. Worth doing before Outdoor Test
-1, because reconnection behaviour is what that test exists to measure.
+**What was broken.** The fallback flipped `desired_method` to `PROPAGATED`,
+reset `state`, and handed the same message back to the router. That cannot
+work: `LXMessage.pack()` raises rather than packing a second time, and
+`transient_id` — which the propagation stamp is computed over — is assigned
+*only* in pack()'s `PROPAGATED` branch. A message packed for `DIRECT` therefore
+has no `transient_id` and cannot acquire one while `packed` is set, so LXMF's
+stamp thread calls `pack()`, hits the guard, and dies. The message store stayed
+empty through six polls over two minutes while the bridge log filled with
+re-pack tracebacks.
 
-Still open, and honest about it: **a room line has no delivery guarantee and
-PR C does not give it one.** Reliable multicast over a partitionable mesh needs
-either an acknowledgement from every member or blind repetition. Neither is in
-this PR, and the plan above never claimed otherwise.
+The fix is Columba's, not a new one: clear `packed`, `propagation_packed` and
+`propagation_stamp`, defer the stamp, reset `delivery_attempts`, then re-aim.
+`event_bridge.py` had solved this already and the firmware side had reinvented
+it worse. Both halves now fail and recover identically.
+
+**Two things found on the way.**
+
+*The escalation was unbounded.* `handle_outbound` reports its outcome through
+whatever failed callback is on the message, so leaving the direct one there
+meant an unreachable propagation node produced escalate → fail → escalate,
+forever — each turn regenerating a proof-of-work stamp and putting another Link
+attempt on the air. A propagation node is unreachable **exactly when the mesh is
+partitioned**, which is exactly when this path runs, so the loop would have
+begun at the moment the channel could least afford it. Now one escalation, then
+the truth.
+
+*Store-and-forward was configured in silence.* A wrong hash, or a node with no
+route, looked exactly like a working one until somebody walked out of range.
+The bridge now says at startup which it has, requests a path if it does not
+have one, and says plainly when it has none at all — because that is the state
+that loses messages.
+
+**The proof.** `tools/tak_partition_check.py` does it in one command, on the
+bench, where a partition can be created exactly rather than by walking out of
+range and hoping: a peer announces, leaves, the bridge sends to it anyway, 400 B
+lands in the message store, the peer returns and collects the frame with nobody
+resending anything. The node counted one message received from a client and one
+served to a client. Repeatable; run it before any change to the carrier.
+
+**Airtime notes from the same session.** LXMF's propagation stamp is a
+proof-of-work with a floor of 13 that `lxmd` will not configure below —
+0.59–1.70 s of CPU per escalated message on the deck, more on a handset. It
+buys nothing on a closed fleet already authenticated by IFAC at the interface,
+but it is upstream's floor and not ours to patch. Accepted, measured, recorded.
+The node's own limits *are* ours: 8 KB per message against a default of 256,
+because at SF7/BW250 a 256 KB message is minutes of continuous air — not a
+message, an outage.
+
+### What is still wired but not exercised
+
+**A room line has no delivery guarantee and PR C does not give it one.**
+Reliable multicast over a partitionable mesh needs either an acknowledgement
+from every member or blind repetition. Neither is in this PR, and the plan above
+never claimed otherwise.
+
+**The partition proof is bench, not LoRa.** The semantics are proven; the
+transport is proven separately. Doing it on one machine is deliberate — a
+partition can be made exactly, on demand. The same run over the air, with the
+phone as the returning peer, belongs to Outdoor Test 1.
+
+**A propagation node on a Rev 2 is still the right home for the field.** The
+deck is the command post in the Outdoor Test 1 topology, which makes it the
+correct first home; `LXMFPropagation.h` already exists in the firmware for when
+the command post has no laptop.
 
 ### PR D — everything that does not fit one packet
 
