@@ -320,6 +320,64 @@ the Rev 1 and does not fight Android's restart policy. Worth knowing
 operationally too, and not only for tests: a node an operator believes they have
 shut down is still announcing.
 
+### The full chain, 2026-09-13 — partition and replay, end to end
+
+The sequence Outdoor Test 1 depends on, with every stage genuinely under test
+and nothing simulated but the operator:
+
+```
+09:23:47  sent to a peer that was gone (BLE interface off at the handset)
+09:26:47  direct delivery gave up; escalated -- 416 B held by the command post
+09:31:37  node returns to the mesh
+09:33:26  collected from the propagation node; rendered 1029 B
+          ATAK closed -- held in the replay buffer
+09:35:05  ATAK opened: "Replaying 1 held event(s) to a new client"
+          on the map, with nothing re-sent from the deck
+```
+
+Three hops throughout: deck → Rev 2 (UDP) → Rev 1 (LoRa) → handset (BLE). Zero
+tracebacks. **PR C's three guarantees are now all measured rather than
+claimed**, and the propagation node and the replay buffer have been shown to
+hand off to each other, which is the part neither proved alone.
+
+**Escalation timing, three runs.** 60 s on the bench, 140 s over LoRa, 180 s
+here. The bench peer was zero hops and failed fast; the two radio runs spent
+LXMF's five delivery attempts against a stale three-hop route the path table
+still rated valid a week out. *A path outlives the peer it points at,* and
+anything reporting queue state to an operator has to expect minutes of silence
+before the queue admits a message.
+
+### A node that comes back does not ask what it missed
+
+**Found here, and it is the gap that matters most for the field.**
+
+Columba's retrieval is a timer, not an event. `startPeriodicSync` loops on
+`RETRIEVAL_INTERVAL_SECONDS`, which **defaults to 3600**. On this run the single
+scheduled attempt fell *inside* the outage:
+
+```
+09:28:21  sync begins -- during the partition
+09:28:25  link_establishing -> failed (241)
+09:28:26  "Sync error: Connection failed (manual=false)"
+09:31:37  back on the mesh
+          nothing. Next automatic attempt ~10:28.
+```
+
+The message only arrived because the operator pressed sync by hand.
+
+Two things are wrong, and they compound. **Reconnection triggers nothing** —
+yet it is the single most informative event a disaster node ever has, and the
+one moment the command post is certain to be holding something. And **a failed
+attempt costs the whole interval**, when failures correlate exactly with
+outages: the attempts most likely to fail are the ones made during a partition.
+An hour of holding an empty inbox while the command post holds your traffic is
+the wrong default for this system.
+
+Owed: a sync when the node becomes reachable again, and a short backoff after a
+failed attempt instead of forfeiting the interval. Scheduled into PR C's
+hardening rather than deferred — store-and-forward that only delivers on a
+manual press is not store-and-forward.
+
 ### Two findings from the same run
 
 **1. RNS throttles announces to one per hour by default, and it costs identity
