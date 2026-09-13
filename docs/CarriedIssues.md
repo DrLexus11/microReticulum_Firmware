@@ -403,3 +403,60 @@ thing retyped under pressure.
 and if so what state is stale. Reproducing it means reproducing issue #6, which
 is itself not understood.
 
+## 8. The slow path is crowded, and much of the crowd is ours
+
+**Open. Baseline taken 2026-09-13 on the LoRa path, deliberately the slowest
+one available.**
+
+Links on `phone -> BLE -> Rev 1 -> LoRa -> Rev 2 -> UDP -> deck` do establish,
+but unreliably and with a six-fold spread in latency:
+
+```
+15 attempts, 3 hops:   1.4s 1.4s 1.4s 1.2s 5.4s then ten consecutive failures
+after 90s rest, 25s apart:  0 of 6
+one attempt, minutes later: ACTIVE in 6.8s, RTT 6.70s
+best observed RTT 1.14s, worst 6.70s
+```
+
+That shape is not random loss. It is bursts of success separated by runs of
+failure, which is what a **crowded half-duplex channel** does to a
+latency-sensitive handshake: when the air is quiet a link comes up in 1.2 s, and
+when it is not, three round trips cannot all find a gap before RNS gives up.
+
+**Measured occupancy: 5.21 KB across the LoRa path in 60 s, about 7.1% of wall
+clock** by `tools/position_budget.py` — whose own verdict for that figure is
+*"crowded -- expect losses on a half-duplex channel"*.
+
+### Much of that traffic is ours, and some of it was added today
+
+- **The bridge announces every 45 s**, which was chosen for bench convenience
+  and never revisited for a radio.
+- **Each announce is now two**, node plus LXMF inbox, since the fix for PR C
+  review note 7. That doubled announce airtime, and the greeting path amplifies
+  it further: six inbox announces were observed in 90 s, roughly one every 15 s.
+- **The handset asks the propagation node for held messages whenever a peer is
+  heard**, added the same day. Each ask is a link handshake; on this path they
+  were timing out at the full 300 s watchdog and being retried about once a
+  minute.
+
+So a fix for chat latency became a generator of the congestion that makes chat
+slow. **The retry is not wrong; its cadence was chosen without reference to what
+the channel costs.**
+
+### What this changes
+
+A link handshake is roughly three round trips, and at three hops every packet is
+relayed — about 96 ms of airtime each at SF7/BW250/CR4:5. One link attempt is
+therefore most of a second of channel time before any message moves. Anything
+that dials links on a timer needs to be priced that way.
+
+Owed, in order:
+
+1. An announce interval chosen for LoRa rather than for a bench, and an inbox
+   announce that is *not* tied to the node's cadence — a path lasts a week and
+   does not need re-announcing every 15 s.
+2. Retrieval that backs off when the path is slow, instead of retrying into
+   congestion at a fixed rate.
+3. Re-run `tools/tak_link_soak.py` after each change. The number to move is the
+   establishment rate, and it is now measurable rather than argued about.
+
