@@ -24,6 +24,8 @@ all speak the same nineteen-to-twenty-four bytes, and a second dialect of the
 same thing is how two implementations start disagreeing about where somebody is.
 """
 
+from datetime import datetime
+
 import position_codec
 from cot_endpoint import _parse
 
@@ -64,6 +66,33 @@ def is_position(cot_xml):
     return kind.startswith(PLI_TYPE_PREFIX) and PLI_TYPE_INFIX in kind
 
 
+def _event_unix(event):
+    """When the sender says this fix was taken, as whole seconds.
+
+    Zero was hard-coded here, and the wire format has carried the field from
+    the beginning -- so every fix on the mesh claimed a timestamp of zero and
+    anything downstream that tried to order fixes by age compared nothing with
+    nothing. The receiver's out-of-order guard was written against this field
+    and was silently a no-op until it was populated. Found 2026-09-13.
+
+    ATAK stamps every event, so there is nothing to compute and nothing to
+    guess: this is the sender's own word for when the fix was taken, which is
+    exactly what ordering needs and what "relayed at" would not be.
+
+    Zero remains the answer for an event with no usable time, because zero is
+    this format's word for unreported and inventing `now` would date somebody
+    else's fix by our clock.
+    """
+    stamp = event.get("time")
+    if not stamp:
+        return 0
+    try:
+        text = stamp.replace("Z", "+00:00")
+        return int(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return 0
+
+
 def fix_from_cot(cot_xml, sender_id):
     """A PositionFix from a CoT event, or None if it does not carry one.
 
@@ -89,7 +118,7 @@ def fix_from_cot(cot_xml, sender_id):
     accuracy = _bounded(point.get("ce"), 1, 254, unknown=0)
     fix = position_codec.PositionFix(
         sender_id=sender_id, lat_e7=lat_e7, lon_e7=lon_e7,
-        fix_unix_s=0, accuracy_m=accuracy)
+        fix_unix_s=_event_unix(event), accuracy_m=accuracy)
     altitude = _number(point.get("hae"))
     if altitude is not None and abs(altitude) < 32000:
         fix.alt_known = True
