@@ -52,6 +52,21 @@ from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 # 8080).
 DEFAULT_PORT = 18087
 
+# How often the LXMF inbox is announced, as against the node.
+#
+# Not the node's cadence, which is what it was when the inbox announce was
+# added. The two destinations are needed for different things and expire on
+# different clocks: membership expires, so the node announce is what keeps a
+# team knowing who is in it, while an inbox announce only has to leave a path
+# behind -- and an RNS path lasts a week.
+#
+# Tying them together doubled announce airtime, and the greeting path amplified
+# it: six inbox announces were measured in ninety seconds on 2026-09-13, about
+# one every fifteen. On a LoRa channel already at 7% occupancy, where a link
+# handshake is most of a second of airtime, that is airtime taken directly from
+# the thing it exists to enable. See CarriedIssues #8.
+INBOX_ANNOUNCE_INTERVAL_SECONDS = 30 * 60
+
 # How long the mesh may be silent before that is worth saying out loud.
 #
 # Not a timeout and nothing is restarted: this only prints. The case it exists
@@ -370,6 +385,8 @@ class CotBridge:
         self.chat_misattributed = 0
         # When the propagation node was last asked what it is holding.
         self._last_collect = 0.0
+        # When the LXMF inbox was last announced, which is on its own clock.
+        self._last_inbox_announce = 0.0
         # When anything at all last arrived from the mesh, and whether the
         # silence has already been reported. One line per episode, not one per
         # announce interval -- a warning that repeats is a warning people learn
@@ -403,8 +420,24 @@ class CotBridge:
         """
         self.node.announce(membership.member_payload(self.team, self.secret,
                                                      self.callsign, self.role))
-        if self.lxmf is not None:
-            self.lxmf.announce()
+        self._announce_inbox()
+
+    def _announce_inbox(self):
+        """Announce the LXMF inbox, at most every INBOX_ANNOUNCE_INTERVAL.
+
+        On its own clock rather than the node's. Membership expires and the
+        node announce is what keeps a team knowing who is in it; an inbox
+        announce only has to leave a path behind, and a path lasts a week. When
+        the two shared a cadence this ran about once every fifteen seconds --
+        airtime taken from the very link it exists to make possible.
+        """
+        if self.lxmf is None:
+            return
+        now = time.time()
+        if now - self._last_inbox_announce < INBOX_ANNOUNCE_INTERVAL_SECONDS:
+            return
+        self._last_inbox_announce = now
+        self.lxmf.announce()
 
     def _member_joined(self, destination_hash):
         claims = self.registry.describe(destination_hash) or {}
