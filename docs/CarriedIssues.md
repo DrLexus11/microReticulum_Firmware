@@ -329,3 +329,69 @@ two want different actions from an operator.
 to notice this about itself. A deck that can say "my radio went deaf" is better
 than one that cannot; a radio that can say it is better still.
 
+## 7. Links do not establish across the BLE path; packets do
+
+**Open, and it is the whole of why chat never worked. Found 2026-09-13.**
+
+Everything that failed needed a **Link**. Everything that worked was a single
+**packet**. That is the entire pattern, and it held for a full day of testing
+before anyone saw it, because the three symptoms looked like three problems:
+
+```
+positions   packet   reliable
+markers     packet   extremely reliable
+chat        Link     never arrived
+prop sync   Link     "Sync error: Connection failed", repeatedly
+```
+
+A link dialled from the deck to the handset's LXMF inbox resolved a path in
+1.0 s, reported 3 hops, and then **CLOSED after 24 s** -- RNS abandoning
+establishment. Meanwhile 21-byte position packets crossed the same path every
+few minutes without a miss.
+
+**The asymmetry was the clue.** Chat worked deck-to-handset and never
+handset-to-deck. Both directions fail to link; the difference is what happens
+next. The deck's escalation reaches a propagation node running on its own
+daemon -- zero hops -- so its messages at least reach the store and wait. The
+handset's escalation has to cross the same broken path that just failed, so its
+messages never reach the store at all. One side gets a second chance and the
+other does not.
+
+**The measurement that settled it.** Columba was moved from BLE to TCP on the
+same Wi-Fi, and the backlog that had been stuck for hours drained instantly:
+
+```
+14:39:28.008  TAK chat arrived over LXMF, 79 bytes
+14:39:28.027  ... 81 bytes
+14:39:28.051  ... 84 bytes
+14:39:28.114  ... 83 bytes
+14:39:28.162  ... 107 bytes
+14:39:28.178  ... 128 bytes
+
+message store 10 -> 1     served to clients 4 -> 14
+```
+
+Six messages in 170 milliseconds, on a path where nothing had completed a link
+all day.
+
+**What this does not yet prove.** Moving to TCP changed two things at once: the
+transport *and* the hop count, 3 down to 1. So "links fail over BLE" and "links
+fail beyond some number of hops on this fleet" both fit the evidence. The
+controlled test is to re-enable Rev 1's UDP interface on the deck, which leaves
+BLE in the path at 2 hops instead of 3 -- if links still fail, BLE is the fault;
+if they establish, it is distance or the LoRa leg.
+
+**Why it matters beyond chat.** Every guarantee PR C is built on rides a Link:
+proof-backed delivery, retry, and store-and-forward all need one. On a transport
+where links do not establish, that whole layer degrades to opportunistic single
+packets -- which is exactly what a disaster deployment cannot rely on, and
+exactly what the plan claims it has moved away from.
+
+**Suspicion, not conclusion.** Link establishment is latency-sensitive and needs
+a prompt reverse path. Asymmetric delay or loss breaks it while leaving one-way
+packet traffic looking perfect, which matches everything observed. BLE
+fragmentation (188-byte fragments in the logs) is the obvious place to look
+first. Links did work over BLE earlier the same day -- a propagation sync
+succeeded at 09:33 -- so this is a degradation, not a design impossibility, and
+what changed in between is not yet known.
+

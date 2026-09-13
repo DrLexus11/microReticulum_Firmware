@@ -512,6 +512,21 @@ the mesh is observable from ATAK through the plugin and the reliability work is
 done, so a range result means range rather than an unproven radio hop confounded
 with an unproven transport.
 
+### PR C cannot close until links work, 2026-09-13
+
+Chat never worked between two ATAKs, and the cause is not in the chat path.
+**Links do not establish across the BLE leg; packets do.** Positions and markers
+are single packets and have been reliable all day. Chat, proof-backed delivery,
+retry and store-and-forward all need a Link, and all of them fail together.
+
+Moving the handset from BLE to TCP drained a backlog of six messages in 170
+milliseconds on a path where nothing had completed a link all day. Recorded with
+the full evidence, and with what it does *not* prove, as CarriedIssues #7.
+
+**This gates PR C, not PR D.** A plugin renders delivery state; it cannot make a
+link establish. Building it on this transport would produce an interface that
+reports honestly that nothing is arriving.
+
 ### PR D — everything that does not fit one packet
 
 - **G2.** There is no fragmentation anywhere in the CoT bridge; tier 3 was
