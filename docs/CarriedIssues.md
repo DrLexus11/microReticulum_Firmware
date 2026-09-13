@@ -281,3 +281,51 @@ is the point -- the trigger is broad so a restarted node is answered, and the
 floor is what keeps it cheap. The arrival log stays narrow, because it is about
 arrival rather than about every announce.
 
+## 6. A board can answer ping for hours while its radio has stopped
+
+**Open. Found 2026-09-13, cost about three hours of confused testing.**
+
+Rev 2 (192.168.1.88) stopped transmitting Reticulum UDP at approximately 11:12
+and did not resume until it was power-cycled at 14:06. Throughout, it answered
+ICMP normally.
+
+What made it expensive is that every symptom pointed somewhere else. Traffic
+still flowed **deck to handset**, because the deck's packets reached Rev 2,
+crossed to Rev 1 over LoRa and reached the phone over BLE — so the phone's map
+was populated and the phone's own logs showed BLE fragments arriving seconds
+before the diagnosis. Only the return leg was gone. The visible effects were a
+phone that could see the command post but could not be seen by it, chat that
+did not work, and markers that appeared to work because they had arrived before
+11:12 and were still drawn.
+
+What settled it, in order:
+
+```
+Rev2 UDP interface, 90 s:  up 623.71 -> 625.62 KB      transmitting
+                           down 368.23 -> 368.23 KB    nothing at all
+path table via Rev2 UDP:   every entry expiring 11:12, none later
+announce sniffer, 190 s:   4 announces, all from the deck itself
+ping 192.168.1.88:         replies normally
+```
+
+The ping replies are the useful part: they arrive *from* the board *at* the
+deck, which proves the deck's receive path is fine and narrows the fault to the
+board's application rather than the network or the host.
+
+**Cause unknown.** The board was not flashed or reconfigured that day. It is the
+same family as issue #1 (a board that is not in TNC mode does not relay) and
+issue #2 (Rev 1's TASK_WDT resets) in that the failure is silent, but neither
+explains a board that keeps its IP stack up while its radio side stops.
+
+**What was done about it.** Not a fix — a detector. `cot_bridge.py` now prints
+when nothing has arrived from the mesh for fifteen minutes while it knows
+members, and prints again when traffic resumes. It restarts nothing and times
+nothing out; it only ends the situation where the command post reports itself
+healthy while talking to nobody. A node that has never heard anyone is left
+alone deliberately: that is a node that is alone, not one that is deaf, and the
+two want different actions from an operator.
+
+**Still owed:** the same detector on the Columba side, and some way for a board
+to notice this about itself. A deck that can say "my radio went deaf" is better
+than one that cannot; a radio that can say it is better still.
+

@@ -52,6 +52,20 @@ from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 # 8080).
 DEFAULT_PORT = 18087
 
+# How long the mesh may be silent before that is worth saying out loud.
+#
+# Not a timeout and nothing is restarted: this only prints. The case it exists
+# for is a transport that has gone deaf without failing -- observed 2026-09-13,
+# when a Rev 2 kept answering ping for three hours while its Reticulum side had
+# stopped transmitting. The deck went on announcing into a void, reported
+# itself healthy throughout, and the first sign of trouble was an operator
+# noticing their phone was not on the map.
+#
+# Generous, because a quiet mesh is ordinary: handsets announce every thirty
+# minutes and a team can simply have nothing to say. Fifteen minutes of nothing
+# at all, from a team we know has members, is not quiet -- it is deaf.
+MESH_SILENCE_SECONDS = 15 * 60
+
 # The least time between two asks of the propagation node.
 #
 # Reconnection is the right trigger -- it is the moment the command post is
@@ -356,6 +370,12 @@ class CotBridge:
         self.chat_misattributed = 0
         # When the propagation node was last asked what it is holding.
         self._last_collect = 0.0
+        # When anything at all last arrived from the mesh, and whether the
+        # silence has already been reported. One line per episode, not one per
+        # announce interval -- a warning that repeats is a warning people learn
+        # to scroll past.
+        self._last_mesh_input = time.time()
+        self._silence_reported = False
 
     # ---- membership ----
     def announce(self):
@@ -394,6 +414,42 @@ class CotBridge:
         # Greeting happens in _member_heard, for every announce rather than
         # only this one.
 
+    def _heard_mesh(self):
+        """Note that something arrived, and say so if nothing had for a while.
+
+        Recovery is worth a line as much as the failure is: an operator who saw
+        the warning needs to know it is over without having to infer it from
+        traffic resuming.
+        """
+        self._last_mesh_input = time.time()
+        if self._silence_reported:
+            self._silence_reported = False
+            print("[bridge] mesh traffic has resumed", flush=True)
+
+    def _check_mesh_silence(self):
+        """Say when this node has been talking to nobody.
+
+        A transport can go deaf without failing. A Rev 2 was found doing
+        exactly that on 2026-09-13 -- answering ping for three hours while its
+        Reticulum side had stopped transmitting -- and nothing here noticed: the
+        bridge kept announcing, kept reporting itself healthy, and the first
+        sign was an operator noticing their phone was missing from the map.
+
+        Only warned about when members are known, because a bridge that has
+        never heard anyone is not deaf, it is alone, and those want different
+        answers from an operator.
+        """
+        if self._silence_reported or not self.registry.members():
+            return
+        silent_for = time.time() - self._last_mesh_input
+        if silent_for < MESH_SILENCE_SECONDS:
+            return
+        self._silence_reported = True
+        print("[bridge] nothing has arrived from the mesh in %d minutes, and "
+              "this node knows %d member(s). Announces are still going out, so "
+              "check the radio rather than the team."
+              % (silent_for // 60, len(self.registry.members())), flush=True)
+
     def _member_heard(self, destination_hash, outcome):
         """Say who we are back, whoever just spoke.
 
@@ -407,6 +463,7 @@ class CotBridge:
         the greeting a peer sends back finds a member it already knows -- which
         is still worth answering, but not within the same few seconds.
         """
+        self._heard_mesh()
         if self.registry.should_greet():
             try:
                 self.announce()
@@ -440,6 +497,7 @@ class CotBridge:
     def _announce_forever(self):
         while True:
             time.sleep(self.announce_interval)
+            self._check_mesh_silence()
             try:
                 self.announce()
             except Exception as error:                      # noqa: BLE001
@@ -449,6 +507,7 @@ class CotBridge:
 
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
+        self._heard_mesh()
         raw = bytes(data)
         # Byte zero says which codec produced this. One namespace shared by all
         # of them rather than three independent version counters -- see
