@@ -12,6 +12,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 BRIDGE = TOOLS / "cot_bridge.py"
+sys.path.insert(0, str(TOOLS))
 
 
 def run(args, secret="x" * 32):
@@ -88,6 +89,52 @@ class OptionalLxmfTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("imported", result.stdout)
+
+
+class BindHostTests(unittest.TestCase):
+    """This endpoint has no authentication, so where it listens is the whole of
+    who can read the team's traffic."""
+
+    def test_the_default_is_loopback(self):
+        result = run(["--help"])
+        self.assertIn("127.0.0.1", result.stdout)
+
+    def test_listening_everywhere_is_refused(self):
+        """Refused rather than warned about, because the failure is silent and
+        total: the bridge works, the map looks right, and every CoT event the
+        team produces is readable by anything that can open a socket -- with no
+        announce, no key, and nothing in any log to say it happened."""
+        for value in ("0.0.0.0", "::"):
+            with self.subTest(value=value):
+                result = run(["--bind", value])
+                self.assertNotEqual(result.returncode, 0)
+                output = result.stderr + result.stdout
+                self.assertIn("no authentication", output)
+
+    def test_a_named_interface_is_allowed_and_announced(self):
+        """Waydroid's ATAK has its own network namespace and cannot reach this
+        machine's loopback, which is why the option exists. Widening the
+        exposure to one named interface is a choice somebody makes on purpose,
+        so it is said out loud -- an operator who reads it can decide whether
+        it is what they wanted, and one who never sees it cannot."""
+        import io
+        import cot_bridge
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        with redirect_stdout(out):
+            value = cot_bridge.checked_bind_host("192.168.240.1")
+        self.assertEqual(value, "192.168.240.1")
+        self.assertIn("beyond loopback", out.getvalue())
+        self.assertIn("192.168.240.1", out.getvalue())
+
+    def test_loopback_is_not_warned_about(self):
+        import io
+        import cot_bridge
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cot_bridge.checked_bind_host("127.0.0.1")
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":

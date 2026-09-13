@@ -91,10 +91,56 @@ ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 # worth an operator noticing. A stale track that never expires is the failure
 # that matters here -- a marker where somebody used to be, still being trusted.
 POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
-# Loopback only, and not configurable. This endpoint applies no authentication
-# because it assumes only this device can reach it; binding it to a routable
-# address would hand the mesh to anyone who can open a socket.
+# Loopback by default. This endpoint applies no authentication at all, so what
+# it assumes is that only this device can reach it.
 BIND_HOST = "127.0.0.1"
+
+# Binding anywhere else is a deliberate act, and these are the addresses that
+# mean "everyone".
+#
+# Refused rather than warned about, because the failure is silent and total:
+# the bridge works perfectly, the map looks right, and every CoT event the team
+# produces is readable by anything that can open a socket to this machine --
+# with no announce, no key, and nothing in any log to say it happened.
+WIDE_OPEN = ("0.0.0.0", "::", "*", "")
+
+# Why an address like 192.168.240.1 is a different question from 0.0.0.0.
+#
+# Waydroid puts the deck's ATAK in a container with its own network namespace,
+# so it cannot reach the host's loopback -- that is the whole reason this
+# option exists. 192.168.240.1 is the host's address on Waydroid's own NAT
+# bridge: reachable from the container and from this host, and not from the
+# LAN, which has no route to that subnet.
+#
+# So the exposure widens from "processes on this host" to "processes on this
+# host, plus the Android container we installed". That is a real widening and a
+# bounded one. Binding the deck's LAN address instead would be neither.
+LOOPBACK_PREFIXES = ("127.", "::1")
+
+
+def checked_bind_host(value):
+    """The address to listen on, or exit saying why not.
+
+    Loopback needs no argument: nothing outside this machine can reach it.
+    Anything else is a choice somebody has to make on purpose, so it is
+    announced rather than assumed -- an operator who reads "listening beyond
+    loopback" can decide whether that is what they wanted, and one who never
+    sees it cannot.
+    """
+    if value in WIDE_OPEN:
+        sys.exit(
+            "--bind %r would accept a connection from anywhere that can reach "
+            "this machine. This endpoint applies no authentication, so that "
+            "hands every CoT event the team produces to anything that can open "
+            "a socket -- with no announce, no key, and nothing in any log to "
+            "say so. Name the interface you mean (for Waydroid's ATAK that is "
+            "192.168.240.1), or leave it on %s."
+            % (value, BIND_HOST))
+    if not value.startswith(LOOPBACK_PREFIXES):
+        print("[bridge] listening beyond loopback, on %s. This endpoint has no "
+              "authentication: anything that can reach that address can read "
+              "the team's traffic and inject into it." % value, flush=True)
+    return value
 
 
 def load_node_identity(path=None):
@@ -197,9 +243,11 @@ class CotBridge:
     def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None,
                  callsign="BRIDGE", role="Team Member",
                  lxmf_storage=None, propagation_node=None,
-                 announce_interval=ANNOUNCE_INTERVAL_SECONDS):
+                 announce_interval=ANNOUNCE_INTERVAL_SECONDS,
+                 bind_host=BIND_HOST):
         import RNS
         self.rns = RNS
+        self.bind_host = bind_host
         self.announce_interval = announce_interval
         self.team = team
         self.secret = secret
@@ -803,14 +851,15 @@ class CotBridge:
     def serve_forever(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((BIND_HOST, self.port))
+        listener.bind((self.bind_host, self.port))
         listener.listen(8)
         print("[bridge] team %r, this node is %s (%s)"
               % (self.team, self.uid, self.callsign), flush=True)
         self.announce()
         self._announce_thread = threading.Thread(target=self._announce_forever, daemon=True)
         self._announce_thread.start()
-        print("[bridge] point ATAK at %s:%d, TCP, no SSL" % (BIND_HOST, self.port), flush=True)
+        print("[bridge] point ATAK at %s:%d, TCP, no SSL"
+              % (self.bind_host, self.port), flush=True)
         self._report_propagation()
         while True:
             connection, _ = listener.accept()
@@ -847,6 +896,13 @@ def main():
                         help="send direct messages as bare packets, as PR B "
                              "did. Best effort, and nothing will say when a "
                              "line is lost.")
+    parser.add_argument("--bind", default=BIND_HOST,
+                        help="address to serve the CoT endpoint on (default "
+                             "%s). Use 192.168.240.1 to serve ATAK running in "
+                             "Waydroid, which has its own network namespace "
+                             "and cannot reach this machine's loopback. There "
+                             "is no authentication on this endpoint, so name "
+                             "the interface you mean." % BIND_HOST)
     parser.add_argument("--propagation-node", default=None,
                         help="destination hash of an LXMF propagation node, "
                              "which is what holds a line for a peer who is out "
@@ -862,6 +918,8 @@ def main():
     if args.announce_interval <= 0:
         sys.exit("--announce-interval must be a positive number of seconds, "
                  "not %d" % args.announce_interval)
+
+    bind_host = checked_bind_host(args.bind)
 
     propagation_node = None
     if args.propagation_node:
@@ -913,7 +971,8 @@ def main():
                        args.callsign, args.role,
                        lxmf_storage=lxmf_storage,
                        propagation_node=propagation_node,
-                       announce_interval=args.announce_interval)
+                       announce_interval=args.announce_interval,
+                       bind_host=bind_host)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:

@@ -451,6 +451,49 @@ deck is the command post in the Outdoor Test 1 topology, which makes it the
 correct first home; `LXMFPropagation.h` already exists in the firmware for when
 the command post has no laptop.
 
+### The test shape, and where the deck's ATAK lives
+
+Agreed 2026-09-13. One chain, field node to command post display:
+
+```
+ANDROID -> BLE -> Rev 2-2 -> LoRa -> Rev 2 -> UDP (local wifi) -> DECK
+        -> cot_bridge.py -> TCP 192.168.240.1:18087 -> Waydroid ATAK
+```
+
+**The deck is the node; Waydroid is only where ATAK runs.** That is the
+deliberate choice between two shapes that both fit the picture. Running Columba
+inside Waydroid would make it a second node and keep the bridge on loopback,
+but it puts the *same* Kotlin endpoint at both ends — so a bug in it looks
+identical on both screens and says nothing. With `cot_bridge.py` at the command
+post and Columba on the handset, a byte-level drift between the two halves of a
+codec shows up as a field failure instead of passing quietly. The repositories
+are required to stay byte-identical; this is the arrangement that checks it.
+
+**`--bind` exists for exactly one reason.** Waydroid's ATAK runs in its own
+network namespace and cannot reach this machine's loopback. `192.168.240.1` is
+the host's address on Waydroid's own NAT bridge: reachable from the container
+and from this host, and **not** from the LAN, which has no route to that subnet.
+Verified 2026-09-13 — a connection to the deck's own `192.168.1.75:18087` is
+refused, and only `192.168.240.1` accepts.
+
+So the exposure widens from "processes on this host" to "processes on this host
+plus the Android container we installed". Real, and bounded. `0.0.0.0` is
+refused outright rather than warned about, because that failure is silent and
+total: the bridge works, the map looks right, and every CoT event the team
+produces is readable by anything that can open a socket — no announce, no key,
+nothing in any log. Anything beyond loopback prints a line saying so at startup,
+so it is a choice somebody sees rather than one they inherit.
+
+Host-side tools reach it with `--host 192.168.240.1`; the bridge binds one
+address, so loopback stops answering when this is used.
+
+**Radios.** Rev 1 and its PCB antenna stay the indoor lab path — the two-hop
+LoRa route through it is proven and it is the known quantity. The Rev 2s carry
+the large antennas and belong to the **field** test, which follows PR D: by then
+the mesh is observable from ATAK through the plugin and the reliability work is
+done, so a range result means range rather than an unproven radio hop confounded
+with an unproven transport.
+
 ### PR D — everything that does not fit one packet
 
 - **G2.** There is no fragmentation anywhere in the CoT bridge; tier 3 was
