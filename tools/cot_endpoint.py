@@ -279,6 +279,9 @@ class CotOutbound:
         self.our_uid = our_uid
         self.atak_uid = None
         self.dropped = 0
+        # Why the last one was dropped, for the endpoint to report rather than
+        # leaving an operator with a count and no cause.
+        self.last_drop = None
 
     def is_echo(self, cot_xml):
         """Whether this event is our own, come back to us.
@@ -355,8 +358,16 @@ class CotOutbound:
         self.observe(cot_xml)
         try:
             return encode(rewrite_self_uid(cot_xml, self.atak_uid, self.our_uid))
-        except ValueError:
+        except ValueError as error:
+            # Said out loud, not only counted. The commonest reason to land
+            # here is an event too big for one packet -- a drawing, or a range
+            # and bearing line -- and from ATAK that looks like the feature
+            # simply not working, with nothing anywhere to say why. An operator
+            # who reads this knows it is a size bound and not a radio, and
+            # knows it is tier 3 that would carry it.
             self.dropped += 1
+            self.last_drop = str(error)
+            print("[endpoint] not sent: %s" % error, flush=True)
             return None
 
 
