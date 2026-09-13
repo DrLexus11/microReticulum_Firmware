@@ -336,9 +336,17 @@ and nothing simulated but the operator:
 ```
 
 Three hops throughout: deck → Rev 2 (UDP) → Rev 1 (LoRa) → handset (BLE). Zero
-tracebacks. **PR C's three guarantees are now all measured rather than
-claimed**, and the propagation node and the replay buffer have been shown to
-hand off to each other, which is the part neither proved alone.
+tracebacks. **PR C's three guarantees are now measured rather than claimed**,
+and the propagation node and the replay buffer have been shown to hand off to
+each other, which is the part neither proved alone.
+
+**With one honest qualification, recorded here rather than left to be found.**
+The collect at 09:33:26 happened because an operator pressed sync; nothing on
+the node asked. So what is measured is that a held message *can* complete the
+chain, not that a returning node completes it unattended. The triggers that
+close that gap were written the same afternoon and have not themselves been run
+on hardware. See *A node that comes back does not ask what it missed* below,
+and the entry under *What is still wired but not exercised*.
 
 **Escalation timing, three runs.** 60 s on the bench, 140 s over LoRa, 180 s
 here. The bench peer was zero hops and failed fast; the two radio runs spent
@@ -373,10 +381,16 @@ outages: the attempts most likely to fail are the ones made during a partition.
 An hour of holding an empty inbox while the command post holds your traffic is
 the wrong default for this system.
 
-Owed: a sync when the node becomes reachable again, and a short backoff after a
-failed attempt instead of forfeiting the interval. Scheduled into PR C's
-hardening rather than deferred — store-and-forward that only delivers on a
-manual press is not store-and-forward.
+**Written, not yet proven.** Columba retries a failed attempt on a 60 s backoff
+that doubles and is capped at the configured interval, so backoff can only make
+it ask sooner than the timer would. The bridge asks once at startup and again
+when a member reappears, behind a 60 s floor so that ten nodes powering up
+together do not mean ten syncs — a sync is a Link and a transfer, not one
+packet.
+
+Neither has run on hardware. Store-and-forward that only delivers on a manual
+press is not store-and-forward, and until these are exercised that is still what
+we have measured.
 
 ### Two findings from the same run
 
@@ -440,11 +454,15 @@ Reliable multicast over a partitionable mesh needs either an acknowledgement
 from every member or blind repetition. Neither is in this PR, and the plan above
 never claimed otherwise.
 
-**The ATAK half of the LoRa partition run is still owed.** The message survived
-the partition and reached Columba; it did not reach ATAK, because ATAK held the
-endpoint's port throughout. Repeat once that provisioning rule is applied, and
-confirm the replay buffer hands it over on reconnect — the two have never been
-exercised together.
+**One step of the full chain was driven by hand.** The 09:35 run is complete and
+every stage of it is real, but the node did not ask the propagation node for
+what it was holding — an operator pressed sync. The automatic triggers written
+afterwards (a bounded collect on reconnection in the bridge, a failure backoff
+in Columba) have **not** been exercised on hardware. Until they are, the chain
+is proven and the *unattended* chain is not, and those are different claims.
+
+Repeat it without touching either device before calling store-and-forward
+done.
 
 **A propagation node on a Rev 2 is still the right home for the field.** The
 deck is the command post in the Outdoor Test 1 topology, which makes it the

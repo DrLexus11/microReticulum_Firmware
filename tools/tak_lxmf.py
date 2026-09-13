@@ -115,6 +115,7 @@ class Carrier:
         self.delivered = 0
         self.failed = 0
         self.propagated = 0
+        self.collected = 0
         self.router = LXMF.LXMRouter(identity=identity, storagepath=storage_path)
         self.destination = self.router.register_delivery_identity(
             identity, display_name=callsign)
@@ -144,6 +145,33 @@ class Carrier:
             # over; the node announce beside it may still have gone, and the
             # next interval comes round anyway.
             print("[lxmf] could not announce the inbox: %s" % error, flush=True)
+
+    def collect(self, identity):
+        """Ask the propagation node for anything held for us.
+
+        Escalation only puts a message *into* the store. Nothing took it out:
+        `--propagation-node` enabled the sending half and the receiving half
+        was never wired, so a bridge that came back after a partition left its
+        traffic sitting at the command post indefinitely. Proven on hardware
+        2026-09-13, where the message only arrived because an operator pressed
+        sync by hand -- and store-and-forward that needs a manual press is not
+        store-and-forward.
+
+        Returns True if a request went out, so a caller can say whether it
+        asked rather than guessing.
+        """
+        if not self.propagation_node:
+            return False
+        try:
+            self.router.request_messages_from_propagation_node(identity)
+            self.collected += 1
+            return True
+        except Exception as error:
+            # Called from a reconnection path, where raising would take down
+            # whatever noticed the reconnection. The next trigger comes round.
+            print("[lxmf] could not ask the propagation node: %s" % error,
+                  flush=True)
+            return False
 
     def stop(self):
         try:

@@ -398,11 +398,33 @@ class CotClient:
     def __init__(self, connection):
         import threading
         self.connection = connection
-        self._write_lock = threading.Lock()
+        # Reentrant so a caller can hold it across a batch and still use
+        # sendall() inside. See hold().
+        self._write_lock = threading.RLock()
 
     def sendall(self, payload):
         with self._write_lock:
             self.connection.sendall(payload)
+
+    def hold(self):
+        """Keep this socket to one writer for a whole sequence of events.
+
+        Replay needs it. A client is registered before its backlog is sent, so
+        without this a mesh callback could deliver a *new* event in the gap and
+        the older held ones would arrive after it -- ATAK showing a
+        conversation out of order, which is worse than showing none of it,
+        because nothing on screen says the order is wrong.
+
+        Taken before the client is visible to the fan-out, so there is no gap
+        rather than a small one. Anything the mesh produces meanwhile queues on
+        this lock and lands after the backlog, which is exactly where it
+        belongs.
+
+        Bounded by the same SO_SNDTIMEO every other write has: a client that
+        will not read aborts its own replay in two seconds rather than holding
+        the mesh thread.
+        """
+        return self._write_lock
 
     def close(self):
         import socket

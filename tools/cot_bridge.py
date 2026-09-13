@@ -52,6 +52,16 @@ from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 # 8080).
 DEFAULT_PORT = 18087
 
+# The least time between two asks of the propagation node.
+#
+# Reconnection is the right trigger -- it is the moment the command post is
+# most likely to be holding something for us, and Columba's timer-only
+# retrieval was found on hardware to leave a message sitting for an hour. But
+# "a member announced" fires once per member, so ten nodes powering up together
+# would otherwise mean ten syncs. This is the floor that makes the trigger
+# affordable; the sync itself is a Link and a transfer, not one packet.
+COLLECT_FLOOR_SECONDS = 60
+
 # What RNS truncates a destination hash to. Used to reject a --propagation-node
 # that decodes as hex but is not a destination.
 DESTINATION_HASH_BYTES = 16
@@ -342,6 +352,10 @@ class CotBridge:
         # late does not put a track back where somebody used to be.
         self._last_fix = {}
         self.positions_out_of_order = 0
+        # Frames whose claimed sender did not match the carrier's proof.
+        self.chat_misattributed = 0
+        # When the propagation node was last asked what it is holding.
+        self._last_collect = 0.0
 
     # ---- membership ----
     def announce(self):
@@ -398,6 +412,30 @@ class CotBridge:
                 self.announce()
             except Exception as error:                      # noqa: BLE001
                 print("[bridge] greeting announce failed: %s" % error, flush=True)
+        # Somebody is back, so ask what was held while they were away.
+        #
+        # Escalation only ever put messages *into* the store; nothing took them
+        # out. --propagation-node wired the sending half and left the receiving
+        # half to a manual helper, so a bridge that reconnected after a
+        # partition left its own traffic at the command post indefinitely.
+        # Reconnection is the right trigger precisely because it is the moment
+        # something is most likely to be waiting.
+        self.collect_held()
+
+    def collect_held(self):
+        """Ask the propagation node for anything waiting, no more than so often.
+
+        The floor is what makes "a member announced" an affordable trigger: ten
+        nodes powering up together would otherwise mean ten syncs, and a sync is
+        a Link and a transfer rather than one packet.
+        """
+        if self.lxmf is None or not self.lxmf.propagation_node:
+            return False
+        now = time.time()
+        if now - self._last_collect < COLLECT_FLOOR_SECONDS:
+            return False
+        self._last_collect = now
+        return self.lxmf.collect(self.identity)
 
     def _announce_forever(self):
         while True:
@@ -457,8 +495,15 @@ class CotBridge:
         self.markers_received += 1
         return True
 
-    def _chat_from_mesh(self, raw):
-        """Render a peer's chat line or receipt as CoT for the local ATAK."""
+    def _chat_from_mesh(self, raw, signed_by=None):
+        """Render a peer's chat line or receipt as CoT for the local ATAK.
+
+        `signed_by` is the member the carrier proves sent this, when the
+        carrier can prove anything. LXMF can; a bare packet on a GROUP
+        destination cannot, because every member holds the same key and the
+        sender_id is the only claim there is. So this is checked where a proof
+        exists and honestly absent where none does.
+        """
         decoded = cot_chat.decode(raw)
         if decoded is None:
             return False
@@ -468,6 +513,17 @@ class CotBridge:
             # is the honest option: rendering it under an invented identity
             # would put words on the screen attributed to nobody.
             self.unreadable += 1
+            return True
+        if signed_by is not None and signed_by != sender:
+            # The frame names one member and the carrier proves another sent
+            # it. Refused rather than re-attributed: drawing it under the real
+            # sender would render words they did not write, and drawing it
+            # under the claimed one is the attack.
+            self.chat_misattributed += 1
+            print("[bridge] chat claims to be from %s but was signed by %s; "
+                  "not rendered"
+                  % (tak_identity.uid_for(sender), tak_identity.uid_for(signed_by)),
+                  flush=True)
             return True
         claims = self.registry.describe(sender) or {}
         self._to_clients(keep=True, payload=cot_chat.build_chat_cot(
@@ -686,9 +742,37 @@ class CotBridge:
         carrier brought it. The LXMF content is for the human reading Columba
         and is deliberately never parsed back here -- that is what stops a
         rendered message being read as a new one.
+
+        **Attribution comes from the carrier, not the payload.** The frame
+        carries a 32-bit sender_id, and that is a lookup key, not a claim worth
+        trusting: any member with a valid identity could put another member's
+        id in it and have the far end draw their words under that name. On a
+        callout, a line attributed to the command post carries the command
+        post's authority, so this is worth closing even inside an
+        IFAC-authenticated fleet -- the threat is a compromised node, not an
+        outsider.
+
+        LXMF already proves who sent this, cryptographically, and that proof
+        was being thrown away. Binding the two costs one recall.
         """
-        if self._chat_from_mesh(frame):
+        if self._chat_from_mesh(frame, signed_by=self._member_for_lxmf(source_hash)):
             self.received += 1
+
+    def _member_for_lxmf(self, source_hash):
+        """The team member an LXMF source hash belongs to, or None.
+
+        An inbox and a TAK node are different destinations built from the same
+        identity -- which is pivot 1 again, and the reason knowing a peer well
+        enough to address their node is knowing them well enough to address
+        their inbox. Read backwards, it is what lets an inbox be checked
+        against a node.
+        """
+        if not source_hash:
+            return None
+        identity = self.rns.Identity.recall(source_hash)
+        if identity is None:
+            return None
+        return tak_identity.node_destination_hash(identity)
 
     def _marker_from_atak(self, xml):
         """Send a point marker as tens of bytes, if it is one.
@@ -809,15 +893,22 @@ class CotBridge:
             socket.SOL_SOCKET, socket.SO_SNDTIMEO,
             struct.pack("@qq", int(CLIENT_WRITE_TIMEOUT), 0))
         client = CotClient(connection)
-        with self.clients_lock:
-            self.clients.append(client)
-            count = len(self.clients)
-        print("[bridge] ATAK connected: %d client(s)" % count, flush=True)
-        # Before anything new arrives: what it missed while it was away. This
-        # is what makes ATAK as reliable as Columba when both are running --
-        # Columba keeps a message because LXMF persists it, and until now ATAK
-        # kept nothing at all.
-        self._replay_to(client)
+        # Held across registration and replay together, so there is no window
+        # in which this client is visible to the fan-out but has not had its
+        # backlog. Registering first and replaying after left exactly that gap:
+        # a mesh callback could deliver a new event into it, and the older held
+        # ones would then arrive behind it -- a conversation out of order, with
+        # nothing on screen to say so.
+        with client.hold():
+            with self.clients_lock:
+                self.clients.append(client)
+                count = len(self.clients)
+            print("[bridge] ATAK connected: %d client(s)" % count, flush=True)
+            # Before anything new arrives: what it missed while it was away.
+            # This is what makes ATAK as reliable as Columba when both are
+            # running -- Columba keeps a message because LXMF persists it, and
+            # until now ATAK kept nothing at all.
+            self._replay_to(client)
         try:
             while True:
                 chunk = connection.recv(4096)
@@ -883,6 +974,9 @@ class CotBridge:
         print("[bridge] point ATAK at %s:%d, TCP, no SSL"
               % (self.bind_host, self.port), flush=True)
         self._report_propagation()
+        # A bridge that has just started has by definition been away, so ask
+        # once before waiting for anybody to announce.
+        self.collect_held()
         while True:
             connection, _ = listener.accept()
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

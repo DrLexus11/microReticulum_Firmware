@@ -110,9 +110,13 @@ def main():
              '<point lat="40.9540" lon="29.0900" hae="30.0" ce="10.0" le="9999999.0"/>'
              '<detail><takv device="T" os="36" platform="ATAK-CIV" version="5.6"/>'
              '<contact callsign="%s"/></detail></event>'
-             % (args.from_uid, iso(datetime.now(timezone.utc)),
+             # Escaped like everything else built from a command line. An
+             # unescaped & or " here closes an attribute early, and the bridge
+             # refuses the session rather than the one event -- so the failure
+             # lands nowhere near the value that caused it.
+             % (escape(args.from_uid), iso(datetime.now(timezone.utc)),
                 iso(datetime.now(timezone.utc)), iso(datetime.now(timezone.utc)),
-                args.callsign)).encode("utf-8"))
+                escape(args.callsign))).encode("utf-8"))
         time.sleep(1.0)
 
         print("sending message %s to %s" % (message_id, args.to), flush=True)
