@@ -47,6 +47,8 @@ the content. Content is for humans; the field is the protocol. Keeping that
 distinction absolute is what stops a rendered message being parsed back as one.
 """
 
+import time
+
 import RNS
 import LXMF
 
@@ -213,6 +215,10 @@ class Carrier:
             # would not be for a position beacon.
             message = self.build(destination, frame, text,
                                  LXMF.LXMessage.DIRECT)
+            # Stamped so an outcome can report how long it took. The
+            # interesting number is not that a message arrived; it is whether
+            # it arrived on the first attempt or the fourth.
+            message.tak_sent_at = time.time()
             message.register_delivery_callback(self._delivered)
             message.register_failed_callback(self._failed)
             self.router.handle_outbound(message)
@@ -235,7 +241,35 @@ class Carrier:
     # ---- outcomes ----
 
     def _delivered(self, message):
+        """Landed. Say how long it took and which way it went.
+
+        Counted only, before. A count cannot tell a message that went out and
+        arrived from one that failed twice and arrived on the third attempt --
+        and on a slow channel that is most of the latency an operator feels.
+        Measured 2026-09-13: a link established in 1.5 s while chat took 11.4 s
+        end to end, and nothing in the process could say where the other ten
+        seconds went.
+
+        Method matters as much as time. DIRECT means a link carried it;
+        PROPAGATED means it went via the command post's store, which is correct
+        but slower and means the direct attempt failed first.
+        """
         self.delivered += 1
+        print("[lxmf] delivered %s" % self._journey(message), flush=True)
+
+    def _journey(self, message):
+        """How a message got there, for a log line."""
+        methods = {LXMF.LXMessage.OPPORTUNISTIC: "opportunistic",
+                   LXMF.LXMessage.DIRECT: "direct",
+                   LXMF.LXMessage.PROPAGATED: "propagated",
+                   LXMF.LXMessage.PAPER: "paper"}
+        method = methods.get(getattr(message, "method", None), "unknown")
+        attempts = getattr(message, "delivery_attempts", None)
+        started = getattr(message, "tak_sent_at", None)
+        took = ("%.1fs" % (time.time() - started)) if started else "unknown"
+        return ("in %s by %s, %s attempt(s)"
+                % (took, method,
+                   attempts if attempts is not None else "?"))
 
     def _failed(self, message):
         """A direct delivery that did not land.
@@ -276,6 +310,8 @@ class Carrier:
         partitioned, which is exactly when this path runs, so the loop would
         begin at the moment the channel can least afford it.
         """
+        print("[lxmf] direct delivery did not land %s"
+              % self._journey(message), flush=True)
         if not self.propagation_node:
             self.failed += 1
             return
