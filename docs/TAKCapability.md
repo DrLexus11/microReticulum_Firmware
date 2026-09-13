@@ -193,7 +193,7 @@ waits on hardware.
 
 All five are done. `tools/cot_gateway.py` receives on
 `rnstransport.position.report`, expands each report into a CoT event, and serves
-it on TCP 8087 and multicast 239.2.3.1:6969 -- the two places ATAK already
+it on TCP 18087 and multicast 239.2.3.1:6969 -- the places ATAK already
 looks. `tools/position_budget.py` computes the §2 table for whichever working
 point a deployment actually uses, and a node reports what its own position
 traffic has spent on the clock page -- both accounting, neither enforcing.

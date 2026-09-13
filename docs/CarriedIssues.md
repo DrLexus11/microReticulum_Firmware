@@ -214,7 +214,9 @@ the missing heartbeat response; it does not establish that every observed drop
 had that cause.
 
 The ARM64 debug APK was installed on the Galaxy A54 over wireless ADB on
-2026-09-12. Through an ADB-forwarded connection to the phone's port 8087, four
+2026-09-12. Through an ADB-forwarded connection to the phone's port 8087 (the
+endpoint moved to 18087 on 2026-09-13, off ATAK's own default -- see
+TAKDeliveryPlan.md), four
 fragmented pings (including self-closing events) received valid pongs on the
 same socket at 0, 30, 60 and 90 seconds, with no endpoint disconnect.
 

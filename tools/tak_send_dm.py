@@ -69,7 +69,7 @@ def main():
                         help="the recipient's urtn- UID, as the bridge prints it")
     parser.add_argument("--text", default="radio check over LXMF")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8087,
+    parser.add_argument("--port", type=int, default=18087,
                         help="the bridge's local CoT port")
     parser.add_argument("--from-uid", default="ANDROID-DMTEST",
                         help="what this pretend ATAK calls itself")

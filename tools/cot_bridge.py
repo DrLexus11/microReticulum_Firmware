@@ -8,9 +8,12 @@ shared one; see tools/cot_bridge.example.conf for the configuration and the
 reason. The fleet secret comes from the environment or ~/.impr-tak/fleet-secret,
 never from the command line.
 
-ATAK connects to 127.0.0.1:8087 and never to anybody's address. Everything it
+ATAK connects to 127.0.0.1:18087 and never to anybody's address. Everything it
 sends goes to the team's GROUP destination; everything the team sends is
 written back to every connected client. See docs/TAKNative.md.
+
+Not 8087: that is ATAK's own default CoT input port, and an endpoint sitting on
+it competes with ATAK for a port ATAK already owns. See DEFAULT_PORT below.
 """
 
 import argparse
@@ -39,7 +42,16 @@ import tak_membership as membership
 import tak_payload
 from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 
-DEFAULT_PORT = 8087
+# Not 8087.
+#
+# 8087 is ATAK's own default CoT input port, so an endpoint that used it was
+# competing with ATAK for a port ATAK already owns. Found on hardware
+# 2026-09-13: ATAK held 0.0.0.0:8087 with a connection open from itself to
+# itself, and Columba's endpoint could never bind. Whichever side binds first
+# wins, and the loser retries forever -- which reads as connection flapping.
+# 18087 is clear of every ATAK default (8087, 8089 TLS, 6969 UDP SA, 4242,
+# 8080).
+DEFAULT_PORT = 18087
 
 # What the endpoint holds for a client that is not attached yet.
 #

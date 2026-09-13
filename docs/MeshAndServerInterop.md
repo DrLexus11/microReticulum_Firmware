@@ -14,7 +14,7 @@ Two separate things that have never been introduced to each other:
 | | What it is | Who reaches it |
 | --- | --- | --- |
 | **OpenTAKServer** | TLS on 8089 and 8443 | iTAK, WinTAK and ATAK over Tailscale |
-| **`cot_bridge.py`** | a local CoT endpoint on 127.0.0.1:8087, backed by Reticulum | mesh nodes, as a team member |
+| **`cot_bridge.py`** | a local CoT endpoint on 127.0.0.1:18087, backed by Reticulum | mesh nodes, as a team member |
 
 Nothing crosses between them. A Tailscale operator's marker reaches everyone on
 the server and no one on the mesh; a responder's marker reaches everyone on the

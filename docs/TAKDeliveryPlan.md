@@ -313,23 +313,34 @@ for a node that has gone wrong, not an operating point.
 reads 0 as unset and applies the 3600 default, so writing 0 to disable
 throttling silently selects the strictest throttle available.
 
-**2. The endpoint is the server and ATAK is the client — and nothing enforced
-it.** ATAK was found holding `0.0.0.0:8087` with a connection open from itself
-to itself, which locked Columba's endpoint out permanently. Whichever binds
-first wins: while Columba was up it held the port and ATAK connected as a
-client, and the moment Columba closed, an ATAK **input** on the same port took
-it and did not give it back. This is very likely the cause of the intermittent
-"local disconnections to the ATAK server config" reported 2026-09-11.
+**2. The endpoint was sitting on ATAK's own default port.** ATAK was found
+holding `0.0.0.0:8087` with a connection open from itself to itself, which
+locked Columba's endpoint out permanently: it retried every five seconds for an
+hour while a message that had survived a partition never reached the map.
 
-**Provisioning rule, per device:** ATAK gets an *outgoing* connection to
-`127.0.0.1:8087` and **no input on that port**. Columba now says so on the
-settings screen rather than reporting a bare `EADDRINUSE`, which was true and
-unactionable.
+The first reading of this was that an operator had configured an ATAK *input*
+on the port. That was wrong, and worth recording as wrong: **8087 is ATAK's
+default CoT input.** ATAK listens there out of the box. Nothing was
+misconfigured — we chose a port that ATAK already owns, and then competed with
+it. Whichever side binds first wins, the loser retries forever, and from ATAK's
+side that reads as connection flapping.
 
-**This is not plugin territory and cannot be.** A plugin runs inside ATAK's
-process and has no veto over ATAK's own network subsystem binding a port from
-its own configuration. The plugin phase adds port pressure rather than relieving
-it. Transport semantics live below ATAK, and a port collision is below ATAK.
+Both endpoints moved to **18087**, which is clear of every ATAK default: 8087,
+8089 for TLS, 6969 for multicast SA, 4242 and 8080. The gateway's TCP listener
+moved with them — it had the same collision, and 8087 is OpenTAKServer's UDP
+default besides.
+
+The contract is unchanged and now stated where it can be read: **this endpoint
+is the server, ATAK is the client.** ATAK gets an outgoing connection to
+`127.0.0.1:18087` and nothing listening on it. Columba says so on the settings
+screen when the port is taken, rather than reporting a bare `EADDRINUSE` — which
+was true, and unactionable, and cost an hour.
+
+**This was never plugin territory and could not have been.** A plugin runs
+inside ATAK's process and has no veto over ATAK's own network subsystem binding
+a port from its own defaults. The plugin phase adds port pressure rather than
+relieving it. Transport semantics live below ATAK, and a port collision is below
+ATAK.
 
 ### What is still wired but not exercised
 
