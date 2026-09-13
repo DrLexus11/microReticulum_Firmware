@@ -14,6 +14,7 @@ written back to every connected client. See docs/TAKNative.md.
 """
 
 import argparse
+import collections
 import os
 import struct
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,18 @@ import tak_payload
 from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 
 DEFAULT_PORT = 8087
+
+# What the endpoint holds for a client that is not attached yet.
+#
+# Columba is reliable because LXMF *persists* a message; ATAK is handed a live
+# stream and keeps nothing, so anything rendered while it is detached is gone.
+# Same data, same path, two different guarantees -- and ATAK detaches routinely,
+# for seconds on a reconnect and for minutes when a phone is locked.
+#
+# Fifteen minutes covers a reconnect, an app restart and a locked screen without
+# reaching back into content an operator has moved on from.
+REPLAY_MAX_EVENTS = 64
+REPLAY_MAX_AGE_SECONDS = 15 * 60
 # This node's own Reticulum identity, kept beside the fleet secret. Created on
 # first run; losing it changes this node's UID, which to every peer reads as a
 # different responder rather than the same one returning.
@@ -245,6 +258,15 @@ class CotBridge:
         # one bit of meaning each. A direct message keeps both, because there
         # it is one peer and the operator is waiting on exactly that answer.
         self.receipts_suppressed = 0
+        # Tier 2 only: chat, markers, and anything that came through tier 2.
+        # Position is deliberately absent. It is latest-wins, a fresher one is
+        # seconds away, and replaying a ten-minute-old fix as though it were
+        # current puts somebody on the map where they are not -- which is worse
+        # than showing nothing. The tiering in TAKNative.md already drew this
+        # line; this is the same line applied to the socket.
+        self._replay = collections.deque(maxlen=REPLAY_MAX_EVENTS)
+        self._replay_lock = threading.Lock()
+        self.replayed = 0
 
     # ---- membership ----
     def announce(self):
@@ -318,7 +340,7 @@ class CotBridge:
             # dictionary, or simply not ours.
             self.unreadable += 1
             return
-        self._to_clients(xml.encode("utf-8"))
+        self._to_clients(xml.encode("utf-8"), keep=True)
         self.received += 1
 
     def _marker_from_mesh(self, raw):
@@ -335,7 +357,7 @@ class CotBridge:
             return True
         claims = self.registry.describe(sender) or {}
         now = datetime.now(timezone.utc)
-        self._to_clients(cot_marker.build_marker_cot(
+        self._to_clients(keep=True, payload=cot_marker.build_marker_cot(
             decoded, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
             cot_gateway.cot_time(now),
             cot_gateway.cot_time(now + timedelta(seconds=decoded["stale_seconds"]))
@@ -356,7 +378,7 @@ class CotBridge:
             self.unreadable += 1
             return True
         claims = self.registry.describe(sender) or {}
-        self._to_clients(cot_chat.build_chat_cot(
+        self._to_clients(keep=True, payload=cot_chat.build_chat_cot(
             decoded, tak_identity.uid_for(sender),
             claims.get("callsign", "UNKNOWN"),
             cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
@@ -383,7 +405,31 @@ class CotBridge:
         self.positions_received += 1
         return True
 
-    def _to_clients(self, payload):
+    def _replay_to(self, client):
+        """Hand a newly attached client what it missed.
+
+        Sent oldest first, so a conversation arrives in the order it happened.
+        Every frame carries its own uid and message id, so a client that
+        already has one simply recognises it again -- replay is safe to repeat
+        and cheap to ignore.
+        """
+        now = time.time()
+        with self._replay_lock:
+            pending = [payload for stamp, payload in self._replay
+                       if now - stamp <= REPLAY_MAX_AGE_SECONDS]
+        if not pending:
+            return
+        print("[bridge] replaying %d held event(s) to a new client" % len(pending),
+              flush=True)
+        for payload in pending:
+            try:
+                client.sendall(payload)
+            except OSError as error:
+                print("[bridge] replay failed: %s" % error, flush=True)
+                return
+        self.replayed += len(pending)
+
+    def _to_clients(self, payload=None, keep=False):
         """Write to every connected client without blocking the ones behind.
 
         This runs on Reticulum's packet callback thread. sendall() blocks for as
@@ -394,11 +440,21 @@ class CotBridge:
         a client that cannot keep up is dropped rather than allowed to stall the
         bridge.
         """
+        if keep:
+            with self._replay_lock:
+                self._replay.append((time.time(), payload))
         with self.clients_lock:
             targets = list(self.clients)
         if not targets:
-            print("[bridge] ATAK delivery lost: %d bytes, no connected clients"
-                  % len(payload), flush=True)
+            # Two different outcomes, said differently. A tier-2 event is
+            # waiting for a client; a position really is gone, and should be --
+            # a fresher one is seconds away.
+            if keep:
+                print("[bridge] no ATAK attached; %d bytes held for replay"
+                      % len(payload), flush=True)
+            else:
+                print("[bridge] ATAK delivery lost: %d bytes, no connected clients"
+                      % len(payload), flush=True)
         dead = []
         for client in targets:
             try:
@@ -625,6 +681,11 @@ class CotBridge:
             self.clients.append(client)
             count = len(self.clients)
         print("[bridge] ATAK connected: %d client(s)" % count, flush=True)
+        # Before anything new arrives: what it missed while it was away. This
+        # is what makes ATAK as reliable as Columba when both are running --
+        # Columba keeps a message because LXMF persists it, and until now ATAK
+        # kept nothing at all.
+        self._replay_to(client)
         try:
             while True:
                 chunk = connection.recv(4096)

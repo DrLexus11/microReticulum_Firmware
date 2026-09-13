@@ -1,4 +1,5 @@
 """Local heartbeat replies must not depend on mesh activity or reach peers."""
+import collections
 import socket
 import select
 import sys
@@ -81,6 +82,13 @@ class BridgeHeartbeatTests(unittest.TestCase):
         bridge.clients = []
         bridge.clients_lock = threading.Lock()
         bridge._from_atak = Mock()
+        # The replay buffer a real constructor would have made. A client that
+        # attaches is handed what it missed before anything new arrives, so a
+        # partially built bridge needs these or the serve thread dies on the
+        # first connection.
+        bridge._replay = collections.deque()
+        bridge._replay_lock = threading.Lock()
+        bridge.replayed = 0
         threads = []
         phones = []
         for _ in range(2):
