@@ -15,6 +15,12 @@ Sibling repositories, developed together:
   must not acquire one. Runs in parallel with this work. Its
   `docs/MeshContract.md` fixes the seam: that repo decides what a thing means,
   this one decides how it travels.
+- **A second plugin repo is decided but not yet created** — PR F's Reticulum
+  plugin (delivery state, queues, reachability, cost) does not belong in
+  `urban-tak`, which must stay free of Reticulum, nor here, which is firmware.
+  Recommended name `mesh-tak`, awaiting confirmation. See *The second plugin
+  repo* in `docs/TAKDeliveryPlan.md`. Do not add Android plugin work to this
+  repo on the assumption it has a home here.
 
 ## Read this before planning work
 
@@ -55,3 +61,9 @@ Design rationale and hardware acceptance records are in `docs/TAKNative.md` and
   shell. Find the PID first, act on the number.
 - Airtime figures come from `tools/position_budget.py`, which is the firmware's
   own `packet_airtime_ms()`. Use it rather than estimating.
+- Store-and-forward needs a propagation node running: `lxmd -p --config
+  ~/.impr-tak/lxmd --rnsconfig ~/.reticulum`, with the bridge given its hash
+  via `--propagation-node`. Template and reasoning in
+  `tools/lxmd_propagation.example.conf`. **Run `tools/tak_partition_check.py`
+  after any change to the LXMF carrier** — the fallback was broken from the day
+  it was written and the unit tests could not see it.

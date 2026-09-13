@@ -7,8 +7,8 @@
 # is a server and there is no address to type. This harness stands in for ATAK
 # on both sides at once:
 #
-#   deck  : connects to 127.0.0.1:8087, the bridge's own endpoint
-#   phone : connects through `adb forward` to the phone's 127.0.0.1:8087
+#   deck  : connects to 127.0.0.1:18087, the bridge's own endpoint
+#   phone : connects through `adb forward` to the phone's 127.0.0.1:18087
 #
 # so the entire loop is observable from here without ATAK running at all. When
 # ATAK *is* running it simply becomes a second client on the phone's endpoint;
@@ -19,8 +19,12 @@
 # endpoint switched on.
 set -uo pipefail
 
-FORWARD_PORT="${FORWARD_PORT:-18087}"
-ENDPOINT_PORT=8087
+# The endpoint moved off 8087 on 2026-09-13, which is ATAK's own default CoT
+# input -- the two were competing for the same port and the loser retried
+# forever, which reads as connection flapping. The forward port moves with it
+# so the two do not collide on this machine.
+FORWARD_PORT="${FORWARD_PORT:-18088}"
+ENDPOINT_PORT=18087
 TEAM="${TEAM:-Cyan}"
 
 # Select by transport id, not serial: this handset is listed several times

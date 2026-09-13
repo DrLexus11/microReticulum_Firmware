@@ -28,9 +28,9 @@ picture.
 
   * **--forward host:port** does the same over UDP, for a server that wants it.
 
-  * **TCP** on 8087, for ATAK connecting straight to this with no server at all.
-    Every connected client gets every event. Fine for a bench check; note it
-    collides conceptually, though not on the wire, with OTS's UDP 8087.
+  * **TCP** on 18087, for ATAK connecting straight to this with no server at
+    all. Every connected client gets every event. Fine for a bench check. Not
+    8087: that is ATAK's own default CoT input, and OTS's UDP default besides.
   * **UDP multicast** to 239.2.3.1:6969, where ATAK picks up situational
     awareness on a local network with no configuration whatsoever.
 
@@ -72,7 +72,9 @@ COT_UNKNOWN = 9999999.0
 # default rather than a decision.
 DEFAULT_COT_TYPE = "a-f-G-U-C"
 
-DEFAULT_TCP_PORT = 8087
+# Not 8087, which ATAK listens on by default and OTS uses for UDP. Same
+# collision the CoT endpoint hit on hardware 2026-09-13; see cot_bridge.py.
+DEFAULT_TCP_PORT = 18087
 DEFAULT_MULTICAST_GROUP = "239.2.3.1"
 DEFAULT_MULTICAST_PORT = 6969
 

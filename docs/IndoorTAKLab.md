@@ -38,7 +38,7 @@ end to end:
 - Columba on the phone, **Settings → Position Reporting**: toggle on, paste
   that hash, grant precise location.
 - **ATAK-CIV** (`com.atakmap.app.civ`) is already installed on the A54. Point
-  it at the deck on TCP 8087, or let it pick up multicast 239.2.3.1:6969 on
+  it at the deck on TCP 18087, or let it pick up multicast 239.2.3.1:6969 on
   the same LAN.
 
 That is the first real test of the compact codec, the gateway, and the

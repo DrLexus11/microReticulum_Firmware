@@ -208,7 +208,7 @@ Nothing to fix on our side, and their tradeoff to make. Noted so the next
 person to open that map does not spend an evening on the feed.
 
 ATAK draws the same tracks correctly from the CoT stream, whether pointed at
-the gateway directly on 8087 or at OTS on 8088, so this costs the deck's own
+the gateway directly on 18087 or at OTS on 8088, so this costs the deck's own
 map view and nothing else. It becomes worth revisiting if the deck ever needs
 a display of its own -- at which point the options are a patched `to_json`, a
 query against `/api/point`, or our own small map over the database.

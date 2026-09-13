@@ -6,9 +6,8 @@ running and the data thins out. Pointing ATAK at the deck instead would end an
 exercise for everyone the moment the deck went away, including two people
 standing next to each other.
 
-Only the stream handling lives here, deliberately. Framing CoT out of a TCP
-byte stream is the fiddly part and it is worth testing without a radio, a
-socket or a Reticulum instance in the way.
+Local stream handling and heartbeat replies live here. They can be tested
+without a radio or a Reticulum instance in the way.
 """
 
 # ATAK opens a TCP connection and writes CoT documents back to back with no
@@ -16,7 +15,6 @@ socket or a Reticulum instance in the way.
 # boundaries itself. There is no framing to rely on other than the closing tag.
 EVENT_OPEN = b"<event"
 EVENT_CLOSE = b"</event>"
-SELF_CLOSE = b"/>"
 
 # An unterminated event must not grow without bound. A peer that opens "<event"
 # and never closes it would otherwise consume memory until the process dies,
@@ -55,7 +53,10 @@ class CotStream:
                 # whitespace between documents, or a partial event we already
                 # gave up on.
                 del self._buffer[:start]
-            end = self._buffer.find(EVENT_CLOSE)
+            # Keep a self-closing heartbeat separate from the event after it.
+            head_end = _start_tag_end(self._buffer.decode("latin-1"))
+            self_closed = head_end > 0 and self._buffer[head_end - 1] == ord("/")
+            end = head_end + 1 if self_closed else self._buffer.find(EVENT_CLOSE)
             if end < 0:
                 if len(self._buffer) > self._max:
                     # Abandon the oversized event, not the connection and not
@@ -74,7 +75,8 @@ class CotStream:
                     self._resynchronise()
                     continue
                 break
-            end += len(EVENT_CLOSE)
+            if not self_closed:
+                end += len(EVENT_CLOSE)
             if end > self._max:
                 # A *complete* event can be oversized too, and the bound was
                 # only ever applied to unterminated ones. There are two ways
@@ -356,3 +358,46 @@ class CotOutbound:
         except ValueError:
             self.dropped += 1
             return None
+
+
+def ping_reply(cot_xml, now=None):
+    """Answer a local TAK heartbeat; None leaves ordinary traffic unchanged."""
+    from datetime import datetime, timedelta, timezone
+    import xml.etree.ElementTree as ET
+    try:
+        event = _parse(cot_xml)
+    except ValueError:
+        return None
+    if event.get("type") != "t-x-c-t":
+        return None
+    now = now or datetime.now(timezone.utc)
+    def stamp(value):
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    reply = ET.Element("event", version="2.0", uid=event.get("uid") or "takPong",
+                       type="t-x-c-t-r", time=stamp(now), start=stamp(now),
+                       stale=stamp(now + timedelta(minutes=1)), how="m-g")
+    ET.SubElement(reply, "point", lat="0", lon="0", hae="0", ce="9999999", le="9999999")
+    ET.SubElement(reply, "detail")
+    return ET.tostring(reply, encoding="utf-8")
+
+
+class CotClient:
+    """Serialize whole events from heartbeat and mesh threads on one socket."""
+
+    def __init__(self, connection):
+        import threading
+        self.connection = connection
+        self._write_lock = threading.Lock()
+
+    def sendall(self, payload):
+        with self._write_lock:
+            self.connection.sendall(payload)
+
+    def close(self):
+        import socket
+        # Wake the reader when another thread drops a failed writer.
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.connection.close()

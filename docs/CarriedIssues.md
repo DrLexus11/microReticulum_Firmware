@@ -93,6 +93,21 @@ position, peer plugged and unplugged for matched multi-hour windows, with a
 console attached for the backtrace. If the correlation holds it converts this
 entry from "trigger unknown" to "trigger named".
 
+**A natural experiment already ran, noticed 2026-09-12.** The Rev 2 boards have
+been soaking for two weeks. Rev 2-2 reports its ESP-NOW interface **down**, with
+zero peers and zero discoveries, and has not reset in that time. The OZD board,
+with one ESP-NOW peer plugged in, averaged about two hours.
+
+Two weeks against two hours, on the same firmware family, with ESP-NOW the
+variable that differs. That is not a controlled test -- different boards,
+different loads -- but it is the same direction as the plugged/unplugged
+observation and much longer. Taken together the two make ESP-NOW the leading
+candidate rather than one of several.
+
+**Read the boards' bootlogs before reflashing them.** Two weeks of clean uptime
+is the evidence this entry has been missing since August, and a flash spends it.
+`bootlog.txt` is persisted, but confirm it survived rather than assuming.
+
 This is scheduled inside PR E -- see [`TAKDeliveryPlan.md`](TAKDeliveryPlan.md).
 It must land **before** Outdoor Test 1: a board that resets mid-test invalidates
 every range and reconnection measurement taken, with no way afterwards to tell
@@ -155,3 +170,114 @@ large share of the resets were self-inflicted by the observer. That was true of
 the ones counted during console captures. It is not true in general, and the
 conclusion drawn from it -- that removing the observer might remove the resets --
 is wrong.
+
+## 4. ATAK's connection to the local CoT endpoint flaps
+
+**Status: heartbeat fix implemented 2026-09-12 in the Python bridge and
+Columba endpoint; hardware confirmation pending. Found on the first end-to-end
+hardware run.**
+
+Everything the endpoint rendered while ATAK was disconnected went nowhere, and
+nothing said so. The only evidence was a log line added while hunting it:
+
+    -> ATAK: 637 bytes to 0 client(s)
+
+Markers and chat were decoded and rebuilt correctly the entire time. The frames
+crossed the mesh, the renderer produced valid CoT, and it was written to an
+empty client list. From the operator's side that is indistinguishable from the
+mesh not working, which is exactly the wrong conclusion to reach on a hillside.
+
+**Leading hypothesis at discovery: the endpoint never answers ATAK's ping.** ATAK sends
+`<event type="t-x-c-t" …>` to its server as a liveness check, and a TAK server
+replies `t-x-c-t-r`. Ours ignored it, so ATAK could conclude the server was dead and
+cycle the connection. Observed: a connection alive at 18:01:20, gone by
+18:02:30, back by 18:04:59.
+
+Worth checking before anything else, because it is cheap to test and would
+explain the whole pattern. If it is not the ping, the next candidates are the
+endpoint dropping clients on a write error and ATAK's own reconnect policy.
+
+### Fix and verification
+
+Both endpoints now answer `t-x-c-t` with a fresh `t-x-c-t-r` on the requesting
+socket, before identity learning or mesh routing. Replies and mesh deliveries
+serialize complete XML events on each socket. The framers also accept a
+self-closing `<event .../>` heartbeat without absorbing the following event.
+Connection changes, write failures and delivery with no clients are logged.
+
+Python regression tests exercise repeated fragmented heartbeats over real
+sockets, isolation between two clients, and marker delivery on the same
+connections, including idle reads beyond the send timeout. All 552 Python tests
+and 135 Kotlin CoT tests pass. Kotlin coverage includes reply fields and
+fragmented framing. This fixes
+the missing heartbeat response; it does not establish that every observed drop
+had that cause.
+
+The ARM64 debug APK was installed on the Galaxy A54 over wireless ADB on
+2026-09-12. Through an ADB-forwarded connection to the phone's port 8087 (the
+endpoint moved to 18087 on 2026-09-13, off ATAK's own default -- see
+TAKDeliveryPlan.md), four
+fragmented pings (including self-closing events) received valid pongs on the
+same socket at 0, 30, 60 and 90 seconds, with no endpoint disconnect.
+
+A subsequent live deck-to-phone test delivered a direct LXMF message and the
+exact text was visible in ATAK. A spot marker sent from the deck also reached
+the phone's CoT endpoint at its fresh GPS coordinates. The reverse direction is
+not yet proven: ATAK displayed the operator's replies, including `astra hi`,
+but an attached deck CoT listener did not observe the repeat reply. The open
+phone thread was titled `COLUMBA`; reply addressing needs investigation before
+calling the chat test bidirectional.
+
+**Full ATAK acceptance still required:** restart the Python bridge with this fix, hold
+ATAK connected through several heartbeat intervals, and deliver markers and chat
+in both directions. Check that the connection count stays stable and that there
+are no delivery-loss logs. If it still flaps, use the new disconnect/write-error
+logs to distinguish peer closure from an endpoint write failure. Data arriving
+while no client is connected is reported but is not queued for replay.
+
+**Why it matters more outdoors.** Indoors it costs a repeated test. In the
+field every drop is a hole in the picture that nothing reports, and it will
+read as a range problem during Outdoor Test 1.
+
+**Answered 2026-09-12.** The ping hypothesis held. The endpoint now replies
+`t-x-c-t-r` on the local socket, and a reconnect after the endpoint restarts
+dropped from roughly three minutes to eleven seconds. Delivery to an empty
+client list is logged rather than silent, which is the half of the fix that
+stops the next occurrence costing an evening. Left open until a long run
+confirms it stays connected under load.
+
+## 5. A node that restarts is invisible for up to thirty minutes
+
+**Status: open, found 2026-09-12. A one-line rule change, but it needs the
+rule agreed rather than patched.**
+
+Both implementations announce every 30 minutes and greet back when they hear a
+member that is **new to them**. That covers a node joining a running team. It
+does not cover the case that actually happened: a node *restarts*, losing its
+own membership registry, while everyone else still remembers it. Nobody greets
+it, because it is not new to anybody, so it hears nothing until the next
+scheduled announce.
+
+A node in that state is not visibly broken. It is on the air, its own announces
+go out, peers see it fine — and every frame it receives is dropped by
+`resolveSenderId(...) ?: Handled`, because it cannot turn a four-byte sender id
+back into a member it has never heard announce. Silent, one-directional, and it
+looks exactly like a codec fault.
+
+**The rule that fixes it:** greet on *any* member announce, rate-limited, not
+only on a new one. The existing greeting floor already bounds the traffic --
+a peer that greets back finds a known member and stops -- so the change is to
+the trigger, not to the rate limiting.
+
+`--announce-interval` was added to the bridge as the immediate lever: shorten
+it while bringing a team up, leave it long in the field where it is airtime.
+That is a workaround, not the fix.
+
+**Fixed 2026-09-12, in PR C.** The trigger now fires on any member announce
+rather than only a new one, on both implementations. The bound did not move:
+the greeting floor was already there and is what keeps ten nodes powering up
+together to one greeting each rather than nine. Separating trigger from floor
+is the point -- the trigger is broad so a restarted node is answered, and the
+floor is what keeps it cheap. The arrival log stays narrow, because it is about
+arrival rather than about every announce.
+
