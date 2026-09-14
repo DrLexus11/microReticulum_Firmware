@@ -4,6 +4,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
@@ -115,6 +116,53 @@ class AddressingTests(unittest.TestCase):
         # messaging app is what answers.
         self.assertEqual(tak_lxmf.LXMF_APP_NAME, "lxmf")
         self.assertEqual(tak_lxmf.LXMF_DELIVERY_ASPECT, "delivery")
+
+
+@unittest.skipIf(tak_lxmf is None, "LXMF is not installed in this interpreter")
+class DeliverySizeTests(unittest.TestCase):
+    def make_carrier(self, direct_only=False):
+        made = carrier()
+        made.direct_only = direct_only
+        made.destination = tak_lxmf.delivery_destination(RNS.Identity(), RNS.Destination.OUT)
+        return made
+
+    def test_small_chat_uses_encrypted_lxmf_packet_and_keeps_callbacks(self):
+        made = self.make_carrier()
+        self.assertTrue(made.send_chat(RNS.Identity(), b"x" * 84, "latency probe"))
+        message = made.router.sent[0]
+        message.pack()
+        self.assertEqual(message.method, LXMF.LXMessage.OPPORTUNISTIC)
+        self.assertEqual(message.representation, LXMF.LXMessage.PACKET)
+        self.assertEqual(message.failed_callback, made._failed)
+        self.assertEqual(tak_lxmf.frame_from_message(message), b"x" * 84)
+
+    def test_oversized_chat_uses_upstream_link_resource_promotion(self):
+        made = self.make_carrier()
+        self.assertTrue(made.send_chat(RNS.Identity(), b"x" * 600, "x" * 500))
+        message = made.router.sent[0]
+        message.pack()
+        self.assertEqual(message.method, LXMF.LXMessage.DIRECT)
+        self.assertEqual(message.representation, LXMF.LXMessage.RESOURCE)
+
+    def test_forced_direct_preserves_the_baseline_for_comparison(self):
+        made = self.make_carrier(direct_only=True)
+        self.assertTrue(made.send_chat(RNS.Identity(), b"x" * 84, "latency probe"))
+        message = made.router.sent[0]
+        message.pack()
+        self.assertEqual(message.method, LXMF.LXMessage.DIRECT)
+
+    def test_packet_fallback_preserves_message_identity(self):
+        made = self.make_carrier()
+        made.propagation_node = b"p" * 16
+        self.assertTrue(made.send_chat(RNS.Identity(), b"x" * 84, "latency probe"))
+        message = made.router.sent[0]
+        message.pack()
+        original_hash = message.hash
+        made._failed(message)
+        with patch.object(message, "get_propagation_stamp", return_value=None):
+            message.pack()
+        self.assertEqual(message.hash, original_hash)
+        self.assertEqual(message.method, LXMF.LXMessage.PROPAGATED)
 
 
 class FakeRouter:

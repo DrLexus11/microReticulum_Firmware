@@ -283,7 +283,7 @@ class CotBridge:
                  callsign="BRIDGE", role="Team Member",
                  lxmf_storage=None, propagation_node=None,
                  announce_interval=ANNOUNCE_INTERVAL_SECONDS,
-                 bind_host=BIND_HOST):
+                 bind_host=BIND_HOST, lxmf_direct_only=False):
         import RNS
         self.rns = RNS
         self.bind_host = bind_host
@@ -361,7 +361,8 @@ class CotBridge:
             import tak_lxmf
             self.lxmf = tak_lxmf.Carrier(self.identity, lxmf_storage, self.callsign,
                                          self._chat_from_lxmf,
-                                         propagation_node=propagation_node)
+                                         propagation_node=propagation_node,
+                                         direct_only=lxmf_direct_only)
         # Receipts for a room never leave this node. Every member answering a
         # room line with a delivery and a read receipt is two thirds of group
         # chat's airtime -- 7.2 s of the 11.1 s a ten-person room costs -- for
@@ -1083,6 +1084,8 @@ def main():
                         help="path to the fleet secret; %s is preferred"
                              % groups.SECRET_ENVIRONMENT)
     parser.add_argument("--config", default=None, help="Reticulum config directory")
+    parser.add_argument("--loglevel", type=int, choices=range(8), default=None,
+                        help="Reticulum log level (6 includes link and LXMF timing)")
     parser.add_argument("--callsign", default="BRIDGE",
                         help="how this node identifies itself to the team")
     parser.add_argument("--role", default="Team Member")
@@ -1104,6 +1107,8 @@ def main():
                         help="send direct messages as bare packets, as PR B "
                              "did. Best effort, and nothing will say when a "
                              "line is lost.")
+    parser.add_argument("--lxmf-direct-only", action="store_true",
+                        help="force link delivery even for small chats (latency comparison)")
     parser.add_argument("--bind", default=BIND_HOST,
                         help="address to serve the CoT endpoint on (default "
                              "%s). Use 192.168.240.1 to serve ATAK running in "
@@ -1150,7 +1155,7 @@ def main():
 
     secret = groups.load_fleet_secret(args.secret_file)
     import RNS
-    reticulum = RNS.Reticulum(args.config)
+    reticulum = RNS.Reticulum(args.config, loglevel=args.loglevel)
     if reticulum.is_connected_to_shared_instance:
         # Refused rather than warned about. A GROUP packet is dropped above one
         # hop, and a shared-instance client sits one hop behind the daemon that
@@ -1180,7 +1185,8 @@ def main():
                        lxmf_storage=lxmf_storage,
                        propagation_node=propagation_node,
                        announce_interval=args.announce_interval,
-                       bind_host=bind_host)
+                       bind_host=bind_host,
+                       lxmf_direct_only=args.lxmf_direct_only)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:

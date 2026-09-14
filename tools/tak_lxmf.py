@@ -110,7 +110,7 @@ class Carrier:
     """
 
     def __init__(self, identity, storage_path, callsign, on_chat,
-                 propagation_node=None):
+                 propagation_node=None, direct_only=False):
         self.identity = identity
         self.on_chat = on_chat
         self.sent = 0
@@ -125,6 +125,7 @@ class Carrier:
         if propagation_node:
             self.router.set_outbound_propagation_node(propagation_node)
         self.propagation_node = propagation_node
+        self.direct_only = direct_only
 
     def announce(self):
         """Announce this node's LXMF inbox.
@@ -210,15 +211,13 @@ class Carrier:
         """
         try:
             destination = delivery_destination(identity, RNS.Destination.OUT)
-            # Link-based, so it is proof-backed and retried. A chat line is an
-            # operator action and rare; the link is affordable here in a way it
-            # would not be for a position beacon.
+            # LXMF's encrypted packet delivery retains proofs and retries.
+            # pack() promotes messages which exceed its limit to DIRECT, so
+            # large chats still use Link/Resource without a second size rule.
             message = self.build(destination, frame, text,
-                                 LXMF.LXMessage.DIRECT)
-            # Stamped so an outcome can report how long it took. The
-            # interesting number is not that a message arrived; it is whether
-            # it arrived on the first attempt or the fourth.
-            message.tak_sent_at = time.time()
+                                 LXMF.LXMessage.DIRECT if self.direct_only
+                                 else LXMF.LXMessage.OPPORTUNISTIC)
+            message.tak_sent_at = time.monotonic()
             message.register_delivery_callback(self._delivered)
             message.register_failed_callback(self._failed)
             self.router.handle_outbound(message)
@@ -241,24 +240,14 @@ class Carrier:
     # ---- outcomes ----
 
     def _delivered(self, message):
-        """Landed. Say how long it took and which way it went.
-
-        Counted only, before. A count cannot tell a message that went out and
-        arrived from one that failed twice and arrived on the third attempt --
-        and on a slow channel that is most of the latency an operator feels.
-        Measured 2026-09-13: a link established in 1.5 s while chat took 11.4 s
-        end to end, and nothing in the process could say where the other ten
-        seconds went.
-
-        Method matters as much as time. DIRECT means a link carried it;
-        PROPAGATED means it went via the command post's store, which is correct
-        but slower and means the direct attempt failed first.
-        """
+        """Transport proof, not evidence that ATAK has rendered the chat."""
         self.delivered += 1
-        print("[lxmf] delivered %s" % self._journey(message), flush=True)
+        outcome = ("stored at propagation node" if message.method == LXMF.LXMessage.PROPAGATED
+                   else "delivery proof received")
+        print("[lxmf] %s %s" % (outcome, self._journey(message)), flush=True)
 
     def _journey(self, message):
-        """How a message got there, for a log line."""
+        """Correlate with RNS logs; LXMF attempts also count path/link setup."""
         methods = {LXMF.LXMessage.OPPORTUNISTIC: "opportunistic",
                    LXMF.LXMessage.DIRECT: "direct",
                    LXMF.LXMessage.PROPAGATED: "propagated",
@@ -266,10 +255,15 @@ class Carrier:
         method = methods.get(getattr(message, "method", None), "unknown")
         attempts = getattr(message, "delivery_attempts", None)
         started = getattr(message, "tak_sent_at", None)
-        took = ("%.1fs" % (time.time() - started)) if started else "unknown"
-        return ("in %s by %s, %s attempt(s)"
+        took = ("%.1fs" % (time.monotonic() - started)) if started is not None else "unknown"
+        representations = {LXMF.LXMessage.PACKET: "packet", LXMF.LXMessage.RESOURCE: "resource"}
+        representation = representations.get(getattr(message, "representation", None), "unknown")
+        message_hash = getattr(message, "hash", None)
+        return ("in %s by %s, lxmf_attempts=%s, representation=%s, bytes=%s, hash=%s"
                 % (took, method,
-                   attempts if attempts is not None else "?"))
+                   attempts if attempts is not None else "?", representation,
+                   getattr(message, "packed_size", "?"),
+                   message_hash.hex() if message_hash else "?"))
 
     def _failed(self, message):
         """A direct delivery that did not land.
@@ -310,7 +304,7 @@ class Carrier:
         partitioned, which is exactly when this path runs, so the loop would
         begin at the moment the channel can least afford it.
         """
-        print("[lxmf] direct delivery did not land %s"
+        print("[lxmf] peer delivery did not land %s"
               % self._journey(message), flush=True)
         if not self.propagation_node:
             self.failed += 1

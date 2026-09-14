@@ -57,14 +57,14 @@ class JourneyTests(unittest.TestCase):
     def test_it_reports_how_long_rather_than_only_that_it_arrived(self):
         made = carrier()
         line = made._journey(Message(method=LXMF.LXMessage.DIRECT,
-                                     sent_at=time.time() - 5))
+                                     sent_at=time.monotonic() - 5))
         self.assertRegex(line, r"in \d\.\ds")
 
     def test_attempts_are_the_point(self):
         """One attempt and four attempts feel completely different to an
         operator and were previously indistinguishable."""
         made = carrier()
-        self.assertIn("4 attempt(s)",
+        self.assertIn("lxmf_attempts=4",
                       made._journey(Message(method=LXMF.LXMessage.DIRECT,
                                             attempts=4)))
 
@@ -81,10 +81,10 @@ class JourneyTests(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             made._delivered(Message(method=LXMF.LXMessage.DIRECT,
-                                    attempts=1, sent_at=time.time()))
+                                    attempts=1, sent_at=time.monotonic()))
         self.assertEqual(made.delivered, 1)
         self.assertEqual(out.getvalue().count("\n"), 1)
-        self.assertIn("delivered", out.getvalue())
+        self.assertIn("delivery proof received", out.getvalue())
 
     def test_a_failed_direct_says_so_before_escalating(self):
         """The line that would have explained the missing ten seconds."""
@@ -92,9 +92,28 @@ class JourneyTests(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             made._failed(Message(method=LXMF.LXMessage.DIRECT, attempts=5,
-                                 sent_at=time.time()))
-        self.assertIn("direct delivery did not land", out.getvalue())
-        self.assertIn("5 attempt(s)", out.getvalue())
+                                 sent_at=time.monotonic()))
+        self.assertIn("peer delivery did not land", out.getvalue())
+        self.assertIn("lxmf_attempts=5", out.getvalue())
+
+    def test_propagation_ack_does_not_claim_recipient_delivery(self):
+        made = carrier()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            made._delivered(Message(method=LXMF.LXMessage.PROPAGATED))
+        self.assertIn("stored at propagation node", out.getvalue())
+        self.assertNotIn("delivery proof received", out.getvalue())
+
+    def test_identity_and_representation_are_available_for_correlation(self):
+        made = carrier()
+        message = Message(method=LXMF.LXMessage.DIRECT, attempts=0)
+        message.hash = b"x" * 32
+        message.representation = LXMF.LXMessage.PACKET
+        message.packed_size = 230
+        line = made._journey(message)
+        self.assertIn("hash=" + message.hash.hex(), line)
+        self.assertIn("representation=packet", line)
+        self.assertIn("bytes=230", line)
 
 
 if __name__ == "__main__":
