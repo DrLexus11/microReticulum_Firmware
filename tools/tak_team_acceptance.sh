@@ -290,8 +290,15 @@ check("a receipt for a room line never reaches the team", [""],
       lambda _: not any("3f8e1c2d-4a5b-4c6d-8e9f-0a1b2c3d4e5f" in e for e in seen),
       "bravo received a room receipt")
 
-# The direct receipt still goes, because there it is one peer and the operator
-# is waiting on exactly that answer.
+# A delivered-receipt no longer crosses the mesh either, and for a different
+# reason from the room one. LXMF already proves the peer's node holds the
+# message, so sending the same fact back as a second LXMF message with its own
+# retry budget pays twice for one answer -- and the second payment is the one
+# that fails, leaving no tick on a line that did arrive. The sender draws its
+# own tick from the proof instead; see _receipt_from_proof.
+#
+# Measured 2026-09-14: receipts were 11 of 24 outbound messages, and every
+# message averaged 1.9 packet attempts.
 direct_receipt = ('<event uid="4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" type="b-t-f-d" '
                   'how="h-g-i-g-o" version="2.0" time="2026-09-12T09:11:00.000Z">'
                   '<point lat="40.95" lon="29.09" hae="1" ce="1" le="1"/>'
@@ -302,8 +309,24 @@ direct_receipt = ('<event uid="4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" type="b-t-f
                   '</detail></event>' % (bravo_uid, bravo_uid, alpha_uid, bravo_uid))
 alpha.sendall(direct_receipt.encode())
 seen = drain(bravo, 15)
-check("a receipt for a direct message still arrives", seen,
-      lambda e: "4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" in e)
+check("a delivered-receipt is not sent across the mesh", [""],
+      lambda _: not any("4a9f2d3e-5b6c-4d7e-9f0a-1b2c3d4e5f60" in e for e in seen),
+      "bravo received a delivered-receipt that LXMF had already proved")
+
+# A read-receipt still crosses, because only the far ATAK knows a human opened
+# it and no transport can prove that.
+read_receipt = ('<event uid="7c1d8e9f-0a1b-4c2d-9e3f-4a5b6c7d8e9f" type="b-t-f-r" '
+                'how="h-g-i-g-o" version="2.0" time="2026-09-12T09:12:00.000Z">'
+                '<point lat="40.95" lon="29.09" hae="1" ce="1" le="1"/>'
+                '<detail><__chatreceipt chatroom="BRAVO" groupOwner="false" '
+                'id="%s" messageId="7c1d8e9f-0a1b-4c2d-9e3f-4a5b6c7d8e9f" '
+                'parent="RootContactGroup" senderCallsign="ALPHA">'
+                '<chatgrp id="%s" uid0="%s" uid1="%s"/></__chatreceipt>'
+                '</detail></event>' % (bravo_uid, bravo_uid, alpha_uid, bravo_uid))
+alpha.sendall(read_receipt.encode())
+seen = drain(bravo, 15)
+check("a read-receipt still arrives, because no transport can prove a human read it",
+      seen, lambda e: "7c1d8e9f-0a1b-4c2d-9e3f-4a5b6c7d8e9f" in e)
 
 alpha.close()
 bravo.close()

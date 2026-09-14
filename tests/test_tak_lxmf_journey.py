@@ -116,5 +116,63 @@ class JourneyTests(unittest.TestCase):
         self.assertIn("bytes=230", line)
 
 
+@unittest.skipIf(tak_lxmf is None, "LXMF is not installed in this interpreter")
+class ProofTests(unittest.TestCase):
+    """When a delivery proof is worth telling the sender about."""
+
+    def make(self, on_proof):
+        made = carrier()
+        made.on_proof = on_proof
+        return made
+
+    def test_a_peer_proof_raises_the_tick(self):
+        seen = []
+        made = self.make(seen.append)
+        message = Message(method=LXMF.LXMessage.OPPORTUNISTIC, attempts=1,
+                          sent_at=time.monotonic())
+        message.tak_proof_context = {"peer": b"p" * 16, "message_id": "abc"}
+        with redirect_stdout(io.StringIO()):
+            made._delivered(message)
+        self.assertEqual(len(seen), 1)
+
+    def test_stored_at_the_propagation_node_is_not_a_delivery(self):
+        """A message sitting in the command post's store has reached nobody.
+        Drawing a tick for it would tell an operator their line landed when it
+        is still waiting for the recipient to come back."""
+        seen = []
+        made = self.make(seen.append)
+        message = Message(method=LXMF.LXMessage.PROPAGATED, attempts=1,
+                          sent_at=time.monotonic())
+        message.tak_proof_context = {"peer": b"p" * 16, "message_id": "abc"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            made._delivered(message)
+        self.assertEqual(seen, [])
+        self.assertIn("stored at propagation node", out.getvalue())
+
+    def test_a_message_with_no_context_raises_nothing(self):
+        """Somebody else's message on a shared router, or one of our own
+        receipts, which must not be acknowledged in turn."""
+        seen = []
+        made = self.make(seen.append)
+        with redirect_stdout(io.StringIO()):
+            made._delivered(Message(method=LXMF.LXMessage.OPPORTUNISTIC))
+        self.assertEqual(seen, [])
+
+    def test_a_raising_callback_does_not_stop_the_router(self):
+        """This runs on the router's thread. Raising would stop every later
+        message, and a missing tick is worth less than that."""
+        def explode(_context):
+            raise RuntimeError("no")
+        made = self.make(explode)
+        message = Message(method=LXMF.LXMessage.OPPORTUNISTIC,
+                          sent_at=time.monotonic())
+        message.tak_proof_context = {"peer": b"p" * 16, "message_id": "abc"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            made._delivered(message)      # must not raise
+        self.assertIn("could not raise delivery proof", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

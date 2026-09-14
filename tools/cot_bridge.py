@@ -362,13 +362,17 @@ class CotBridge:
             self.lxmf = tak_lxmf.Carrier(self.identity, lxmf_storage, self.callsign,
                                          self._chat_from_lxmf,
                                          propagation_node=propagation_node,
-                                         direct_only=lxmf_direct_only)
+                                         direct_only=lxmf_direct_only,
+                                         on_proof=self._receipt_from_proof)
         # Receipts for a room never leave this node. Every member answering a
         # room line with a delivery and a read receipt is two thirds of group
         # chat's airtime -- 7.2 s of the 11.1 s a ten-person room costs -- for
         # one bit of meaning each. A direct message keeps both, because there
         # it is one peer and the operator is waiting on exactly that answer.
         self.receipts_suppressed = 0
+        # Ticks drawn locally from a peer's delivery proof rather than waited
+        # for across the mesh.
+        self.receipts_synthesised = 0
         # Tier 2 only: chat, markers, and anything that came through tier 2.
         # Position is deliberately absent. It is latest-wins, a fresher one is
         # seconds away, and replaying a ten-minute-old fix as though it were
@@ -804,11 +808,31 @@ class CotBridge:
         # UID, so ATAK addresses them by it and destination_for() reverses it.
         # That is pivot 1 paying for itself.
         recipient = (decoded or {}).get("recipient") or ""
-        if not recipient and (decoded or {}).get("kind") != cot_chat.KIND_MESSAGE:
+        kind = (decoded or {}).get("kind")
+        if not recipient and kind != cot_chat.KIND_MESSAGE:
             # A receipt for a room line. Dropped here rather than sent: every
             # member answering a broadcast with two receipts is two thirds of
             # what group chat costs on the air, and none of it tells an
-            # operator anything they can act on. A direct receipt still goes.
+            # operator anything they can act on.
+            self.receipts_suppressed += 1
+            return True
+        if kind == cot_chat.KIND_DELIVERED and self.lxmf is not None:
+            # A delivered-receipt is a transport fact, and LXMF has already
+            # established it: the sender holds a cryptographic proof that this
+            # node received the message. Sending the same fact back as a second
+            # LXMF message, with its own retry budget, is paying twice for one
+            # answer -- and on a lossy path the receipt can be the half that is
+            # lost, so an operator sees no tick on a message that did arrive.
+            #
+            # Measured 2026-09-14: receipts were 11 of 24 outbound messages,
+            # and every message averaged 1.9 packet attempts, so a chat line
+            # cost about 3.5 packets rather than 1.9. Three messages to one
+            # destination were seen retrying against each other at once.
+            #
+            # The sender draws its own tick from the proof instead; see
+            # _receipt_from_proof. A read-receipt still crosses, because only
+            # the far ATAK knows a human opened it and no transport can prove
+            # that.
             self.receipts_suppressed += 1
             return True
         if recipient:
@@ -909,7 +933,16 @@ class CotBridge:
         identity = self.rns.Identity.recall(destination)
         if self.lxmf is not None and identity is not None:
             text = (decoded or {}).get("text") or ""
-            if self.lxmf.send_chat(identity, frame, text):
+            # Only a message earns a tick. A receipt of our own that still
+            # crosses -- a read-receipt -- is not something the far end
+            # acknowledges again, or two nodes would answer each other for ever.
+            proof_context = None
+            if (decoded or {}).get("kind") == cot_chat.KIND_MESSAGE:
+                proof_context = {"peer": destination,
+                                 "message_id": decoded.get("message_id"),
+                                 "room": decoded.get("room") or ""}
+            if self.lxmf.send_chat(identity, frame, text,
+                                   proof_context=proof_context):
                 self.chat_sent += 1
                 return True
             self.chat_undeliverable += 1
@@ -919,6 +952,45 @@ class CotBridge:
             return True
         self.chat_sent += self._send_to(destination, frame)
         return True
+
+    def _receipt_from_proof(self, context):
+        """Draw the sender's delivery tick from LXMF's proof.
+
+        The tick used to come from the far ATAK: it wrote a delivered-receipt,
+        which crossed the mesh as a second LXMF message with its own retries,
+        and the local ATAK drew a tick when it arrived. That is paying twice
+        for one answer, and the second payment is the one that fails -- a lost
+        receipt leaves no tick on a message that did arrive.
+
+        LXMF has already proved the peer's node holds it. This renders the
+        receipt the far end would have sent, locally, from that proof. The
+        event is byte-identical to the one that used to cross, so ATAK cannot
+        tell the difference and nothing downstream needs to know.
+
+        **What a tick now means** is slightly different and worth stating: the
+        peer's *node* has it, proven, rather than the peer's *ATAK* has drawn
+        it. That is a weaker claim about the far screen and a stronger one
+        about the mesh, because the old tick could be lost while this one
+        cannot. A read-receipt still crosses and still means a human opened it.
+        """
+        peer = context.get("peer")
+        message_id = context.get("message_id")
+        if not peer or not message_id:
+            return
+        claims = self.registry.describe(peer) or {}
+        # Built as though the peer had sent it, because that is exactly the
+        # event this replaces.
+        decoded = {"kind": cot_chat.KIND_DELIVERED,
+                   "message_id": message_id,
+                   "room": context.get("room") or "",
+                   "recipient": self.uid,
+                   "text": "",
+                   "sent_unix": 0}
+        self._to_clients(keep=True, payload=cot_chat.build_chat_cot(
+            decoded, tak_identity.uid_for(peer),
+            claims.get("callsign", "UNKNOWN"),
+            cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
+        self.receipts_synthesised += 1
 
     def _send_to(self, destination_hash, frame):
         """Send one frame to one node. Returns 1 if it went, 0 if it did not.

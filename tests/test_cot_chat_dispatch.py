@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import cot_chat                   # noqa: E402
 from cot_bridge import CotBridge  # noqa: E402
 
 PEER = b"\x42" * 16
@@ -48,9 +49,11 @@ class Lxmf:
     def __init__(self, accepts):
         self.accepts = accepts
         self.calls = 0
+        self.proof_contexts = []
 
-    def send_chat(self, identity, frame, text=""):
+    def send_chat(self, identity, frame, text="", proof_context=None):
         self.calls += 1
+        self.proof_contexts.append(proof_context)
         return self.accepts
 
 
@@ -100,6 +103,39 @@ class AddressedChatTests(unittest.TestCase):
             made._dispatch_addressed_chat(PEER, b"frame", {"text": "hello"})
         made._send_to.assert_called_once()
         self.assertEqual(made.chat_sent, 1)
+
+
+class ProofContextTests(unittest.TestCase):
+    """What the sender keeps so it can draw its own delivery tick.
+
+    The tick used to come from the far ATAK, as a receipt that crossed the mesh
+    as a second LXMF message with its own retries. LXMF already proves the peer
+    holds the message, so the sender renders the receipt from that proof
+    instead -- and the far end no longer has to answer.
+    """
+
+    def test_a_message_carries_what_the_tick_will_need(self):
+        lxmf = Lxmf(accepts=True)
+        made = bridge(lxmf)
+        with redirect_stdout(io.StringIO()):
+            made._dispatch_addressed_chat(
+                PEER, b"frame",
+                {"kind": cot_chat.KIND_MESSAGE, "text": "hello",
+                 "message_id": "abc", "room": "PEER"})
+        context = lxmf.proof_contexts[0]
+        self.assertEqual(context["peer"], PEER)
+        self.assertEqual(context["message_id"], "abc")
+
+    def test_a_receipt_of_our_own_earns_no_tick(self):
+        """A read-receipt still crosses the mesh. If the far end acknowledged
+        it in turn, two nodes would answer each other for ever."""
+        lxmf = Lxmf(accepts=True)
+        made = bridge(lxmf)
+        with redirect_stdout(io.StringIO()):
+            made._dispatch_addressed_chat(
+                PEER, b"frame",
+                {"kind": cot_chat.KIND_READ, "message_id": "abc", "room": "PEER"})
+        self.assertIsNone(lxmf.proof_contexts[0])
 
 
 if __name__ == "__main__":

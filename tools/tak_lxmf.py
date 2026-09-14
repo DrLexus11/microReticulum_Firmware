@@ -110,9 +110,14 @@ class Carrier:
     """
 
     def __init__(self, identity, storage_path, callsign, on_chat,
-                 propagation_node=None, direct_only=False):
+                 propagation_node=None, direct_only=False, on_proof=None):
         self.identity = identity
         self.on_chat = on_chat
+        # Called when a peer's node has proved it holds a message we sent.
+        # LXMF already establishes that fact; this is what lets the sender act
+        # on it instead of waiting for the far ATAK to say the same thing back
+        # across the mesh. See the bridge's _receipt_from_proof.
+        self.on_proof = on_proof
         self.sent = 0
         self.delivered = 0
         self.failed = 0
@@ -201,7 +206,7 @@ class Carrier:
                     FIELD_CUSTOM_DATA: bytes(frame)},
             desired_method=method)
 
-    def send_chat(self, identity, frame, text=""):
+    def send_chat(self, identity, frame, text="", proof_context=None):
         """Send one chat frame to one peer. Returns True if it was accepted.
 
         Accepted, not delivered: LXMF takes ownership here and reports the
@@ -218,6 +223,9 @@ class Carrier:
                                  LXMF.LXMessage.DIRECT if self.direct_only
                                  else LXMF.LXMessage.OPPORTUNISTIC)
             message.tak_sent_at = time.monotonic()
+            # What the sender needs to draw its own delivery tick when the
+            # proof arrives. Carried on the message so it cannot outlive it.
+            message.tak_proof_context = proof_context
             message.register_delivery_callback(self._delivered)
             message.register_failed_callback(self._failed)
             self.router.handle_outbound(message)
@@ -242,9 +250,21 @@ class Carrier:
     def _delivered(self, message):
         """Transport proof, not evidence that ATAK has rendered the chat."""
         self.delivered += 1
-        outcome = ("stored at propagation node" if message.method == LXMF.LXMessage.PROPAGATED
-                   else "delivery proof received")
+        stored = message.method == LXMF.LXMessage.PROPAGATED
+        outcome = "stored at propagation node" if stored else "delivery proof received"
         print("[lxmf] %s %s" % (outcome, self._journey(message)), flush=True)
+        # A message sitting in the command post's store has not reached
+        # anybody, so it is not a delivery and must not draw a tick. Only a
+        # proof from the peer itself says the peer has it.
+        context = getattr(message, "tak_proof_context", None)
+        if stored or context is None or self.on_proof is None:
+            return
+        try:
+            self.on_proof(context)
+        except Exception as error:
+            # Runs on the router's thread. Raising here would stop every later
+            # message, and a missing tick is worth less than that.
+            print("[lxmf] could not raise delivery proof: %s" % error, flush=True)
 
     def _journey(self, message):
         """Correlate with RNS logs; LXMF attempts also count path/link setup."""
