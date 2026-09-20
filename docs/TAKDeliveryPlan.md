@@ -58,7 +58,7 @@ where gain is the only constraint.
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
-| **D** | *Everything that does not fit one packet* | Tier 3 `Link`/`Resource` fragmentation; typed polyline codec for drawings; wire format for a blocked route edge | nothing |
+| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -540,6 +540,77 @@ reports honestly that nothing is arriving.
   repo is not a marker, it is an edge state change, and the format for "this
   edge is impassable" should be designed with the codecs rather than bolted on
   afterwards. See *The sibling repo* below.
+
+- **A marker cannot be sent to one person.** Reported 2026-09-20. `cot_chat`
+  carries a recipient and addresses one peer; `cot_marker` has no such field at
+  all, so `_marker_from_atak` can only fan out. On a team that is an
+  anti-pattern: every pin an operator drops for one person is shown to
+  everybody, which is the confidentiality problem the chat path was built to
+  avoid, on a different codec.
+
+  **ATAK already tells us.** "Send to" on a marker emits `<marti><dest
+  callsign="..."/></marti>`, the same mechanism chat reads — the information is
+  on the wire and this side discards it. So the work is a recipient field in
+  the marker frame and a dispatch that mirrors `_dispatch_addressed_chat`, not
+  a new idea.
+
+  It is a wire-format change, so it lands with the other two here rather than
+  alone.
+
+### Event coverage, measured 2026-09-20
+
+Tier 2 is a generic passthrough: any CoT type that fits 383 B crosses whether or
+not it has a typed codec. So the question was never "what do we support", it was
+"what fits". Measured against representative events:
+
+```
+alert    b-a-o-tbl    392 B raw ->  153 B frame   crosses today
+medevac  b-r-f-h-c    783 B raw ->  393 B frame   REFUSED, by ten bytes
+```
+
+**Alerts already work** and need nothing. **A nine-line MEDEVAC/CASEVAC fails by
+ten bytes** -- arguably the highest-stakes message this system carries, missing
+the bound by under three percent.
+
+It does not need tier 3. The `_medevac_` block is dense, repetitive attribute
+names, which is exactly what the compression dictionary exists for: adding that
+vocabulary takes the same event from **393 B to 326 B**, comfortably inside the
+bound.
+
+That is a wire change, and the encoding byte is already the mechanism for it --
+`ENCODING_DEFLATE_DICT_V1`. The safe shape is a V2 dictionary that the encoder
+uses **only when V1 would exceed the bound**: everything that crosses today
+keeps crossing as V1 for older nodes, and V2 carries only traffic that would
+otherwise not have crossed at all, so a node that cannot read it loses nothing
+it was getting before.
+
+*Caveat on the drawing figure above.* A synthetic polyline of evenly spaced
+points compressed to 233 B and appeared to cross. Real drawings do not: the
+corpus figure of ~700 B stands, and the synthetic one says more about deflate
+than about drawings. Do not re-measure this with generated coordinates.
+
+### What link latency means for tier 3
+
+Measured 2026-09-20 while investigating slow link establishment.
+
+RNS budgets `MTU x per-byte-latency + 6 s` per hop, and the per-byte latency
+comes from the **next hop's** interface. The deck's next hop is the UDP
+interface to Rev 2, which declares **10 Mbps** -- so RNS computes about 6.0004 s
+per hop while the actual bottleneck is the LoRa leg two hops further on, which
+it cannot see. Declaring an honest bitrate there barely moves the number,
+because the 6 s constant dominates it.
+
+So the timeout is loose rather than tight, and **it is not what makes links
+slow**. What does is packet loss on a marginal channel, multiplied by hop count,
+against a handshake that needs roughly three round trips before any payload
+moves. Cutting congestion moved establishment from 5/15 to 30/30 without
+touching a timeout.
+
+**The design input for tier 3 is therefore uncomfortable.** Fragmentation over
+`Resource` means a Link, on a path where the Link is the expensive part -- the
+same reasoning that moved chat to opportunistic packets argues against building
+drawings on top of one. Worth costing our own fragmentation over opportunistic
+packets, with reassembly at the far end, before committing to `Resource`.
 
 Tier 3 is also the path images and data packages ride in the HaLow phase, so
 this lays that foundation early rather than retrofitting it.
