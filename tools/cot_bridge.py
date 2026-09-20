@@ -8,12 +8,16 @@ shared one; see tools/cot_bridge.example.conf for the configuration and the
 reason. The fleet secret comes from the environment or ~/.impr-tak/fleet-secret,
 never from the command line.
 
-ATAK connects to 127.0.0.1:8087 and never to anybody's address. Everything it
+ATAK connects to 127.0.0.1:18087 and never to anybody's address. Everything it
 sends goes to the team's GROUP destination; everything the team sends is
 written back to every connected client. See docs/TAKNative.md.
+
+Not 8087: that is ATAK's own default CoT input port, and an endpoint sitting on
+it competes with ATAK for a port ATAK already owns. See DEFAULT_PORT below.
 """
 
 import argparse
+import collections
 import os
 import struct
 from datetime import datetime, timedelta, timezone
@@ -35,9 +39,93 @@ import cot_position
 import position_codec
 import tak_membership as membership
 import tak_payload
-from cot_endpoint import CotOutbound, CotStream
+from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
 
-DEFAULT_PORT = 8087
+# Not 8087.
+#
+# 8087 is ATAK's own default CoT input port, so an endpoint that used it was
+# competing with ATAK for a port ATAK already owns. Found on hardware
+# 2026-09-13: ATAK held 0.0.0.0:8087 with a connection open from itself to
+# itself, and Columba's endpoint could never bind. Whichever side binds first
+# wins, and the loser retries forever -- which reads as connection flapping.
+# 18087 is clear of every ATAK default (8087, 8089 TLS, 6969 UDP SA, 4242,
+# 8080).
+DEFAULT_PORT = 18087
+
+# How often the LXMF inbox is announced, as against the node.
+#
+# Not the node's cadence, which is what it was when the inbox announce was
+# added. The two destinations are needed for different things and expire on
+# different clocks: membership expires, so the node announce is what keeps a
+# team knowing who is in it, while an inbox announce only has to leave a path
+# behind -- and an RNS path lasts a week.
+#
+# Tying them together doubled announce airtime, and the greeting path amplified
+# it: six inbox announces were measured in ninety seconds on 2026-09-13, about
+# one every fifteen. On a LoRa channel already at 7% occupancy, where a link
+# handshake is most of a second of airtime, that is airtime taken directly from
+# the thing it exists to enable. See CarriedIssues #8.
+INBOX_ANNOUNCE_INTERVAL_SECONDS = 30 * 60
+
+# ...but a peer that has just appeared cannot wait half an hour for it.
+#
+# The thirty-minute figure was reasoned from "an RNS path lasts a week", which
+# is true only for a peer that *heard* the announce. A node that was away for
+# the whole window never did, so it comes back holding a path to our TAK node
+# and none to our inbox -- and those carry different things. Markers and
+# positions ride the node destination and work immediately; chat rides the
+# inbox and has nowhere to go until a path request crawls across LoRa.
+#
+# That is exactly the reported symptom: "markers always arrive, messaging needs
+# a cold start period". Reported from the field 2026-09-20, caused here
+# 2026-09-14.
+#
+# So a greeting carries the inbox too, behind its own short floor. One a minute
+# is 0.2% of channel at worst and bounded by how often peers actually announce,
+# which is now every 300 s at the fastest -- the fifteen-second storm this
+# interval was introduced to stop came from a 45 s bench cadence that no longer
+# exists.
+INBOX_ANNOUNCE_FLOOR_SECONDS = 60
+
+# How long the mesh may be silent before that is worth saying out loud.
+#
+# Not a timeout and nothing is restarted: this only prints. The case it exists
+# for is a transport that has gone deaf without failing -- observed 2026-09-13,
+# when a Rev 2 kept answering ping for three hours while its Reticulum side had
+# stopped transmitting. The deck went on announcing into a void, reported
+# itself healthy throughout, and the first sign of trouble was an operator
+# noticing their phone was not on the map.
+#
+# Generous, because a quiet mesh is ordinary: handsets announce every thirty
+# minutes and a team can simply have nothing to say. Fifteen minutes of nothing
+# at all, from a team we know has members, is not quiet -- it is deaf.
+MESH_SILENCE_SECONDS = 15 * 60
+
+# The least time between two asks of the propagation node.
+#
+# Reconnection is the right trigger -- it is the moment the command post is
+# most likely to be holding something for us, and Columba's timer-only
+# retrieval was found on hardware to leave a message sitting for an hour. But
+# "a member announced" fires once per member, so ten nodes powering up together
+# would otherwise mean ten syncs. This is the floor that makes the trigger
+# affordable; the sync itself is a Link and a transfer, not one packet.
+COLLECT_FLOOR_SECONDS = 60
+
+# What RNS truncates a destination hash to. Used to reject a --propagation-node
+# that decodes as hex but is not a destination.
+DESTINATION_HASH_BYTES = 16
+
+# What the endpoint holds for a client that is not attached yet.
+#
+# Columba is reliable because LXMF *persists* a message; ATAK is handed a live
+# stream and keeps nothing, so anything rendered while it is detached is gone.
+# Same data, same path, two different guarantees -- and ATAK detaches routinely,
+# for seconds on a reconnect and for minutes when a phone is locked.
+#
+# Fifteen minutes covers a reconnect, an app restart and a locked screen without
+# reaching back into content an operator has moved on from.
+REPLAY_MAX_EVENTS = 64
+REPLAY_MAX_AGE_SECONDS = 15 * 60
 # This node's own Reticulum identity, kept beside the fleet secret. Created on
 # first run; losing it changes this node's UID, which to every peer reads as a
 # different responder rather than the same one returning.
@@ -62,10 +150,56 @@ ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 # worth an operator noticing. A stale track that never expires is the failure
 # that matters here -- a marker where somebody used to be, still being trusted.
 POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
-# Loopback only, and not configurable. This endpoint applies no authentication
-# because it assumes only this device can reach it; binding it to a routable
-# address would hand the mesh to anyone who can open a socket.
+# Loopback by default. This endpoint applies no authentication at all, so what
+# it assumes is that only this device can reach it.
 BIND_HOST = "127.0.0.1"
+
+# Binding anywhere else is a deliberate act, and these are the addresses that
+# mean "everyone".
+#
+# Refused rather than warned about, because the failure is silent and total:
+# the bridge works perfectly, the map looks right, and every CoT event the team
+# produces is readable by anything that can open a socket to this machine --
+# with no announce, no key, and nothing in any log to say it happened.
+WIDE_OPEN = ("0.0.0.0", "::", "*", "")
+
+# Why an address like 192.168.240.1 is a different question from 0.0.0.0.
+#
+# Waydroid puts the deck's ATAK in a container with its own network namespace,
+# so it cannot reach the host's loopback -- that is the whole reason this
+# option exists. 192.168.240.1 is the host's address on Waydroid's own NAT
+# bridge: reachable from the container and from this host, and not from the
+# LAN, which has no route to that subnet.
+#
+# So the exposure widens from "processes on this host" to "processes on this
+# host, plus the Android container we installed". That is a real widening and a
+# bounded one. Binding the deck's LAN address instead would be neither.
+LOOPBACK_PREFIXES = ("127.", "::1")
+
+
+def checked_bind_host(value):
+    """The address to listen on, or exit saying why not.
+
+    Loopback needs no argument: nothing outside this machine can reach it.
+    Anything else is a choice somebody has to make on purpose, so it is
+    announced rather than assumed -- an operator who reads "listening beyond
+    loopback" can decide whether that is what they wanted, and one who never
+    sees it cannot.
+    """
+    if value in WIDE_OPEN:
+        sys.exit(
+            "--bind %r would accept a connection from anywhere that can reach "
+            "this machine. This endpoint applies no authentication, so that "
+            "hands every CoT event the team produces to anything that can open "
+            "a socket -- with no announce, no key, and nothing in any log to "
+            "say so. Name the interface you mean (for Waydroid's ATAK that is "
+            "192.168.240.1), or leave it on %s."
+            % (value, BIND_HOST))
+    if not value.startswith(LOOPBACK_PREFIXES):
+        print("[bridge] listening beyond loopback, on %s. This endpoint has no "
+              "authentication: anything that can reach that address can read "
+              "the team's traffic and inject into it." % value, flush=True)
+    return value
 
 
 def load_node_identity(path=None):
@@ -125,23 +259,55 @@ class TeamAnnounceHandler:
     registry decides, and a payload it does not recognise is ordinary.
     """
 
-    def __init__(self, registry, on_new_member=None):
+    def __init__(self, registry, on_new_member=None, on_member_heard=None):
         self.aspect_filter = "%s.%s" % (tak_identity.NODE_APP,
                                         ".".join(tak_identity.NODE_ASPECTS))
         self.registry = registry
         self.on_new_member = on_new_member
+        self.on_member_heard = on_member_heard
 
     def received_announce(self, destination_hash, announced_identity, app_data):
-        if self.registry.remember(destination_hash, app_data) is membership.MEMBER_NEW:
-            if self.on_new_member:
-                self.on_new_member(destination_hash)
+        outcome = self.registry.remember(destination_hash, app_data)
+        if outcome is not None and self.on_member_heard:
+            # Every member announce, not only a new one. Greeting only new
+            # members covers a node *joining* a running team and misses the
+            # case that actually happens: a node **restarts**, loses its own
+            # membership, and is still remembered by everybody else -- so
+            # nobody greets it, and it spends up to an announce interval
+            # unable to resolve a single sender id. It is not visibly broken
+            # while that lasts: its own announces go out, peers see it, and
+            # every frame it receives is dropped for an identity it cannot
+            # name. CarriedIssues #5, found on hardware 2026-09-12.
+            #
+            # The rate limit is what keeps this bounded, and it was already
+            # here -- only the trigger was too narrow.
+            self.on_member_heard(destination_hash, outcome)
+        if outcome is None:
+            # Heard on our own aspect and not one of ours. Said out loud
+            # because the alternative is silence, and silence is what a node
+            # that is not announcing at all also sounds like. Those two have
+            # completely different fixes -- a different fleet secret or a
+            # different team name against a client that is simply switched off
+            # -- and an operator on a hillside cannot tell them apart from a
+            # log that says nothing either way.
+            print("[bridge] announce from %s is not a member of this team "
+                  "(different fleet secret or team name)"
+                  % destination_hash.hex()[:16], flush=True)
+            return
+        if outcome is membership.MEMBER_NEW and self.on_new_member:
+            self.on_new_member(destination_hash)
 
 
 class CotBridge:
     def __init__(self, team, secret, port=DEFAULT_PORT, identity_path=None,
-                 callsign="BRIDGE", role="Team Member"):
+                 callsign="BRIDGE", role="Team Member",
+                 lxmf_storage=None, propagation_node=None,
+                 announce_interval=ANNOUNCE_INTERVAL_SECONDS,
+                 bind_host=BIND_HOST, lxmf_direct_only=False):
         import RNS
         self.rns = RNS
+        self.bind_host = bind_host
+        self.announce_interval = announce_interval
         self.team = team
         self.secret = secret
         self.callsign = callsign
@@ -170,7 +336,8 @@ class CotBridge:
         # its single hop -- so a team is a membership set and traffic for it is
         # addressed to each member. See docs/TAKIntegrationPivots.md.
         self.registry = membership.MemberRegistry(team, secret, own_hash=self.node.hash)
-        self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined)
+        self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined,
+                                                    self._member_heard)
         RNS.Transport.register_announce_handler(self.announce_handler)
 
         # One pipeline per bridge: it holds the learned ATAK UID, refuses our
@@ -197,39 +364,208 @@ class CotBridge:
         # them affordable.
         self.spi_gate = cot_position.PositionGate(interval_seconds=5)
 
+        # A direct message goes by LXMF, which brings the three things a bare
+        # Packet does not: proof-backed delivery, retry, and a propagation node
+        # that holds a line for somebody out of range. A room line does not --
+        # see tools/tak_lxmf.py for why that split is a property of broadcast
+        # rather than a shortcut.
+        self.lxmf = None
+        if lxmf_storage:
+            # Imported here rather than at module scope. --no-lxmf documents
+            # bare-packet mode as a supported way to run, and
+            # tests/test_tak_lxmf.py already treats LXMF as optional -- but a
+            # top-level import made the whole module unimportable without it,
+            # so the mode that exists to survive LXMF's absence could not start
+            # without LXMF installed. The dependency is real when it is asked
+            # for, and only then.
+            import tak_lxmf
+            self.lxmf = tak_lxmf.Carrier(self.identity, lxmf_storage, self.callsign,
+                                         self._chat_from_lxmf,
+                                         propagation_node=propagation_node,
+                                         direct_only=lxmf_direct_only,
+                                         on_proof=self._receipt_from_proof)
+        # Receipts for a room never leave this node. Every member answering a
+        # room line with a delivery and a read receipt is two thirds of group
+        # chat's airtime -- 7.2 s of the 11.1 s a ten-person room costs -- for
+        # one bit of meaning each. A direct message keeps both, because there
+        # it is one peer and the operator is waiting on exactly that answer.
+        self.receipts_suppressed = 0
+        # Ticks drawn locally from a peer's delivery proof rather than waited
+        # for across the mesh.
+        self.receipts_synthesised = 0
+        # Tier 2 only: chat, markers, and anything that came through tier 2.
+        # Position is deliberately absent. It is latest-wins, a fresher one is
+        # seconds away, and replaying a ten-minute-old fix as though it were
+        # current puts somebody on the map where they are not -- which is worse
+        # than showing nothing. The tiering in TAKNative.md already drew this
+        # line; this is the same line applied to the socket.
+        self._replay = collections.deque(maxlen=REPLAY_MAX_EVENTS)
+        self._replay_lock = threading.Lock()
+        self.replayed = 0
+        # The newest fix time seen from each sender, so an older one arriving
+        # late does not put a track back where somebody used to be.
+        self._last_fix = {}
+        self.positions_out_of_order = 0
+        # Frames whose claimed sender did not match the carrier's proof.
+        self.chat_misattributed = 0
+        # When the propagation node was last asked what it is holding.
+        self._last_collect = 0.0
+        # When the LXMF inbox was last announced, which is on its own clock.
+        self._last_inbox_announce = 0.0
+        # When anything at all last arrived from the mesh, and whether the
+        # silence has already been reported. One line per episode, not one per
+        # announce interval -- a warning that repeats is a warning people learn
+        # to scroll past.
+        self._last_mesh_input = time.time()
+        self._silence_reported = False
+
     # ---- membership ----
-    def announce(self):
+    def announce(self, greeting=False):
         """Say who we are, so peers can address us.
 
         Without this the UID derived in pivot 1 decodes to a destination
         nothing has a path to: correct, and unreachable. The payload carries an
         HMAC of the team rather than its name, so the announce does not undo
         what group_aspects went to trouble to hide.
+
+        Both destinations, because there are two. The TAK node carries mesh
+        frames; the LXMF inbox is where a direct message actually lands, and it
+        is a different hash with its own path. Announcing only the first left
+        the second reachable solely through a path request -- which works, and
+        pays for a request-and-response round trip across every hop before the
+        first direct message can even be attempted. On a four-hop LoRa path
+        that is the difference between a chat line leaving now and leaving
+        after a conversation about where its recipient lives. tools/
+        tak_partition_check.py had to announce this by hand to be reachable at
+        all, which is the tell.
+
+        It costs one more announce: 118 ms on air at SF7/BW250/CR4:5, against
+        the 118 ms the node announce already spends. Cheap for a destination
+        every addressed message has to resolve.
         """
         self.node.announce(membership.member_payload(self.team, self.secret,
                                                      self.callsign, self.role))
+        self._announce_inbox(greeting=greeting)
+
+    def _announce_inbox(self, greeting=False):
+        """Announce the LXMF inbox, on its own clock rather than the node's.
+
+        Membership expires, so the node announce is what keeps a team knowing
+        who is in it. An inbox announce only has to leave a path behind, and a
+        path lasts a week -- which is why the idle cadence is long.
+
+        `greeting` is the exception, and it is the whole of the cold-start fix.
+        Somebody has just announced, which means they may have only now arrived
+        and have no path to our inbox. Half an hour of markers arriving while
+        chat silently fails is the symptom that produced this argument; a
+        minute is not.
+        """
+        if self.lxmf is None:
+            return
+        floor = (INBOX_ANNOUNCE_FLOOR_SECONDS if greeting
+                 else INBOX_ANNOUNCE_INTERVAL_SECONDS)
+        now = time.time()
+        if now - self._last_inbox_announce < floor:
+            return
+        self._last_inbox_announce = now
+        self.lxmf.announce()
 
     def _member_joined(self, destination_hash):
         claims = self.registry.describe(destination_hash) or {}
         print("[bridge] team member %s is %s"
               % (claims.get("callsign", "?"), tak_identity.uid_for(destination_hash)),
               flush=True)
-        # Say who we are back. A node that starts late hears everyone who
-        # announces after it and nobody who announced before, so without this
-        # the first node up stays invisible to the second until the next
-        # re-announce -- half an hour of a team that cannot see its own
-        # members. The registry rate-limits, and greeting only happens for a
-        # member that was not already known, so the reply this provokes finds a
-        # known member and goes no further.
+        # Greeting happens in _member_heard, for every announce rather than
+        # only this one.
+
+    def _heard_mesh(self):
+        """Note that something arrived, and say so if nothing had for a while.
+
+        Recovery is worth a line as much as the failure is: an operator who saw
+        the warning needs to know it is over without having to infer it from
+        traffic resuming.
+        """
+        self._last_mesh_input = time.time()
+        if self._silence_reported:
+            self._silence_reported = False
+            print("[bridge] mesh traffic has resumed", flush=True)
+
+    def _check_mesh_silence(self):
+        """Say when this node has been talking to nobody.
+
+        A transport can go deaf without failing. A Rev 2 was found doing
+        exactly that on 2026-09-13 -- answering ping for three hours while its
+        Reticulum side had stopped transmitting -- and nothing here noticed: the
+        bridge kept announcing, kept reporting itself healthy, and the first
+        sign was an operator noticing their phone was missing from the map.
+
+        Only warned about when members are known, because a bridge that has
+        never heard anyone is not deaf, it is alone, and those want different
+        answers from an operator.
+        """
+        if self._silence_reported or not self.registry.members():
+            return
+        silent_for = time.time() - self._last_mesh_input
+        if silent_for < MESH_SILENCE_SECONDS:
+            return
+        self._silence_reported = True
+        print("[bridge] nothing has arrived from the mesh in %d minutes, and "
+              "this node knows %d member(s). Announces are still going out, so "
+              "check the radio rather than the team."
+              % (silent_for // 60, len(self.registry.members())), flush=True)
+
+    def _member_heard(self, destination_hash, outcome):
+        """Say who we are back, whoever just spoke.
+
+        A node that starts late hears everyone who announces after it and
+        nobody who announced before. A node that *restarts* is worse: it is
+        still remembered by its peers, so greeting only new members leaves it
+        greeted by nobody at all.
+
+        The rate limit is what stops this becoming a storm. Ten nodes powering
+        up together greet once each within the floor rather than nine times, and
+        the greeting a peer sends back finds a member it already knows -- which
+        is still worth answering, but not within the same few seconds.
+        """
+        self._heard_mesh()
         if self.registry.should_greet():
             try:
-                self.announce()
+                # greeting=True: whoever just spoke may have only now arrived,
+                # and a node with no path to our inbox gets markers and no
+                # chat. This is the moment that costs nothing to answer and
+                # everything to miss.
+                self.announce(greeting=True)
             except Exception as error:                      # noqa: BLE001
                 print("[bridge] greeting announce failed: %s" % error, flush=True)
+        # Somebody is back, so ask what was held while they were away.
+        #
+        # Escalation only ever put messages *into* the store; nothing took them
+        # out. --propagation-node wired the sending half and left the receiving
+        # half to a manual helper, so a bridge that reconnected after a
+        # partition left its own traffic at the command post indefinitely.
+        # Reconnection is the right trigger precisely because it is the moment
+        # something is most likely to be waiting.
+        self.collect_held()
+
+    def collect_held(self):
+        """Ask the propagation node for anything waiting, no more than so often.
+
+        The floor is what makes "a member announced" an affordable trigger: ten
+        nodes powering up together would otherwise mean ten syncs, and a sync is
+        a Link and a transfer rather than one packet.
+        """
+        if self.lxmf is None or not self.lxmf.propagation_node:
+            return False
+        now = time.time()
+        if now - self._last_collect < COLLECT_FLOOR_SECONDS:
+            return False
+        self._last_collect = now
+        return self.lxmf.collect(self.identity)
 
     def _announce_forever(self):
         while True:
-            time.sleep(ANNOUNCE_INTERVAL_SECONDS)
+            time.sleep(self.announce_interval)
+            self._check_mesh_silence()
             try:
                 self.announce()
             except Exception as error:                      # noqa: BLE001
@@ -239,6 +575,7 @@ class CotBridge:
 
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
+        self._heard_mesh()
         raw = bytes(data)
         # Byte zero says which codec produced this. One namespace shared by all
         # of them rather than three independent version counters -- see
@@ -260,7 +597,7 @@ class CotBridge:
             # dictionary, or simply not ours.
             self.unreadable += 1
             return
-        self._to_clients(xml.encode("utf-8"))
+        self._to_clients(xml.encode("utf-8"), keep=True)
         self.received += 1
 
     def _marker_from_mesh(self, raw):
@@ -277,7 +614,7 @@ class CotBridge:
             return True
         claims = self.registry.describe(sender) or {}
         now = datetime.now(timezone.utc)
-        self._to_clients(cot_marker.build_marker_cot(
+        self._to_clients(keep=True, payload=cot_marker.build_marker_cot(
             decoded, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
             cot_gateway.cot_time(now),
             cot_gateway.cot_time(now + timedelta(seconds=decoded["stale_seconds"]))
@@ -285,8 +622,15 @@ class CotBridge:
         self.markers_received += 1
         return True
 
-    def _chat_from_mesh(self, raw):
-        """Render a peer's chat line or receipt as CoT for the local ATAK."""
+    def _chat_from_mesh(self, raw, signed_by=None):
+        """Render a peer's chat line or receipt as CoT for the local ATAK.
+
+        `signed_by` is the member the carrier proves sent this, when the
+        carrier can prove anything. LXMF can; a bare packet on a GROUP
+        destination cannot, because every member holds the same key and the
+        sender_id is the only claim there is. So this is checked where a proof
+        exists and honestly absent where none does.
+        """
         decoded = cot_chat.decode(raw)
         if decoded is None:
             return False
@@ -297,8 +641,19 @@ class CotBridge:
             # would put words on the screen attributed to nobody.
             self.unreadable += 1
             return True
+        if signed_by is not None and signed_by != sender:
+            # The frame names one member and the carrier proves another sent
+            # it. Refused rather than re-attributed: drawing it under the real
+            # sender would render words they did not write, and drawing it
+            # under the claimed one is the attack.
+            self.chat_misattributed += 1
+            print("[bridge] chat claims to be from %s but was signed by %s; "
+                  "not rendered"
+                  % (tak_identity.uid_for(sender), tak_identity.uid_for(signed_by)),
+                  flush=True)
+            return True
         claims = self.registry.describe(sender) or {}
-        self._to_clients(cot_chat.build_chat_cot(
+        self._to_clients(keep=True, payload=cot_chat.build_chat_cot(
             decoded, tak_identity.uid_for(sender),
             claims.get("callsign", "UNKNOWN"),
             cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
@@ -318,6 +673,24 @@ class CotBridge:
         if sender is None:
             self.unreadable += 1
             return True
+        # An older fix must not overwrite a newer one.
+        #
+        # Position is latest-wins, and "latest" was taken to mean "last to
+        # arrive". On a mesh those are different things: a retry, a slower
+        # route, or a message held while a peer was out of range all deliver
+        # fixes out of order, and drawing the older one puts a track back where
+        # somebody used to be. Reported from hardware 2026-09-13 as a position
+        # that "reverts, then comes back".
+        #
+        # The codec has carried fix_unix_s from the beginning precisely so this
+        # can be judged; nothing read it. Same principle that keeps position
+        # out of the replay buffer -- a stale fix drawn as current is a lie,
+        # whether it is stale because it was held or because it overtook.
+        last = self._last_fix.get(fix.sender_id)
+        if last is not None and fix.fix_unix_s < last:
+            self.positions_out_of_order += 1
+            return True
+        self._last_fix[fix.sender_id] = fix.fix_unix_s
         claims = self.registry.describe(sender) or {}
         self._to_clients(cot_gateway.build_cot(
             fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
@@ -325,7 +698,31 @@ class CotBridge:
         self.positions_received += 1
         return True
 
-    def _to_clients(self, payload):
+    def _replay_to(self, client):
+        """Hand a newly attached client what it missed.
+
+        Sent oldest first, so a conversation arrives in the order it happened.
+        Every frame carries its own uid and message id, so a client that
+        already has one simply recognises it again -- replay is safe to repeat
+        and cheap to ignore.
+        """
+        now = time.time()
+        with self._replay_lock:
+            pending = [payload for stamp, payload in self._replay
+                       if now - stamp <= REPLAY_MAX_AGE_SECONDS]
+        if not pending:
+            return
+        print("[bridge] replaying %d held event(s) to a new client" % len(pending),
+              flush=True)
+        for payload in pending:
+            try:
+                client.sendall(payload)
+            except OSError as error:
+                print("[bridge] replay failed: %s" % error, flush=True)
+                return
+        self.replayed += len(pending)
+
+    def _to_clients(self, payload=None, keep=False):
         """Write to every connected client without blocking the ones behind.
 
         This runs on Reticulum's packet callback thread. sendall() blocks for as
@@ -336,13 +733,27 @@ class CotBridge:
         a client that cannot keep up is dropped rather than allowed to stall the
         bridge.
         """
+        if keep:
+            with self._replay_lock:
+                self._replay.append((time.time(), payload))
         with self.clients_lock:
             targets = list(self.clients)
+        if not targets:
+            # Two different outcomes, said differently. A tier-2 event is
+            # waiting for a client; a position really is gone, and should be --
+            # a fresher one is seconds away.
+            if keep:
+                print("[bridge] no ATAK attached; %d bytes held for replay"
+                      % len(payload), flush=True)
+            else:
+                print("[bridge] ATAK delivery lost: %d bytes, no connected clients"
+                      % len(payload), flush=True)
         dead = []
         for client in targets:
             try:
                 client.sendall(payload)
-            except OSError:
+            except OSError as error:
+                print("[bridge] ATAK write failed: %s" % error, flush=True)
                 dead.append(client)
         if not dead:
             return
@@ -427,6 +838,33 @@ class CotBridge:
         # UID, so ATAK addresses them by it and destination_for() reverses it.
         # That is pivot 1 paying for itself.
         recipient = (decoded or {}).get("recipient") or ""
+        kind = (decoded or {}).get("kind")
+        if not recipient and kind != cot_chat.KIND_MESSAGE:
+            # A receipt for a room line. Dropped here rather than sent: every
+            # member answering a broadcast with two receipts is two thirds of
+            # what group chat costs on the air, and none of it tells an
+            # operator anything they can act on.
+            self.receipts_suppressed += 1
+            return True
+        if kind == cot_chat.KIND_DELIVERED and self.lxmf is not None:
+            # A delivered-receipt is a transport fact, and LXMF has already
+            # established it: the sender holds a cryptographic proof that this
+            # node received the message. Sending the same fact back as a second
+            # LXMF message, with its own retry budget, is paying twice for one
+            # answer -- and on a lossy path the receipt can be the half that is
+            # lost, so an operator sees no tick on a message that did arrive.
+            #
+            # Measured 2026-09-14: receipts were 11 of 24 outbound messages,
+            # and every message averaged 1.9 packet attempts, so a chat line
+            # cost about 3.5 packets rather than 1.9. Three messages to one
+            # destination were seen retrying against each other at once.
+            #
+            # The sender draws its own tick from the proof instead; see
+            # _receipt_from_proof. A read-receipt still crosses, because only
+            # the far ATAK knows a human opened it and no transport can prove
+            # that.
+            self.receipts_suppressed += 1
+            return True
         if recipient:
             destination = tak_identity.destination_for(recipient)
             if destination is None:
@@ -440,10 +878,48 @@ class CotBridge:
                 print("[bridge] chat for %r is not a member of this team, not sent"
                       % recipient, flush=True)
                 return True
-            self.chat_sent += self._send_to(destination, frame)
-            return True
+            return self._dispatch_addressed_chat(destination, frame, decoded)
         self.chat_sent += self._fan_out(frame)
         return True
+
+    def _chat_from_lxmf(self, frame, source_hash):
+        """A chat line that arrived over LXMF rather than as a bare packet.
+
+        Same rendering as the packet path: the frame is the protocol, whichever
+        carrier brought it. The LXMF content is for the human reading Columba
+        and is deliberately never parsed back here -- that is what stops a
+        rendered message being read as a new one.
+
+        **Attribution comes from the carrier, not the payload.** The frame
+        carries a 32-bit sender_id, and that is a lookup key, not a claim worth
+        trusting: any member with a valid identity could put another member's
+        id in it and have the far end draw their words under that name. On a
+        callout, a line attributed to the command post carries the command
+        post's authority, so this is worth closing even inside an
+        IFAC-authenticated fleet -- the threat is a compromised node, not an
+        outsider.
+
+        LXMF already proves who sent this, cryptographically, and that proof
+        was being thrown away. Binding the two costs one recall.
+        """
+        if self._chat_from_mesh(frame, signed_by=self._member_for_lxmf(source_hash)):
+            self.received += 1
+
+    def _member_for_lxmf(self, source_hash):
+        """The team member an LXMF source hash belongs to, or None.
+
+        An inbox and a TAK node are different destinations built from the same
+        identity -- which is pivot 1 again, and the reason knowing a peer well
+        enough to address their node is knowing them well enough to address
+        their inbox. Read backwards, it is what lets an inbox be checked
+        against a node.
+        """
+        if not source_hash:
+            return None
+        identity = self.rns.Identity.recall(source_hash)
+        if identity is None:
+            return None
+        return tak_identity.node_destination_hash(identity)
 
     def _marker_from_atak(self, xml):
         """Send a point marker as tens of bytes, if it is one.
@@ -466,6 +942,86 @@ class CotBridge:
         self.markers_sent += self._fan_out(frame)
         return True
 
+    def _dispatch_addressed_chat(self, destination, frame, decoded):
+        """Send one addressed line to one peer, by the strongest route there is.
+
+        LXMF first, because it is the only path that can promise the line
+        arrives. The bare packet is the fallback for a peer whose identity we
+        cannot recall, and for a bridge running --no-lxmf -- not for an LXMF
+        failure.
+
+        That distinction is the whole method. Falling through to a packet when
+        LXMF declines looks like graceful degradation and is not: the packet
+        has no proof, no retry and no propagation node, so the sender is told
+        the line went while the one guarantee they were relying on has quietly
+        been dropped, and the two outcomes are indistinguishable from outside
+        the process. It also fires on a *construction* error, where a second
+        attempt at the same frame is no likelier to work. --no-lxmf is how
+        somebody chooses best effort; it is not something to hand them by
+        accident.
+        """
+        identity = self.rns.Identity.recall(destination)
+        if self.lxmf is not None and identity is not None:
+            text = (decoded or {}).get("text") or ""
+            # Only a message earns a tick. A receipt of our own that still
+            # crosses -- a read-receipt -- is not something the far end
+            # acknowledges again, or two nodes would answer each other for ever.
+            proof_context = None
+            if (decoded or {}).get("kind") == cot_chat.KIND_MESSAGE:
+                proof_context = {"peer": destination,
+                                 "message_id": decoded.get("message_id"),
+                                 "room": decoded.get("room") or ""}
+            if self.lxmf.send_chat(identity, frame, text,
+                                   proof_context=proof_context):
+                self.chat_sent += 1
+                return True
+            self.chat_undeliverable += 1
+            print("[bridge] LXMF would not take a direct message for %s; "
+                  "not falling back to a bare packet, which cannot promise "
+                  "delivery" % destination.hex()[:16], flush=True)
+            return True
+        self.chat_sent += self._send_to(destination, frame)
+        return True
+
+    def _receipt_from_proof(self, context):
+        """Draw the sender's delivery tick from LXMF's proof.
+
+        The tick used to come from the far ATAK: it wrote a delivered-receipt,
+        which crossed the mesh as a second LXMF message with its own retries,
+        and the local ATAK drew a tick when it arrived. That is paying twice
+        for one answer, and the second payment is the one that fails -- a lost
+        receipt leaves no tick on a message that did arrive.
+
+        LXMF has already proved the peer's node holds it. This renders the
+        receipt the far end would have sent, locally, from that proof. The
+        event is byte-identical to the one that used to cross, so ATAK cannot
+        tell the difference and nothing downstream needs to know.
+
+        **What a tick now means** is slightly different and worth stating: the
+        peer's *node* has it, proven, rather than the peer's *ATAK* has drawn
+        it. That is a weaker claim about the far screen and a stronger one
+        about the mesh, because the old tick could be lost while this one
+        cannot. A read-receipt still crosses and still means a human opened it.
+        """
+        peer = context.get("peer")
+        message_id = context.get("message_id")
+        if not peer or not message_id:
+            return
+        claims = self.registry.describe(peer) or {}
+        # Built as though the peer had sent it, because that is exactly the
+        # event this replaces.
+        decoded = {"kind": cot_chat.KIND_DELIVERED,
+                   "message_id": message_id,
+                   "room": context.get("room") or "",
+                   "recipient": self.uid,
+                   "text": "",
+                   "sent_unix": 0}
+        self._to_clients(keep=True, payload=cot_chat.build_chat_cot(
+            decoded, tak_identity.uid_for(peer),
+            claims.get("callsign", "UNKNOWN"),
+            cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
+        self.receipts_synthesised += 1
+
     def _send_to(self, destination_hash, frame):
         """Send one frame to one node. Returns 1 if it went, 0 if it did not.
 
@@ -479,6 +1035,21 @@ class CotBridge:
             # restart. Ask for the path; the next event will find it.
             self.rns.Transport.request_path(destination_hash)
             self.unreachable += 1
+            return 0
+        # Knowing who somebody is does not mean knowing how to reach them, and
+        # the two expire on different clocks. On a four-hop LoRa path with a
+        # thirty-minute announce interval, a member stays known long after its
+        # path has gone -- and sending then is worse than failing, because
+        # Packet.send() does not raise for a destination with no path. The
+        # frame leaves, nothing carries it, nothing says so. Measured on
+        # hardware 2026-09-12: positions crossed from the phone to the deck
+        # while every marker and chat line sent the other way vanished, with
+        # "could not reach" printed zero times.
+        if not self.rns.Transport.has_path(destination_hash):
+            self.rns.Transport.request_path(destination_hash)
+            self.unreachable += 1
+            print("[bridge] no path to %s yet; asked for one"
+                  % destination_hash.hex()[:16], flush=True)
             return 0
         try:
             destination = tak_identity.node_destination(identity,
@@ -516,37 +1087,91 @@ class CotBridge:
         connection.setsockopt(
             socket.SOL_SOCKET, socket.SO_SNDTIMEO,
             struct.pack("@qq", int(CLIENT_WRITE_TIMEOUT), 0))
-        with self.clients_lock:
-            self.clients.append(connection)
+        client = CotClient(connection)
+        # Held across registration and replay together, so there is no window
+        # in which this client is visible to the fan-out but has not had its
+        # backlog. Registering first and replaying after left exactly that gap:
+        # a mesh callback could deliver a new event into it, and the older held
+        # ones would then arrive behind it -- a conversation out of order, with
+        # nothing on screen to say so.
+        with client.hold():
+            with self.clients_lock:
+                self.clients.append(client)
+                count = len(self.clients)
+            print("[bridge] ATAK connected: %d client(s)" % count, flush=True)
+            # Before anything new arrives: what it missed while it was away.
+            # This is what makes ATAK as reliable as Columba when both are
+            # running -- Columba keeps a message because LXMF persists it, and
+            # until now ATAK kept nothing at all.
+            self._replay_to(client)
         try:
             while True:
                 chunk = connection.recv(4096)
                 if not chunk:
                     break
                 for event in stream.feed(chunk):
-                    self._from_atak(event)
-        except OSError:
-            pass
+                    reply = ping_reply(event)
+                    if reply is not None:
+                        client.sendall(reply)
+                    else:
+                        self._from_atak(event)
+        except OSError as error:
+            print("[bridge] ATAK connection failed: %s" % error, flush=True)
         finally:
             with self.clients_lock:
-                if connection in self.clients:
-                    self.clients.remove(connection)
+                if client in self.clients:
+                    self.clients.remove(client)
+                count = len(self.clients)
+            print("[bridge] ATAK disconnected: %d client(s)" % count, flush=True)
             try:
-                connection.close()
+                client.close()
             except OSError:
                 pass
+
+    def _report_propagation(self):
+        """Say out loud whether a message can survive a partition.
+
+        Store-and-forward was configurable and completely silent: a wrong hash,
+        or a node nothing has a route to, looked exactly like a working one
+        until an operator walked out of range and a message vanished. That is
+        the worst possible moment to discover it, so it is said at startup
+        instead.
+
+        A path is requested rather than merely checked, because at startup
+        there usually is not one yet and asking is what makes one exist before
+        it is needed -- resolving it during a partition means resolving it over
+        the link that is already in trouble.
+        """
+        if self.lxmf is None:
+            return
+        node = self.lxmf.propagation_node
+        if not node:
+            print("[bridge] no propagation node: a direct message to somebody "
+                  "out of range will fail rather than wait for them",
+                  flush=True)
+            return
+        known = self.rns.Transport.has_path(node)
+        print("[bridge] propagation node %s, path %s"
+              % (node.hex(), "known" if known else "not yet known"), flush=True)
+        if not known:
+            self.rns.Transport.request_path(node)
 
     def serve_forever(self):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((BIND_HOST, self.port))
+        listener.bind((self.bind_host, self.port))
         listener.listen(8)
         print("[bridge] team %r, this node is %s (%s)"
               % (self.team, self.uid, self.callsign), flush=True)
         self.announce()
         self._announce_thread = threading.Thread(target=self._announce_forever, daemon=True)
         self._announce_thread.start()
-        print("[bridge] point ATAK at %s:%d, TCP, no SSL" % (BIND_HOST, self.port), flush=True)
+        print("[bridge] point ATAK at %s:%d, TCP, no SSL"
+              % (self.bind_host, self.port), flush=True)
+        self._report_propagation()
+        # A bridge that has just started has by definition been away, so ask
+        # once before waiting for anybody to announce.
+        self.collect_held()
         while True:
             connection, _ = listener.accept()
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -561,16 +1186,78 @@ def main():
                         help="path to the fleet secret; %s is preferred"
                              % groups.SECRET_ENVIRONMENT)
     parser.add_argument("--config", default=None, help="Reticulum config directory")
+    parser.add_argument("--loglevel", type=int, choices=range(8), default=None,
+                        help="Reticulum log level (6 includes link and LXMF timing)")
     parser.add_argument("--callsign", default="BRIDGE",
                         help="how this node identifies itself to the team")
     parser.add_argument("--role", default="Team Member")
     parser.add_argument("--identity", default=None,
                         help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
+    parser.add_argument("--announce-interval", type=int,
+                        default=ANNOUNCE_INTERVAL_SECONDS,
+                        help="seconds between announces (default %d). A node "
+                             "that restarts is invisible until the next one, "
+                             "so shorten it while bringing a team up and leave "
+                             "it long in the field, where it is airtime."
+                             % ANNOUNCE_INTERVAL_SECONDS)
+    parser.add_argument("--lxmf-storage", default=None,
+                        help="LXMF router storage directory; direct messages "
+                             "go by LXMF when this is set, which is what gives "
+                             "them receipts, retry and store-and-forward. "
+                             "Defaults to <config>/lxmf.")
+    parser.add_argument("--no-lxmf", action="store_true",
+                        help="send direct messages as bare packets, as PR B "
+                             "did. Best effort, and nothing will say when a "
+                             "line is lost.")
+    parser.add_argument("--lxmf-direct-only", action="store_true",
+                        help="force link delivery even for small chats (latency comparison)")
+    parser.add_argument("--bind", default=BIND_HOST,
+                        help="address to serve the CoT endpoint on (default "
+                             "%s). Use 192.168.240.1 to serve ATAK running in "
+                             "Waydroid, which has its own network namespace "
+                             "and cannot reach this machine's loopback. There "
+                             "is no authentication on this endpoint, so name "
+                             "the interface you mean." % BIND_HOST)
+    parser.add_argument("--propagation-node", default=None,
+                        help="destination hash of an LXMF propagation node, "
+                             "which is what holds a line for a peer who is out "
+                             "of range until they come back")
     args = parser.parse_args()
+
+    # type=int accepts 0 and negatives. Zero turns _announce_forever into a
+    # spin that floods the channel with announces -- which on a transport node
+    # gets this destination rate-limited into silence, so the result of
+    # announcing too hard is not being heard at all. A negative raises inside a
+    # daemon thread, where nothing is watching, and periodic announces simply
+    # stop with the bridge still reporting itself healthy.
+    if args.announce_interval <= 0:
+        sys.exit("--announce-interval must be a positive number of seconds, "
+                 "not %d" % args.announce_interval)
+
+    bind_host = checked_bind_host(args.bind)
+
+    propagation_node = None
+    if args.propagation_node:
+        try:
+            propagation_node = bytes.fromhex(args.propagation_node)
+        except ValueError:
+            sys.exit("--propagation-node is not a hex destination hash: %r"
+                     % args.propagation_node)
+        # fromhex() accepts any even-length string, so "deadbeef" gets this far
+        # and is handed to the router as a destination. A bridge then starts,
+        # reports a propagation node, and holds nothing for anybody -- which is
+        # only discovered when somebody walks out of range, having been told
+        # they were covered. A Reticulum destination hash is
+        # TRUNCATED_HASHLENGTH/8 bytes; anything else is a typo, not a node.
+        if len(propagation_node) != DESTINATION_HASH_BYTES:
+            sys.exit("--propagation-node must be %d bytes (%d hex characters), "
+                     "not %d: %r"
+                     % (DESTINATION_HASH_BYTES, DESTINATION_HASH_BYTES * 2,
+                        len(propagation_node), args.propagation_node))
 
     secret = groups.load_fleet_secret(args.secret_file)
     import RNS
-    reticulum = RNS.Reticulum(args.config)
+    reticulum = RNS.Reticulum(args.config, loglevel=args.loglevel)
     if reticulum.is_connected_to_shared_instance:
         # Refused rather than warned about. A GROUP packet is dropped above one
         # hop, and a shared-instance client sits one hop behind the daemon that
@@ -588,22 +1275,43 @@ def main():
         print("[bridge] own interface, and point peers at that:  --config <dir>",
               flush=True)
         sys.exit(1)
+    # LXMF keeps its own store -- the queue for a peer who is out of range is
+    # the whole point, and a queue that does not outlive a restart is not one.
+    lxmf_storage = None
+    if not args.no_lxmf:
+        lxmf_storage = args.lxmf_storage or os.path.join(
+            os.path.expanduser(args.config or "~/.reticulum"), "lxmf")
+        os.makedirs(lxmf_storage, exist_ok=True)
     bridge = CotBridge(args.team, secret, args.port, args.identity,
-                       args.callsign, args.role)
+                       args.callsign, args.role,
+                       lxmf_storage=lxmf_storage,
+                       propagation_node=propagation_node,
+                       announce_interval=args.announce_interval,
+                       bind_host=bind_host,
+                       lxmf_direct_only=args.lxmf_direct_only)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
         print("\n[bridge] sent %d, received %d, positions %d/%d, chat %d/%d, "
               "markers %d/%d, unreadable %d, refused %d, unreachable %d, "
-              "not a member %d, suppressed %d/%d, members %d"
+              "not a member %d, receipts dropped %d, lxmf %d/%d/%d, "
+              "suppressed %d/%d, members %d"
               % (bridge.sent, bridge.received,
                  bridge.positions_sent, bridge.positions_received,
                  bridge.chat_sent, bridge.chat_received,
                  bridge.markers_sent, bridge.markers_received,
                  bridge.unreadable, bridge.pipeline.dropped, bridge.unreachable,
-                 bridge.chat_undeliverable,
+                 bridge.chat_undeliverable, bridge.receipts_suppressed,
+                 (bridge.lxmf.sent if bridge.lxmf else 0),
+                 (bridge.lxmf.delivered if bridge.lxmf else 0),
+                 (bridge.lxmf.failed if bridge.lxmf else 0),
                  bridge.position_gate.suppressed, bridge.spi_gate.suppressed,
                  len(bridge.registry)), flush=True)
+        # The LXMF store holds anything still queued for a peer who is out of
+        # range. Closing the router is what flushes it to disk, so a queue
+        # survives the restart it exists to survive.
+        if bridge.lxmf is not None:
+            bridge.lxmf.stop()
 
 
 if __name__ == "__main__":

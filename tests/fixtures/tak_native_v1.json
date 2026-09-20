@@ -62,5 +62,12 @@
     "b-m-p-s-m_frame": "041b1122334418693789115753c8ffff090300cc5434e05d5e48b4b32a29c7907dbfad622d6d2d702d732d6d5720310030ffffffff",
     "b-m-p-s-p-i": "<event access=\"Undefined\" how=\"h-e\" stale=\"2026-09-11T07:05:01.341Z\" start=\"2026-09-11T07:04:41.341Z\" time=\"2026-09-11T07:04:41.341Z\" type=\"b-m-p-s-p-i\" uid=\"ANDROID-3f5c91a27be4d068.SPI1\" version=\"2.0\"><point ce=\"9999999.0\" hae=\"108.478\" lat=\"41.0238596\" le=\"9999999.0\" lon=\"28.9163066\"/><detail><creator callsign=\"LEXUS\" type=\"a-f-G-U-C\" uid=\"ANDROID-3f5c91a27be4d068\"/><hideLabel/><precisionlocation altsrc=\"SRTM1\"/><link parent_callsign=\"LEXUS\" relation=\"p-p\" type=\"a-f-G-U-C\" uid=\"ANDROID-3f5c91a27be4d068\"/><contact callsign=\"LEXUS.DP1\"/></detail></event>",
     "b-m-p-s-p-i_frame": "0401112233441873be84113c473a00140b090453504931622d6d2d702d732d702d694c455855532e445031006c"
+  },
+  "lxmf": {
+    "field_custom_type": 251,
+    "field_custom_data": 252,
+    "custom_type_tag": "tak.chat.v1",
+    "app_name": "lxmf",
+    "delivery_aspect": "delivery"
   }
 }

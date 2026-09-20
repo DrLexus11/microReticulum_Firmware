@@ -12,7 +12,7 @@
 # to avoid, so in full mode the gateway does not listen at all.
 #
 #   full:    mesh -> gateway -> UDP 8087 -> OTS -> ATAK on 8088, web UI on 8081
-#   simple:  mesh -> gateway -> TCP 8087 -> ATAK
+#   simple:  mesh -> gateway -> TCP 18087 -> ATAK
 #
 # Nothing here needs root. RabbitMQ runs as a container because SteamOS has a
 # read-only /usr, and OTS refuses to start without it.
@@ -320,7 +320,7 @@ cmd_start() {
         echo "  web UI       http://${ip:-localhost}:$OTS_WEB_PORT"
         echo "  ATAK server  ${ip:-localhost}  port $OTS_TCP_PORT  TCP (not SSL)"
     else
-        echo "  ATAK server  ${ip:-localhost}  port 8087  TCP (not SSL)"
+        echo "  ATAK server  ${ip:-localhost}  port 18087  TCP (not SSL)"
         echo "  or multicast 239.2.3.1:6969 with no configuration at all"
     fi
     echo "  logs         $RUN_DIR/"
@@ -337,7 +337,7 @@ cmd_status() {
     printf '%-14s %s\n' "cot_parser" "$([ -n "$(pid_of "$OTS_COT_BIN")" ] && echo 'up' || echo 'down')"
     printf '%-14s %s\n' "gateway" "$([ -n "$(pid_of "$REPO/tools/cot_gateway.py")" ] && echo 'up' || echo 'down')"
     echo
-    ss -ltnu 2>/dev/null | grep -E ":(5672|8081|8087|8088|8089) " || echo "(no lab ports listening)"
+    ss -ltnu 2>/dev/null | grep -E ":(5672|8081|8087|8088|8089|18087) " || echo "(no lab ports listening)"
     echo
     grep -E "^\[gateway\] destination" "$RUN_DIR/gateway.log" 2>/dev/null
     tail -4 "$RUN_DIR/gateway.log" 2>/dev/null | grep -E "^\[gateway\] (new|move)" || true
