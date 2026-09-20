@@ -52,7 +52,10 @@ Design rationale and hardware acceptance records are in `docs/TAKNative.md` and
 
 - Python tests run from the repo root: `python3 -m unittest discover -s tests -t
   tests`. Two tests read source files relative to the working directory and fail
-  if run from inside `tests/`.
+  if run from inside `tests/`. Use
+  `/home/deck/.local/share/rnode-rns-venv/bin/python` rather than the system
+  interpreter: eight tests import `RNS`, and under bare `python3` they come out
+  as errors that look like a regression and are not.
 - Columba's Gradle default heap OOM-kills the build on this machine. Pass
   `-Dorg.gradle.jvmargs="-Xmx2560m -XX:MaxMetaspaceSize=768m"`, and use
   `:app:testNoSentryPythonBackendDebugUnitTest` — the bare `testDebugUnitTest`

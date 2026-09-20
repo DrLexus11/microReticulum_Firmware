@@ -58,7 +58,7 @@ where gain is the only constraint.
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
-| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
+| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation, **built on both sides 2026-09-20, not yet on radios**; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -533,6 +533,9 @@ reports honestly that nothing is arriving.
   specified and never built. Anything over the 383 B MDU is refused outright,
   which is why **drawings do not cross at all** despite being on the LoRa
   requirement list.
+
+  **Closed in code 2026-09-20**, both halves, on `feature/tak-tier3-fragments`
+  in this repo and in `columba`. What that leaves is below.
 - A typed polyline takes a drawing from 17 packets to 2 (6 311 B → ~584 B,
   5.26 s → 0.50 s, estimated from the corpus — there is no drawing fixture yet).
   It still needs fragmentation: 584 > 383.
@@ -674,6 +677,42 @@ packets, with reassembly at the far end, before committing to `Resource`.
 
 Tier 3 is also the path images and data packages ride in the HaLow phase, so
 this lays that foundation early rather than retrofitting it.
+
+### Tier 3 is built. What the radios still have to say, 2026-09-20
+
+Both halves exist and agree on the wire: `tools/cot_fragment.py` here,
+`CotFragment`/`CotReassembler` in `columba`, and `tak_native_v1.json` carries the
+vectors each side asserts against — the same payload produces byte-identical
+frames, and the other side's frames reassemble. 697 tests here, 6436 there.
+
+**None of that has been on a radio.** Every figure in the sections above is a
+bench measurement or an airtime calculation, and the three things a bench cannot
+answer are the three that decide whether the design holds:
+
+1. **Does the five-minute reassembly window fit a real LoRa transfer?** It was
+   chosen against an estimate, not a measurement. Eight fragments at SF7/BW250
+   is about 2.4 s of airtime and far more of waiting — proofs, retries, a
+   contended channel. If a slow transfer routinely outlives the window, the
+   window is wrong; if it completes in twenty seconds, the window is holding
+   memory for nothing.
+2. **Do fragments actually retry one at a time?** That is the whole argument for
+   fragmenting ourselves instead of using a `Resource` — independent proofs mean
+   a drawing arrives late rather than not at all. It has never been observed
+   under loss. Dropping one fragment deliberately is the test.
+3. **What does eight messages at once do to the channel?** Chat moved to
+   opportunistic packets because congestion, not timeouts, was what made links
+   slow. A fragmented drawing puts eight of them on the air back to back, which
+   is exactly the shape of traffic that caused the problem.
+
+**Do this before the typed polyline codec.** The codec's only purpose is to make
+drawings small enough to be worth sending, and it is built on top of
+reassembly — measuring the thing it depends on first is cheaper than finding out
+afterwards that the window or the burst was wrong.
+
+The test shape is the one in *The test shape, and where the deck's ATAK lives*:
+a drawing from the phone's ATAK, across BLE, LoRa and the deck's Waydroid, with
+`tools/tak_link_soak.py` watching the channel. The payload should be a real
+drawing from the corpus, not generated coordinates — see the caveat above.
 
 ### PR E — the node knows where it is and what it can reach
 
