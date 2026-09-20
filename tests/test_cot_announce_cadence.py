@@ -80,5 +80,46 @@ class InboxCadenceTests(unittest.TestCase):
             cot_bridge.ANNOUNCE_INTERVAL_SECONDS)
 
 
+class ColdStartTests(unittest.TestCase):
+    """A peer that has just appeared cannot wait half an hour for our inbox.
+
+    The thirty-minute idle cadence was reasoned from "an RNS path lasts a
+    week", which holds only for a peer that *heard* the announce. A node away
+    for the whole window comes back with a path to our TAK node and none to our
+    inbox, and those carry different things: markers and positions ride the
+    node destination and work immediately, chat rides the inbox and has nowhere
+    to go. Reported from the field 2026-09-20 as "markers always arrive,
+    messaging needs a cold start period".
+    """
+
+    def test_a_greeting_carries_the_inbox_even_inside_the_idle_interval(self):
+        made = bridge()
+        made.announce()                       # idle announce, inbox goes
+        made._last_inbox_announce -= cot_bridge.INBOX_ANNOUNCE_FLOOR_SECONDS + 1
+        made.announce(greeting=True)
+        self.assertEqual(made.lxmf.announce.call_count, 2)
+
+    def test_the_greeting_floor_still_bounds_a_storm(self):
+        """Ten nodes powering up together must not mean ten inbox announces."""
+        made = bridge()
+        made.announce(greeting=True)
+        for _ in range(10):
+            made.announce(greeting=True)
+        self.assertEqual(made.lxmf.announce.call_count, 1)
+
+    def test_an_idle_announce_still_waits_the_long_interval(self):
+        """The airtime saving is kept. Only a peer appearing shortens it."""
+        made = bridge()
+        made.announce()
+        made._last_inbox_announce -= cot_bridge.INBOX_ANNOUNCE_FLOOR_SECONDS + 1
+        made.announce()
+        self.assertEqual(made.lxmf.announce.call_count, 1)
+
+    def test_the_greeting_floor_is_far_shorter_than_the_idle_interval(self):
+        """Stated as a test because the two being equal is the bug."""
+        self.assertLess(cot_bridge.INBOX_ANNOUNCE_FLOOR_SECONDS,
+                        cot_bridge.INBOX_ANNOUNCE_INTERVAL_SECONDS)
+
+
 if __name__ == "__main__":
     unittest.main()

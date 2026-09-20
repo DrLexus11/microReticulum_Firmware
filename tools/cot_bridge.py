@@ -67,6 +67,26 @@ DEFAULT_PORT = 18087
 # the thing it exists to enable. See CarriedIssues #8.
 INBOX_ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 
+# ...but a peer that has just appeared cannot wait half an hour for it.
+#
+# The thirty-minute figure was reasoned from "an RNS path lasts a week", which
+# is true only for a peer that *heard* the announce. A node that was away for
+# the whole window never did, so it comes back holding a path to our TAK node
+# and none to our inbox -- and those carry different things. Markers and
+# positions ride the node destination and work immediately; chat rides the
+# inbox and has nowhere to go until a path request crawls across LoRa.
+#
+# That is exactly the reported symptom: "markers always arrive, messaging needs
+# a cold start period". Reported from the field 2026-09-20, caused here
+# 2026-09-14.
+#
+# So a greeting carries the inbox too, behind its own short floor. One a minute
+# is 0.2% of channel at worst and bounded by how often peers actually announce,
+# which is now every 300 s at the fastest -- the fifteen-second storm this
+# interval was introduced to stop came from a 45 s bench cadence that no longer
+# exists.
+INBOX_ANNOUNCE_FLOOR_SECONDS = 60
+
 # How long the mesh may be silent before that is worth saying out loud.
 #
 # Not a timeout and nothing is restarted: this only prints. The case it exists
@@ -400,7 +420,7 @@ class CotBridge:
         self._silence_reported = False
 
     # ---- membership ----
-    def announce(self):
+    def announce(self, greeting=False):
         """Say who we are, so peers can address us.
 
         Without this the UID derived in pivot 1 decodes to a destination
@@ -425,21 +445,27 @@ class CotBridge:
         """
         self.node.announce(membership.member_payload(self.team, self.secret,
                                                      self.callsign, self.role))
-        self._announce_inbox()
+        self._announce_inbox(greeting=greeting)
 
-    def _announce_inbox(self):
-        """Announce the LXMF inbox, at most every INBOX_ANNOUNCE_INTERVAL.
+    def _announce_inbox(self, greeting=False):
+        """Announce the LXMF inbox, on its own clock rather than the node's.
 
-        On its own clock rather than the node's. Membership expires and the
-        node announce is what keeps a team knowing who is in it; an inbox
-        announce only has to leave a path behind, and a path lasts a week. When
-        the two shared a cadence this ran about once every fifteen seconds --
-        airtime taken from the very link it exists to make possible.
+        Membership expires, so the node announce is what keeps a team knowing
+        who is in it. An inbox announce only has to leave a path behind, and a
+        path lasts a week -- which is why the idle cadence is long.
+
+        `greeting` is the exception, and it is the whole of the cold-start fix.
+        Somebody has just announced, which means they may have only now arrived
+        and have no path to our inbox. Half an hour of markers arriving while
+        chat silently fails is the symptom that produced this argument; a
+        minute is not.
         """
         if self.lxmf is None:
             return
+        floor = (INBOX_ANNOUNCE_FLOOR_SECONDS if greeting
+                 else INBOX_ANNOUNCE_INTERVAL_SECONDS)
         now = time.time()
-        if now - self._last_inbox_announce < INBOX_ANNOUNCE_INTERVAL_SECONDS:
+        if now - self._last_inbox_announce < floor:
             return
         self._last_inbox_announce = now
         self.lxmf.announce()
@@ -504,7 +530,11 @@ class CotBridge:
         self._heard_mesh()
         if self.registry.should_greet():
             try:
-                self.announce()
+                # greeting=True: whoever just spoke may have only now arrived,
+                # and a node with no path to our inbox gets markers and no
+                # chat. This is the moment that costs nothing to answer and
+                # everything to miss.
+                self.announce(greeting=True)
             except Exception as error:                      # noqa: BLE001
                 print("[bridge] greeting announce failed: %s" % error, flush=True)
         # Somebody is back, so ask what was held while they were away.
