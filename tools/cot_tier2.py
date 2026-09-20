@@ -82,12 +82,17 @@ DICTIONARY = (
 )
 
 
-def encode(cot_xml):
+def encode(cot_xml, bound=MAX_FRAME_BYTES):
     """Frame a CoT event for tier 2, compressed only when that is smaller.
 
     A very short event can deflate to more than it started as, and paying for
     compression that made the packet bigger is the kind of thing that never
     shows up until somebody measures airtime.
+
+    `bound` is the one-packet limit that makes tier 2 tier 2, and refusing
+    above it is the default for exactly that reason. Tier 3 passes None: it
+    wants the same frame, knowing it is too big, because it is about to cut it
+    into pieces that each fit. Nothing else should.
     """
     if isinstance(cot_xml, str):
         cot_xml = cot_xml.encode("utf-8", errors="strict")
@@ -103,7 +108,7 @@ def encode(cot_xml):
         frame = bytes([VERSION, ENCODING_DEFLATE_DICT_V1]) + deflated
     else:
         frame = bytes([VERSION, ENCODING_RAW]) + bytes(cot_xml)
-    if len(frame) > MAX_FRAME_BYTES:
+    if bound is not None and len(frame) > bound:
         # Tier 2 is one packet by definition, and this is the bound that makes
         # it one. Nothing here checked it: a 5 KB ATAK drawing compresses to
         # ~700 bytes, which is comfortably under MAX_DECOMPRESSED and nearly
@@ -112,7 +117,7 @@ def encode(cot_xml):
         # disconnected ATAK rather than reporting anything.
         raise ValueError(
             "tier 2 frame is %d bytes, over the %d-byte bound; it belongs in tier 3"
-            % (len(frame), MAX_FRAME_BYTES))
+            % (len(frame), bound))
     return frame
 
 

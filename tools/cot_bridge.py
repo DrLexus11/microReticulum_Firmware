@@ -33,6 +33,7 @@ import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
 import cot_chat
+import cot_fragment
 import cot_gateway
 import cot_marker
 import cot_position
@@ -408,6 +409,10 @@ class CotBridge:
         self.positions_out_of_order = 0
         # Frames whose claimed sender did not match the carrier's proof.
         self.chat_misattributed = 0
+        # Events too big for one packet, and the ones put back together.
+        self.fragmented = 0
+        self.reassembled = 0
+        self._reassembler = cot_fragment.Reassembler()
         # When the propagation node was last asked what it is holding.
         self._last_collect = 0.0
         # When the LXMF inbox was last announced, which is on its own clock.
@@ -581,6 +586,20 @@ class CotBridge:
         # of them rather than three independent version counters -- see
         # tools/tak_payload.py for why that distinction matters.
         kind = tak_payload.kind_of(raw)
+        if kind == tak_payload.FRAGMENT_V1:
+            # Keyed on the sender, so two peers picking the same transfer id
+            # cannot merge into a frame neither of them sent.
+            sender = getattr(getattr(packet, "link", None), "hash", None)
+            if sender is None:
+                sender = getattr(packet, "destination_hash", b"")
+            whole = self._reassembler.feed(sender, raw)
+            if whole is None:
+                return
+            print("[bridge] reassembled a %d byte event from fragments"
+                  % len(whole), flush=True)
+            self.reassembled += 1
+            raw = whole
+            kind = tak_payload.kind_of(raw)
         if kind == tak_payload.POSITION_V2:
             if self._position_from_mesh(raw):
                 return
@@ -792,13 +811,22 @@ class CotBridge:
             return
         if self._marker_from_atak(xml):
             return
-        frame = self.pipeline.frame(xml, tier2.encode)
-        if frame is None:
+        # Cut up rather than refused. An event over the one-packet bound used
+        # to be dropped outright, which is why drawings and a nine-line MEDEVAC
+        # never crossed at all. Ordinary events still come back as one frame
+        # and cost nothing for this.
+        frames = self.pipeline.frames(xml, tier2.encode, cot_fragment.fragments)
+        if not frames:
             # The pipeline keeps its own refusal count; reading it here rather
             # than assigning it into a shared one, which silently discarded
             # every mesh-side drop recorded above.
             return
-        self.sent += self._fan_out(frame)
+        if len(frames) > 1:
+            self.fragmented += 1
+            print("[bridge] event too large for one packet; sending %d fragments"
+                  % len(frames), flush=True)
+        for frame in frames:
+            self.sent += self._fan_out(frame)
 
     def _position_from_atak(self, xml):
         """Send a position report as twenty-one bytes, if it is due.

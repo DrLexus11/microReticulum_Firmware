@@ -321,6 +321,39 @@ class CotOutbound:
         if learned:
             self.atak_uid = learned
 
+    def frames(self, cot_xml, encode, fragment=None):
+        """Every frame this event needs, in order. Empty if it should not go.
+
+        `frame` returns one or nothing, which was the whole world while tier 2
+        was the only path off this node. An event too big for one packet was
+        therefore not late, it was gone -- which is why drawings and a nine-line
+        MEDEVAC never crossed.
+
+        With `fragment` supplied, an event that will not fit is cut up instead
+        of refused. Everything else is unchanged and still returns exactly one
+        frame, so the ordinary case pays nothing for the existence of the
+        unusual one.
+        """
+        one = self.frame(cot_xml, encode)
+        if one is not None:
+            return [one]
+        if fragment is None or self.last_drop is None:
+            return []
+        # Only a size refusal is worth cutting up. Malformed XML, our own echo
+        # and an undecodable payload are all "do not send this", and
+        # fragmenting them would put the same refusal on the air in pieces.
+        if "tier 3" not in self.last_drop:
+            return []
+        try:
+            oversized = encode(
+                rewrite_self_uid(cot_xml, self.atak_uid, self.our_uid), bound=None)
+            return fragment(oversized)
+        except ValueError as error:                              # noqa: BLE001
+            self.dropped += 1
+            self.last_drop = str(error)
+            print("[endpoint] not sent, even fragmented: %s" % error, flush=True)
+            return []
+
     def frame(self, cot_xml, encode):
         """The frame to put on the mesh, or None if this event should not go.
 
@@ -358,7 +391,7 @@ class CotOutbound:
         self.observe(cot_xml)
         try:
             return encode(rewrite_self_uid(cot_xml, self.atak_uid, self.our_uid))
-        except ValueError as error:
+        except ValueError as error:                              # noqa: BLE001
             # Said out loud, not only counted. The commonest reason to land
             # here is an event too big for one packet -- a drawing, or a range
             # and bearing line -- and from ATAK that looks like the feature
