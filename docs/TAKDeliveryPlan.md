@@ -557,6 +557,66 @@ reports honestly that nothing is arriving.
   It is a wire-format change, so it lands with the other two here rather than
   alone.
 
+### Tier 3: how it fragments, decided 2026-09-20
+
+**Half of tier 3 already exists and nobody noticed.** Ask LXMF for
+OPPORTUNISTIC and it promotes anything over the single-packet limit to DIRECT
+over a `Resource` by itself, with RNS's windowing, retries and proof:
+
+```
+chat-sized  (84 B)    -> OPPORTUNISTIC via PACKET
+drawing     (600 B)   -> DIRECT        via RESOURCE
+data pkg    (5000 B)  -> DIRECT        via RESOURCE
+```
+
+So an addressed oversized event would already cross. What stops it is this side:
+`cot_tier2.encode()` refuses above 383 B before LXMF is ever handed the payload.
+
+**The fan-out is already N unicasts**, not a group broadcast -- `_fan_out` calls
+`_send_to` once per member. So a drawing to the team costs N transmissions
+whichever mechanism carries it, and the choice is only what each one is.
+
+### The measurement that decided it
+
+Per member, one direction, at SF7/BW250/CR4:5. "Ours" is one LXMF message per
+fragment, each with its own delivery proof and retry. "Resource" is one link
+handshake, amortised, then the segments.
+
+```
+frags   payload    ours       Resource
+    2     766 B     741 ms     1068 ms    ours
+    4    1532 B    1482 ms     1646 ms    ours
+    6    2298 B    2224 ms     2224 ms    even
+   20    7660 B    7412 ms     6267 ms    Resource
+```
+
+The crossover is **about six fragments, near 2.3 KB**. Below it the link
+handshake costs more than per-fragment proofs; above it the handshake amortises
+and `Resource` wins.
+
+**Everything on the LoRa requirement list is below the crossover.** A compressed
+drawing is 700 B, two fragments. A nine-line MEDEVAC is one. Images and data
+packages -- the cases where `Resource` wins -- are explicitly the HaLow phase,
+on a link where a handshake is cheap anyway.
+
+### The decision
+
+**Fragment ourselves below the crossover; let LXMF promote above it.**
+
+Each fragment is an ordinary LXMF message carrying a transfer id, an index and a
+count. That reuses LXMF's per-message delivery proof and retry rather than
+reimplementing selective retransmission -- the far end only has to reassemble,
+which is a buffer, an ordering and a timeout.
+
+Above the threshold, hand the whole payload to LXMF as one message and let it
+do what it already does. No new code for that path at all.
+
+**The airtime is not the strongest argument; the failure mode is.** A `Resource`
+is all-or-nothing on a link that may not establish -- establishment was measured
+at 5 of 15 on a congested channel -- while independent proved fragments retry one
+at a time and a drawing arrives late rather than not at all. On a disaster mesh
+that difference matters more than four seconds.
+
 ### Event coverage, measured 2026-09-20
 
 Tier 2 is a generic passthrough: any CoT type that fits 383 B crosses whether or
