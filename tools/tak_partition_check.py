@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cot_bridge
 import tak_groups as groups
 import tak_identity as tak_identity
 import tak_lxmf
@@ -52,15 +53,22 @@ def log(message):
 
 
 def peer_identity(RNS):
-    """The same peer every run, so returning is returning rather than arriving."""
+    """The same peer every run, so returning is returning rather than arriving.
+
+    Borrowed from the bridge rather than rewritten. This used to check
+    `path.exists()` and then hand the *pathname* to `Identity.from_file()`,
+    which reopens by name -- so a local process can swap the path between the
+    two calls and choose this peer's identity for it. It also wrote the key and
+    chmod'ed afterwards, leaving a window where a private key sat at whatever
+    the process umask allowed.
+
+    `cot_bridge.load_node_identity` already solves both, with O_NOFOLLOW, a
+    check on the descriptor it actually reads, and a file created private
+    rather than made private. A second copy of that reasoning is a second place
+    for it to rot, so this calls it.
+    """
     PEER_HOME.mkdir(parents=True, exist_ok=True)
-    path = PEER_HOME / "identity"
-    if path.exists():
-        return RNS.Identity.from_file(str(path))
-    identity = RNS.Identity()
-    identity.to_file(str(path))
-    os.chmod(path, 0o600)
-    return identity
+    return cot_bridge.load_node_identity(PEER_HOME / "identity")
 
 
 def main():
@@ -121,7 +129,11 @@ def main():
     # collect: the peer has come back, and asks the propagation node what it
     # missed. Nobody resends anything -- that is the whole claim.
     log("back on the network; requesting what was held for us")
-    carrier.router.request_messages_from_propagation_node(identity)
+    # Through the carrier, not straight at the router. The carrier clears the
+    # last transfer's state first, and a collect that skips that can be read as
+    # already finished -- which is the very failure this harness exists to
+    # catch, so it must not be the one thing the harness does differently.
+    carrier.collect(identity)
     deadline = time.time() + args.sync_seconds
     while time.time() < deadline and not received:
         time.sleep(1)

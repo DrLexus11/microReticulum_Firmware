@@ -62,5 +62,56 @@ class CollectTests(unittest.TestCase):
         self.assertFalse(made.collect_held())
 
 
+class SyncStateTests(unittest.TestCase):
+    """A second collect must not be ignored because the first one finished.
+
+    The router keeps the state of the last transfer and a request does not
+    clear it, so after the first collect it sits in PR_COMPLETE with the
+    wants-download flags still set. The reconnect-triggered collect -- the one
+    that makes store-and-forward unattended at all -- is then read as already
+    done, and a node comes back and quietly fetches nothing.
+    """
+
+    def carrier(self):
+        import tak_lxmf
+        made = tak_lxmf.Carrier.__new__(tak_lxmf.Carrier)
+        made.propagation_node = b"\x11" * 16
+        made.collected = 0
+        made.router = Mock()
+        made.calls = []
+        made.router.acknowledge_sync_completion.side_effect = (
+            lambda **kw: made.calls.append(("acknowledge", kw)))
+        made.router.request_messages_from_propagation_node.side_effect = (
+            lambda identity: made.calls.append(("request", identity)))
+        return made
+
+    def test_the_state_is_reset_before_asking(self):
+        made = self.carrier()
+        made.collect(object())
+        self.assertEqual([name for name, _ in made.calls], ["acknowledge", "request"])
+
+    def test_the_reset_is_unconditional(self):
+        """reset_state=True, not the default. Without it acknowledge only
+        clears a state at or below PR_COMPLETE, which is exactly the state a
+        finished transfer leaves behind."""
+        made = self.carrier()
+        made.collect(object())
+        self.assertEqual(made.calls[0][1], {"reset_state": True})
+
+    def test_a_second_collect_resets_again(self):
+        made = self.carrier()
+        made.collect(object())
+        made.collect(object())
+        self.assertEqual([name for name, _ in made.calls],
+                         ["acknowledge", "request", "acknowledge", "request"])
+        self.assertEqual(made.collected, 2)
+
+    def test_with_no_propagation_node_nothing_is_touched(self):
+        made = self.carrier()
+        made.propagation_node = None
+        self.assertFalse(made.collect(object()))
+        self.assertEqual(made.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

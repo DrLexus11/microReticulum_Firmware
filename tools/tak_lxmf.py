@@ -171,6 +171,17 @@ class Carrier:
         if not self.propagation_node:
             return False
         try:
+            # The router keeps the state of the last transfer, and a request
+            # does not clear it: after the first collect finishes it sits in
+            # PR_COMPLETE, with the wants-download flags still set from that
+            # run. A later collect -- the reconnect-triggered one that makes
+            # store-and-forward unattended at all -- can then be ignored or
+            # read as already finished, so a node comes back and quietly
+            # fetches nothing.
+            #
+            # tools/lxmf/propagation_stress.py has always acknowledged first
+            # for this reason; this path was written without it.
+            self.router.acknowledge_sync_completion(reset_state=True)
             self.router.request_messages_from_propagation_node(identity)
             self.collected += 1
             return True

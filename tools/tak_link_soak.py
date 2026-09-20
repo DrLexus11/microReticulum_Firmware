@@ -32,6 +32,20 @@ import tak_identity
 import tak_lxmf
 
 
+def positive(value):
+    """A count that cannot be zero.
+
+    Zero ran the loop no times and then divided by it in the summary, so a
+    diagnostic written to answer "is this path healthy" crashed instead of
+    saying the question was malformed. Same guard tak_chat_soak.py already
+    applies to its own count.
+    """
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive number of attempts")
+    return number
+
+
 def dial(RNS, inbox, seconds):
     """One attempt. Returns (established, elapsed, rtt)."""
     started = time.time()
@@ -55,7 +69,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--to", required=True)
     parser.add_argument("--config", default=None)
-    parser.add_argument("--attempts", type=int, default=20)
+    parser.add_argument("--attempts", type=positive, default=20,
+                        help="how many links to dial (default 20)")
     parser.add_argument("--link-seconds", type=int, default=45,
                         help="how long to wait for one attempt (default 45)")
     parser.add_argument("--settle-seconds", type=float, default=5.0,
