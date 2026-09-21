@@ -985,6 +985,10 @@ exactly what the events said. The bridge and Columba could remember a marker's
 original addressee and route its repeats to that person alone; that overrides
 ATAK's definition of auto-send, so it waits for a decision.
 
+**Decided the same day: follow ATAK.** Auto-send broadcasts, as ATAK defines
+it, and operators are briefed that a marker with auto-send on reaches the whole
+team whatever it was first sent to. No routing override.
+
 ### The locked-phone gate, passed 2026-09-21
 
 53 minutes, handset locked, a chat line and a marker addressed to it sent from
