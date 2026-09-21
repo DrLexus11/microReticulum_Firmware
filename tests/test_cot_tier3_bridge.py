@@ -225,7 +225,7 @@ class CarriedReliablyTests(unittest.TestCase):
 
 
 class AutoSendTests(unittest.TestCase):
-    """ATAK re-sends an event every time it changes.
+    """Several versions of one event in quick succession.
 
     One version of a drawing costs about 7.7 s of channel for a team of seven,
     so a drag that emits a version a second would ask for eight times what the

@@ -1,7 +1,9 @@
-"""ATAK's auto-send, and what it would do to the channel without this.
+"""Several versions of one event, and what they would cost without this.
 
 One version of a drawing costs about 7.7 s of channel for a team of seven, and
-auto-send emits a version every time the drawing changes. These pin the two
+an operator who edits and re-sends produces several in quick succession. (Not
+ATAK's auto-send, which is markers-only and takes the marker codec -- see
+tools/cot_coalesce.py.) These pin the two
 halves: the sender sends the first version at once and only the latest after
 that, and the receiver never draws a version older than one it already drew.
 """

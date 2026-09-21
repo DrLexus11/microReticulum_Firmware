@@ -1,9 +1,16 @@
-"""Latest wins, for events that ATAK re-sends every time they change.
+"""Latest wins, for an event sent again before its last version has settled.
 
-ATAK's auto-send re-emits a shared drawing whenever anything about it changes.
-Drag one vertex and it sends the drawing again, and again, for every
-intermediate position. Each of those versions is now a full tier-3 transfer:
-several LXMF messages per member, each with its own proof and retry budget.
+An operator editing a shared drawing and sending it again, or sending it twice
+to be sure, produces several versions of one event in quick succession. Each is
+now a full tier-3 transfer: several LXMF messages per member, each with its own
+proof and retry budget.
+
+*Not* ATAK's auto-send, which this was first written against on a wrong
+premise. Checked on the bench 2026-09-21 against ATAK 5.6's own manual and
+code: auto-send exists only for unit markers, re-broadcasts about once every
+60 s rather than on every change, and travels through the 54-byte marker codec
+-- about 0.46 s of channel per minute for a team of seven. It never reaches
+this path, and a dragged auto-sent marker kept up well on the radios.
 
 **Costed, not guessed.** From `tools/position_budget.py`, one version of a
 typical compressed drawing (736 B, three fragments) costs about 1.3 s of

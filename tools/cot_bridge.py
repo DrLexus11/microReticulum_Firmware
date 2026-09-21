@@ -884,8 +884,8 @@ class CotBridge:
             # than assigning it into a shared one, which silently discarded
             # every mesh-side drop recorded above.
             return
-        # ATAK's auto-send re-emits an event every time it changes, and one
-        # version of a drawing costs about 7.7 s of channel for a team of
+        # An edited and re-sent drawing arrives as several versions of one
+        # event, and one version costs about 7.7 s of channel for a team of
         # seven. Latest wins: the first version goes now, and what follows
         # inside the window is coalesced into one. See tools/cot_coalesce.py.
         uid = self._uid_of(xml)

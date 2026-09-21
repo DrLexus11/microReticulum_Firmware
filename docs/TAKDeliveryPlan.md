@@ -778,7 +778,11 @@ destination hash.
 
 **Question 3 is still open** and now matters more. Over LXMF each fragment is a
 message with a retry budget, so a burst of eight costs more than eight packets
-did. ATAK also re-emits a shared drawing on a timer, which is why an unchanged
+did. (A premise here was wrong: ATAK's auto-send is markers-only, periodic
+rather than on-change, and carried by the marker codec -- checked against ATAK
+5.6's manual and code, and a dragged auto-sent unit marker kept up well on the
+radios. The coalescing below stands for re-sent drawings, not auto-send.) An
+unchanged
 drawing is now suppressed for two minutes — keyed on the uid and the frame bytes
 together, so an edited drawing still goes. None of that is measured yet.
 
