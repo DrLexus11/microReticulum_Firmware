@@ -308,7 +308,8 @@ class CotBridge:
                  callsign="BRIDGE", role="Team Member",
                  lxmf_storage=None, propagation_node=None,
                  announce_interval=ANNOUNCE_INTERVAL_SECONDS,
-                 bind_host=BIND_HOST, lxmf_direct_only=False):
+                 bind_host=BIND_HOST, lxmf_direct_only=False,
+                 members_path=None):
         import RNS
         self.rns = RNS
         self.bind_host = bind_host
@@ -341,6 +342,15 @@ class CotBridge:
         # its single hop -- so a team is a membership set and traffic for it is
         # addressed to each member. See docs/TAKIntegrationPivots.md.
         self.registry = membership.MemberRegistry(team, secret, own_hash=self.node.hash)
+        # The table outlives a restart, so a node that comes back is not blind
+        # to its team until somebody happens to announce. See
+        # MemberRegistry.save for what that cost on the bench.
+        self.members_path = members_path
+        if members_path:
+            restored = self.registry.load(members_path)
+            if restored:
+                print("[bridge] restored %d team member(s) from before the restart"
+                      % restored, flush=True)
         self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined,
                                                     self._member_heard)
         RNS.Transport.register_announce_handler(self.announce_handler)
@@ -529,6 +539,16 @@ class CotBridge:
               "check the radio rather than the team."
               % (silent_for // 60, len(self.registry.members())), flush=True)
 
+    def _save_members(self):
+        """Keep the saved table current. A failure is reported, never fatal:
+        a node that cannot write its roster still serves its team today."""
+        if not self.members_path:
+            return
+        try:
+            self.registry.save(self.members_path)
+        except OSError as error:
+            print("[bridge] could not save the team table: %s" % error, flush=True)
+
     def _member_heard(self, destination_hash, outcome):
         """Say who we are back, whoever just spoke.
 
@@ -543,6 +563,7 @@ class CotBridge:
         is still worth answering, but not within the same few seconds.
         """
         self._heard_mesh()
+        self._save_members()
         if self.registry.should_greet():
             try:
                 # greeting=True: whoever just spoke may have only now arrived,
@@ -1603,7 +1624,10 @@ def main():
                        propagation_node=propagation_node,
                        announce_interval=args.announce_interval,
                        bind_host=bind_host,
-                       lxmf_direct_only=args.lxmf_direct_only)
+                       lxmf_direct_only=args.lxmf_direct_only,
+                       members_path=os.path.join(
+                           os.path.expanduser(args.config or "~/.reticulum"),
+                           "tak_members.json"))
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:

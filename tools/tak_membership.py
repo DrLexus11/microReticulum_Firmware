@@ -21,6 +21,8 @@ membership is pseudonymous rather than private.
 
 import hashlib
 import hmac
+import json
+import os
 import struct
 import time
 
@@ -235,3 +237,64 @@ class MemberRegistry:
 
     def __len__(self):
         return len(self._members)
+
+    # ---- surviving a restart ----
+    #
+    # The table lives in memory, so a node that restarts is blind to its team
+    # until somebody announces -- and announces are rare by design. Seen on the
+    # bench 2026-09-21: a bridge restarted half a minute after the phone
+    # announced knew nobody, dropped the phone's positions as from an unknown
+    # node and sent its own to no one, and both ATAKs showed the other offline.
+    # A field node restarts for a flat battery or a watchdog, which is exactly
+    # when being blind costs most.
+
+    def save(self, path):
+        """Write the table to `path`, atomically and owner-only.
+
+        Owner-only because a member list is a roster: callsigns, roles, and
+        which nodes are one team. Atomic because a half-written file read back
+        after a crash would be worse than none.
+        """
+        payload = {
+            "tag": self.tag.hex(),
+            "members": {dest.hex(): entry for dest, entry in self._members.items()},
+        }
+        temporary = "%s.tmp" % path
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(temporary, path)
+
+    def load(self, path, now=None):
+        """Read back a saved table. Returns how many members were restored.
+
+        Nothing is restored across a change of team or secret: the saved tag
+        must be this registry's, or a node moved to another team would start
+        out addressing the old one. Entries already past expiry are left out,
+        so a node that was off for a day does not come back addressing people
+        who have gone. A missing or unreadable file restores nothing and is not
+        an error -- a first start has no file.
+        """
+        now = time.time() if now is None else now
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not hmac.compare_digest(bytes.fromhex(payload["tag"]), self.tag):
+                return 0
+            restored = 0
+            for hex_hash, entry in payload["members"].items():
+                heard = float(entry["heard"])
+                if now - heard > self.expiry:
+                    continue
+                destination = bytes.fromhex(hex_hash)
+                if self.own_hash is not None and destination == bytes(self.own_hash):
+                    continue
+                self._members[destination] = {
+                    "callsign": str(entry.get("callsign", "")),
+                    "role": str(entry.get("role", "")),
+                    "heard": heard,
+                }
+                restored += 1
+            return restored
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return 0
