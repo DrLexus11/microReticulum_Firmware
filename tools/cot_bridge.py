@@ -19,6 +19,7 @@ it competes with ATAK for a port ATAK already owns. See DEFAULT_PORT below.
 import argparse
 import collections
 import os
+import hashlib
 import struct
 from datetime import datetime, timedelta, timezone
 import socket
@@ -40,7 +41,8 @@ import cot_position
 import position_codec
 import tak_membership as membership
 import tak_payload
-from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
+from cot_endpoint import (CotClient, CotOutbound, CotStream, _parse,
+                          ping_reply)
 
 # Not 8087.
 #
@@ -101,6 +103,14 @@ INBOX_ANNOUNCE_FLOOR_SECONDS = 60
 # minutes and a team can simply have nothing to say. Fifteen minutes of nothing
 # at all, from a team we know has members, is not quiet -- it is deaf.
 MESH_SILENCE_SECONDS = 15 * 60
+
+# How long an oversized event is remembered, so ATAK's re-send of an unchanged
+# drawing does not pay for itself again. Long enough to cover a share timer,
+# short enough that a member who joins late still gets the next repeat.
+LARGE_REPEAT_SECONDS = 120
+
+# An operator drawing all morning must not grow that memory without bound.
+MAX_LARGE_EVENTS_REMEMBERED = 64
 
 # The least time between two asks of the propagation node.
 #
@@ -412,6 +422,8 @@ class CotBridge:
         # Events too big for one packet, and the ones put back together.
         self.fragmented = 0
         self.reassembled = 0
+        self.large_repeats_suppressed = 0
+        self._large_events = {}
         self._fragment_elapsed = 0.0
         self._reassembler = cot_fragment.Reassembler(
             observer=self._fragment_arrived)
@@ -596,30 +608,51 @@ class CotBridge:
     def _from_mesh(self, data, packet):
         self._heard_mesh()
         raw = bytes(data)
-        # Byte zero says which codec produced this. One namespace shared by all
-        # of them rather than three independent version counters -- see
-        # tools/tak_payload.py for why that distinction matters.
-        kind = tak_payload.kind_of(raw)
-        if kind == tak_payload.FRAGMENT_V1:
+        if tak_payload.kind_of(raw) == tak_payload.FRAGMENT_V1:
             # Keyed on the sender, so two peers picking the same transfer id
             # cannot merge into a frame neither of them sent.
             sender = getattr(getattr(packet, "link", None), "hash", None)
             if sender is None:
                 sender = getattr(packet, "destination_hash", b"")
-            whole = self._reassembler.feed(sender, raw)
-            if whole is None:
+            raw = self._reassemble(raw, sender)
+            if raw is None:
                 return
-            print("[bridge] reassembled a %d byte event from %d fragments "
-                  "in %.1f s" % (len(whole), raw[6], self._fragment_elapsed),
-                  flush=True)
-            self.reassembled += 1
-            raw = whole
-            kind = tak_payload.kind_of(raw)
+        self._dispatch_frame(raw)
+
+    def _reassemble(self, raw, sender):
+        """One fragment in; the whole event out once the last one lands.
+
+        Shared by both carriers. A fragment can arrive as a bare packet or as
+        an LXMF message, and which one it was says nothing about how it should
+        be put back together -- a second copy of this would be a second place
+        for the ordering and the timeout to be got wrong.
+        """
+        whole = self._reassembler.feed(sender, raw)
+        if whole is None:
+            return None
+        print("[bridge] reassembled a %d byte event from %d fragments "
+              "in %.1f s" % (len(whole), raw[6], self._fragment_elapsed),
+              flush=True)
+        self.reassembled += 1
+        return whole
+
+    def _dispatch_frame(self, raw, signed_by=None):
+        """Hand one whole frame to whichever codec made it.
+
+        Byte zero says which that is. One namespace shared by all of them
+        rather than three independent version counters -- see
+        tools/tak_payload.py for why that distinction matters.
+
+        `signed_by` is the member the carrier proves sent this, where the
+        carrier can prove anything, and is passed to the codecs that can use
+        it. A bare packet carries no such proof and honestly passes None.
+        """
+        kind = tak_payload.kind_of(raw)
         if kind == tak_payload.POSITION_V2:
             if self._position_from_mesh(raw):
                 return
         elif kind == tak_payload.CHAT_V1:
-            if self._chat_from_mesh(raw):
+            if self._chat_from_mesh(raw, signed_by=signed_by):
                 return
         elif kind == tak_payload.MARKER_V1:
             if self._marker_from_mesh(raw):
@@ -837,6 +870,8 @@ class CotBridge:
             # every mesh-side drop recorded above.
             return
         if len(frames) > 1:
+            if self._repeat_of_a_large_event(xml, frames):
+                return
             self.fragmented += 1
             print("[bridge] event too large for one packet; sending %d fragments"
                   % len(frames), flush=True)
@@ -846,7 +881,7 @@ class CotBridge:
             # to back.
             started = time.time()
             for frame in frames:
-                self.sent += self._fan_out(frame)
+                self.sent += self._fan_out_reliably(frame)
             print("[bridge] %d fragments handed off in %.1f s"
                   % (len(frames), time.time() - started), flush=True)
             return
@@ -955,7 +990,19 @@ class CotBridge:
         LXMF already proves who sent this, cryptographically, and that proof
         was being thrown away. Binding the two costs one recall.
         """
-        if self._chat_from_mesh(frame, signed_by=self._member_for_lxmf(source_hash)):
+        signed_by = self._member_for_lxmf(source_hash)
+        raw = bytes(frame)
+        if tak_payload.kind_of(raw) == tak_payload.FRAGMENT_V1:
+            # A fragment now travels this way too, because a bare packet could
+            # not promise it arrived. Keyed on the member the carrier *proved*
+            # rather than on a destination hash -- strictly better than the
+            # packet path can manage, and it costs nothing here.
+            raw = self._reassemble(raw, signed_by or b"")
+            if raw is None:
+                return
+            self._dispatch_frame(raw, signed_by=signed_by)
+            return
+        if self._chat_from_mesh(raw, signed_by=signed_by):
             self.received += 1
 
     def _member_for_lxmf(self, source_hash):
@@ -1118,6 +1165,78 @@ class CotBridge:
             print("[bridge] could not reach %s: %s"
                   % (destination_hash.hex(), error), flush=True)
             return 0
+
+    def _fan_out_reliably(self, frame):
+        """Send one fragment to every member, over LXMF. Returns how many went.
+
+        **This is the difference between tier 3 working and appearing to.** A
+        bare packet has no proof, no retry and no propagation node, so one lost
+        fragment loses the whole event and nothing anywhere notices: the far
+        end holds an incomplete transfer until the reassembly window expires
+        and then drops it. Measured on hardware 2026-09-21, and it is exactly
+        the all-or-nothing failure the design rejected a `Resource` for.
+
+        LXMF is what the design said from the beginning -- every fragment a
+        whole message, so each retries on its own and a drawing arrives late
+        rather than not at all. A single-packet event still takes the cheap
+        fan-out: it has nothing to be incomplete against, and the airtime
+        costing in pivot 5 assumed that.
+
+        The fallback to a bare packet is for a peer whose identity cannot be
+        recalled, and for `--no-lxmf`. It is deliberately *not* a fallback for
+        LXMF declining, for the same reason `_dispatch_addressed_chat` refuses
+        one: sending unreliably while the caller believes it sent reliably is
+        worse than not sending.
+        """
+        sent = 0
+        for member in self.registry.members():
+            identity = self.rns.Identity.recall(member)
+            if self.lxmf is not None and identity is not None:
+                if self.lxmf.send_frame(identity, frame):
+                    sent += 1
+                else:
+                    self.unreachable += 1
+                continue
+            sent += self._send_to(member, frame)
+        return sent
+
+    def _repeat_of_a_large_event(self, xml, frames):
+        """True if this oversized event is one ATAK has already sent us.
+
+        ATAK re-emits a drawing on a timer once it is shared, and every repeat
+        used to cost one bare packet per fragment per member. Over LXMF it
+        costs a message with a retry budget instead, so an unchanged drawing
+        re-sent every thirty seconds would put the channel under a load that
+        buys nothing: the far end already has it, and LXMF is now the thing
+        that makes sure of that.
+
+        Keyed on the event uid *and* the frames, so an edited drawing is not
+        suppressed -- different geometry is different bytes. Only repeats of
+        something byte-identical are dropped, and only for a window, so a peer
+        who joins later still gets the next one.
+        """
+        try:
+            event = _parse(xml)
+        except ValueError:
+            # Malformed enough that there is nothing to key on. Tier 2 has
+            # already refused it or will; this gate has no opinion.
+            return False
+        uid = event.get("uid") or ""
+        if not uid:
+            return False
+        digest = hashlib.sha256(b"".join(frames)).digest()
+        now = time.time()
+        seen = self._large_events.get(uid)
+        if seen and seen[0] == digest and now - seen[1] < LARGE_REPEAT_SECONDS:
+            self.large_repeats_suppressed += 1
+            return True
+        self._large_events[uid] = (digest, now)
+        # An operator drawing all morning must not grow this without bound.
+        if len(self._large_events) > MAX_LARGE_EVENTS_REMEMBERED:
+            oldest = min(self._large_events,
+                         key=lambda key: self._large_events[key][1])
+            del self._large_events[oldest]
+        return False
 
     def _fan_out(self, frame):
         """Send one frame to every member of the team. Returns how many went.

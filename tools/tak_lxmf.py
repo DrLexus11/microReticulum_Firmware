@@ -225,6 +225,34 @@ class Carrier:
         whole point -- the caller is not blocked on a radio, and a peer who is
         out of range gets the message when they return rather than never.
         """
+        return self._send(identity, frame, text, proof_context,
+                          "direct message")
+
+    def send_frame(self, identity, frame):
+        """Send one TAK frame to one peer over LXMF. Returns True if accepted.
+
+        Chat is not the only thing that needs to arrive. A tier-3 fragment is
+        one slice of an event that is worthless without the others, and the
+        design has always said each fragment is a whole LXMF message -- for
+        the proof and the retry, which is what makes a drawing arrive late
+        rather than not at all.
+
+        It did not get them. Fragments went out through the marker fan-out as
+        bare packets, and measured on hardware 2026-09-21 a two-fragment
+        drawing lost its second fragment and nothing retried it: the far end
+        held half a drawing until the reassembly window expired. That is the
+        all-or-nothing failure the `Resource` was rejected for, moved down a
+        layer and out of sight.
+        """
+        return self._send(identity, frame, "", None, "event")
+
+    def _send(self, identity, frame, text, proof_context, label):
+        """One frame, one LXMF message, one peer.
+
+        Shared so a fragment and a chat line cannot take subtly different
+        routes: the difference between them is what they carry, not how
+        reliably it travels.
+        """
         try:
             destination = delivery_destination(identity, RNS.Destination.OUT)
             # LXMF's encrypted packet delivery retains proofs and retries.
@@ -245,15 +273,15 @@ class Carrier:
             # the reliable path or quietly fell back to a bare packet is the
             # one fact PR C turns on, and a passing round-trip test cannot
             # tell the two apart. tak_team_acceptance.sh greps for this.
-            print("[lxmf] direct message sent over LXMF (%d bytes, %d of text)"
-                  % (len(frame), len(text or "")), flush=True)
+            print("[lxmf] %s sent over LXMF (%d bytes, %d of text)"
+                  % (label, len(frame), len(text or "")), flush=True)
             return True
         except Exception as error:
             # An unreachable peer is an ordinary event on a mesh, not a fault
             # in this process. Counted so the endpoint can say so, never fatal:
             # one unreachable member must not cost the others their copy.
             self.failed += 1
-            print("[lxmf] could not send chat: %s" % error, flush=True)
+            print("[lxmf] could not send %s: %s" % (label, error), flush=True)
             return False
 
     # ---- outcomes ----

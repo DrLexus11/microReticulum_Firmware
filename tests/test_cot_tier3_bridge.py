@@ -161,5 +161,192 @@ class BridgeReceiveTests(unittest.TestCase):
         self.assertEqual(made.reassembled, 1)
 
 
+class CarriedReliablyTests(unittest.TestCase):
+    """How a fragment travels, which is the whole of whether tier 3 works.
+
+    A bare packet has no proof, no retry and no propagation node. Measured on
+    hardware 2026-09-21, a two-fragment drawing lost its second fragment and
+    nothing retried it: the far end held half a drawing until the reassembly
+    window expired. The design always said each fragment is a whole LXMF
+    message; these are what say it actually is one.
+    """
+
+    def bridge(self, lxmf=None, recall=True):
+        made = CotBridge.__new__(CotBridge)
+        made.lxmf = lxmf
+        made.unreachable = 0
+        made.sent = 0
+        made.registry = Mock()
+        made.registry.members.return_value = [b"\x11" * 16, b"\x22" * 16]
+        made.rns = Mock()
+        made.rns.Identity.recall.return_value = Mock() if recall else None
+        made.packets = []
+        made._send_to = lambda member, frame: made.packets.append(
+            (member, frame)) or 1
+        return made
+
+    def test_a_fragment_goes_over_lxmf_not_as_a_bare_packet(self):
+        carrier = Mock()
+        carrier.send_frame.return_value = True
+        made = self.bridge(lxmf=carrier)
+
+        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 2)
+        self.assertEqual(carrier.send_frame.call_count, 2)
+        self.assertEqual(made.packets, [], "a fragment went out unproved")
+
+    def test_lxmf_declining_does_not_fall_back_to_a_bare_packet(self):
+        """Sending unreliably while the caller believes it sent reliably is
+        worse than not sending. Same doctrine as an addressed chat line."""
+        carrier = Mock()
+        carrier.send_frame.return_value = False
+        made = self.bridge(lxmf=carrier)
+
+        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 0)
+        self.assertEqual(made.packets, [])
+        self.assertEqual(made.unreachable, 2)
+
+    def test_without_lxmf_the_bare_packet_is_still_the_route(self):
+        """--no-lxmf is how somebody chooses best effort. It is not something
+        to hand them by accident, and it is not nothing either."""
+        made = self.bridge(lxmf=None)
+
+        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 2)
+        self.assertEqual(len(made.packets), 2)
+
+    def test_a_peer_whose_identity_is_lost_still_gets_a_packet(self):
+        carrier = Mock()
+        made = self.bridge(lxmf=carrier, recall=False)
+
+        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 2)
+        self.assertEqual(len(made.packets), 2)
+        carrier.send_frame.assert_not_called()
+
+
+class RepeatedLargeEventTests(unittest.TestCase):
+    """ATAK re-emits a shared drawing on a timer.
+
+    Each repeat used to cost one bare packet per fragment per member. Over
+    LXMF it costs a message with a retry budget, so an unchanged drawing
+    re-sent on a share timer would load the channel for nothing -- the far end
+    has it, and LXMF is now what makes sure of that.
+    """
+
+    def bridge(self):
+        made = CotBridge.__new__(CotBridge)
+        made.large_repeats_suppressed = 0
+        made._large_events = {}
+        return made
+
+    def frames(self, xml):
+        pipeline = CotOutbound(OUR_UID)
+        with redirect_stdout(io.StringIO()):
+            return pipeline.frames(xml, tier2.encode, cot_fragment.fragments)
+
+    def test_the_first_time_is_never_a_repeat(self):
+        made = self.bridge()
+        xml = big_event()
+        self.assertFalse(made._repeat_of_a_large_event(xml, self.frames(xml)))
+
+    def test_the_same_drawing_again_is_suppressed(self):
+        made = self.bridge()
+        xml = big_event()
+        frames = self.frames(xml)
+        made._repeat_of_a_large_event(xml, frames)
+
+        self.assertTrue(made._repeat_of_a_large_event(xml, frames))
+        self.assertEqual(made.large_repeats_suppressed, 1)
+
+    def test_an_edited_drawing_is_not_suppressed(self):
+        """Different geometry is different bytes, and an operator who moves a
+        line means it."""
+        made = self.bridge()
+        first = big_event()
+        made._repeat_of_a_large_event(first, self.frames(first))
+        edited = big_event(points=41)
+
+        self.assertFalse(
+            made._repeat_of_a_large_event(edited, self.frames(edited)))
+
+    def test_the_window_expires(self):
+        made = self.bridge()
+        xml = big_event()
+        frames = self.frames(xml)
+        made._repeat_of_a_large_event(xml, frames)
+        # As though the share timer came round well after the window.
+        digest, when = made._large_events["DRAW-1"]
+        made._large_events["DRAW-1"] = (digest, when - 10_000)
+
+        self.assertFalse(made._repeat_of_a_large_event(xml, frames))
+
+    def test_an_event_without_a_uid_is_not_keyed_on(self):
+        made = self.bridge()
+        self.assertFalse(made._repeat_of_a_large_event("<event/>", [b"x"]))
+
+    def test_malformed_xml_has_no_opinion_here(self):
+        made = self.bridge()
+        self.assertFalse(made._repeat_of_a_large_event("<not xml", [b"x"]))
+
+    def test_the_memory_does_not_grow_without_bound(self):
+        made = self.bridge()
+        for index in range(200):
+            xml = big_event().replace("DRAW-1", "DRAW-%d" % index)
+            made._repeat_of_a_large_event(xml, [b"x%d" % index])
+        self.assertLessEqual(len(made._large_events), 65)
+
+
+class FragmentsOverLxmfArriveTests(unittest.TestCase):
+    """A fragment that came by LXMF has to be put back together too.
+
+    Moving the send to LXMF moves the receive with it: fragments no longer
+    arrive on the packet callback at all. A receive path that still only
+    understood packets would have turned one silent failure into another.
+    """
+
+    def bridge(self):
+        made = CotBridge.__new__(CotBridge)
+        made.clients = []
+        made.clients_lock = threading.Lock()
+        made._replay = collections.deque(maxlen=64)
+        made._replay_lock = threading.Lock()
+        made.replayed = 0
+        made.received = 0
+        made.unreadable = 0
+        made.reassembled = 0
+        made.registry = Mock()
+        made._fragment_elapsed = 0.0
+        made._reassembler = cot_fragment.Reassembler(
+            observer=made._fragment_arrived)
+        made._member_for_lxmf = lambda source: b"\x42" * 16
+        made.drawn = []
+        made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)
+        return made
+
+    def test_a_drawing_split_over_lxmf_is_rejoined(self):
+        made = self.bridge()
+        pipeline = CotOutbound(OUR_UID)
+        with redirect_stdout(io.StringIO()):
+            frames = pipeline.frames(big_event(), tier2.encode, cot_fragment.fragments)
+        self.assertGreater(len(frames), 1, "fixture is no longer fragmented")
+
+        with redirect_stdout(io.StringIO()):
+            for frame in frames:
+                made._chat_from_lxmf(frame, b"\x77" * 16)
+
+        self.assertEqual(len(made.drawn), 1)
+        self.assertIn(b"DRAW-1", made.drawn[0])
+        self.assertEqual(made.reassembled, 1)
+
+    def test_a_partial_transfer_over_lxmf_draws_nothing(self):
+        made = self.bridge()
+        pipeline = CotOutbound(OUR_UID)
+        with redirect_stdout(io.StringIO()):
+            frames = pipeline.frames(big_event(), tier2.encode, cot_fragment.fragments)
+
+        with redirect_stdout(io.StringIO()):
+            made._chat_from_lxmf(frames[0], b"\x77" * 16)
+
+        self.assertEqual(made.drawn, [])
+
+
 if __name__ == "__main__":
     unittest.main()
