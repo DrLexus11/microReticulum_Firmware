@@ -945,6 +945,39 @@ into range of its board:
 This is not CarriedIssues #9: there the announces *were* sent to the board and
 still never arrived.
 
+### The locked-phone gate, passed 2026-09-21
+
+53 minutes, handset locked, a chat line and a marker addressed to it sent from
+the deck every five to six minutes:
+
+```
+chat              10 / 10 delivered   0-16 s, typically 1-3 s
+addressed marker  10 / 10 delivered   3-20 s, typically ~5 s
+```
+
+Confirmed at both ends: Columba logged every frame while the phone was locked,
+and the operator found all ten of each in ATAK's chat pane on unlocking. ATAK
+and both Columba processes held foreground-service rank for the whole run --
+including Columba's UI process, which hosts the TAK endpoint and has no
+foreground service of its own -- with no disconnects between ATAK and the
+endpoint and no restarts. The screen was off for 78% of samples.
+
+What it does not cover:
+
+- **The screen woke for each ping's notification**, so the handset never sat
+  undisturbed for the half hour or more where Android's deepest sleep and
+  Samsung's app sleeping act. Realistic -- a team's own traffic does the same --
+  but a quiet-channel run is the harder test. Repeat it on the Nexus 6P, whose
+  battery is the larger unknown.
+- **Outbound from a locked phone** was not measured directly, though Columba
+  kept reporting positions throughout.
+- A few messages raised no lock-screen notification, although all reached ATAK.
+  Display, not delivery; noted, not chased.
+
+The endpoint's structural risk stands in the code but did not show in practice.
+It is worth moving into the process that holds the foreground service when
+convenient, not as a condition of this PR.
+
 ### PR E — the node knows where it is and what it can reach
 
 - **GNSS.** `Position.h` already has the `GNSS` node-position kind; the NMEA
