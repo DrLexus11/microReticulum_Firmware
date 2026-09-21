@@ -146,5 +146,48 @@ class ReassemblyTests(unittest.TestCase):
         self.assertEqual(self.reassembler.pending(), 0)
 
 
+class ObserverTests(unittest.TestCase):
+    """The seam that lets a slow transfer be watched while it is still slow."""
+
+    def setUp(self):
+        self.seen = []
+        self.reassembler = cot_fragment.Reassembler(
+            observer=lambda *args: self.seen.append(args))
+
+    def test_every_fragment_is_reported_including_the_last(self):
+        """The last one closes the transfer, and it is the one that carries the
+        elapsed time worth reading."""
+        frames = cot_fragment.fragments(b"x" * 900, transfer_id=1)
+        for frame in frames:
+            self.reassembler.feed(PEER, frame)
+        self.assertEqual(len(self.seen), len(frames))
+        self.assertEqual([index for index, _, _, _ in self.seen],
+                         list(range(len(frames))))
+
+    def test_elapsed_is_measured_from_the_first_fragment(self):
+        """Not from the previous one. The timeout is measured against the first,
+        so a diagnostic that reported gaps would be answering a question nobody
+        asked."""
+        frames = cot_fragment.fragments(b"x" * 900, transfer_id=2)
+        self.reassembler.feed(PEER, frames[0], now=1000.0)
+        self.reassembler.feed(PEER, frames[1], now=1010.0)
+        self.assertEqual(self.seen[0][3], 0.0)
+        self.assertEqual(self.seen[1][3], 10.0)
+
+    def test_held_counts_what_is_in_hand_not_what_is_expected(self):
+        frames = cot_fragment.fragments(b"x" * 900, transfer_id=3)
+        self.reassembler.feed(PEER, frames[1])
+        self.assertEqual(self.seen[0][2], 1)
+
+    def test_a_reassembler_without_an_observer_still_works(self):
+        """The default path is the one that runs in the field."""
+        frames = cot_fragment.fragments(b"x" * 900, transfer_id=4)
+        plain = cot_fragment.Reassembler()
+        whole = None
+        for frame in frames:
+            whole = plain.feed(PEER, frame) or whole
+        self.assertEqual(whole, b"x" * 900)
+
+
 if __name__ == "__main__":
     unittest.main()

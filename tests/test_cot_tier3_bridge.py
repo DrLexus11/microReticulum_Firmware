@@ -122,7 +122,12 @@ class BridgeReceiveTests(unittest.TestCase):
         made.received = 0
         made.unreadable = 0
         made.reassembled = 0
-        made._reassembler = cot_fragment.Reassembler()
+        # Built the way the bridge builds it, observer included -- a fixture
+        # that wires this up differently from production tests a bridge that
+        # does not exist.
+        made._fragment_elapsed = 0.0
+        made._reassembler = cot_fragment.Reassembler(
+            observer=made._fragment_arrived)
         made._heard_mesh = lambda: None
         made.drawn = []
         made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)

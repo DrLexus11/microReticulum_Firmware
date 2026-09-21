@@ -123,12 +123,19 @@ class Reassembler:
     """
 
     def __init__(self, timeout_seconds=REASSEMBLY_TIMEOUT_SECONDS,
-                 max_transfers=16):
+                 max_transfers=16, observer=None):
         self.timeout = timeout_seconds
         self.max_transfers = max_transfers
         self.partial = {}
         self.completed = 0
         self.dropped = 0
+        # A diagnostic seam, not part of the wire. The reassembly window was
+        # chosen against an estimate of how long a transfer takes on LoRa, and
+        # the only way to find out whether that estimate was right is to watch
+        # fragments arrive. `feed` deletes the entry before it returns the
+        # payload, so elapsed time cannot be recovered afterwards -- it has to
+        # be observed as it happens.
+        self.observer = observer
 
     def feed(self, sender, frame, now=None):
         """Take one fragment. Returns the whole payload, or None if not yet.
@@ -161,6 +168,10 @@ class Reassembler:
             self.dropped += 1
             return None
         entry["slices"][index] = slice_
+        if self.observer is not None:
+            # Elapsed since the *first* fragment of this transfer, which is the
+            # number the timeout is measured against.
+            self.observer(index, count, len(entry["slices"]), now - entry["first"])
         if len(entry["slices"]) < count:
             return None
         del self.partial[key]

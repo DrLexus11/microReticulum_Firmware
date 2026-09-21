@@ -412,7 +412,9 @@ class CotBridge:
         # Events too big for one packet, and the ones put back together.
         self.fragmented = 0
         self.reassembled = 0
-        self._reassembler = cot_fragment.Reassembler()
+        self._fragment_elapsed = 0.0
+        self._reassembler = cot_fragment.Reassembler(
+            observer=self._fragment_arrived)
         # When the propagation node was last asked what it is holding.
         self._last_collect = 0.0
         # When the LXMF inbox was last announced, which is on its own clock.
@@ -578,6 +580,18 @@ class CotBridge:
                 # next one is half an hour away and members are kept far longer.
                 print("[bridge] announce failed: %s" % error, flush=True)
 
+    def _fragment_arrived(self, index, count, held, elapsed):
+        """One line per fragment, so a slow transfer is visible as it happens.
+
+        The five-minute reassembly window was chosen against an estimate. This
+        is what says whether the estimate was right -- and, if fragments are
+        arriving minutes apart, it says so while there is still something to
+        watch rather than after the transfer has already been given up on.
+        """
+        self._fragment_elapsed = elapsed
+        print("[bridge] fragment %d of %d, %d held, %.1f s since the first"
+              % (index + 1, count, held, elapsed), flush=True)
+
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
         self._heard_mesh()
@@ -595,8 +609,9 @@ class CotBridge:
             whole = self._reassembler.feed(sender, raw)
             if whole is None:
                 return
-            print("[bridge] reassembled a %d byte event from fragments"
-                  % len(whole), flush=True)
+            print("[bridge] reassembled a %d byte event from %d fragments "
+                  "in %.1f s" % (len(whole), raw[6], self._fragment_elapsed),
+                  flush=True)
             self.reassembled += 1
             raw = whole
             kind = tak_payload.kind_of(raw)
@@ -825,6 +840,16 @@ class CotBridge:
             self.fragmented += 1
             print("[bridge] event too large for one packet; sending %d fragments"
                   % len(frames), flush=True)
+            # How long the burst takes to hand off matters: chat was moved to
+            # opportunistic packets because congestion, not timeouts, was what
+            # made links slow, and this puts several messages on the air back
+            # to back.
+            started = time.time()
+            for frame in frames:
+                self.sent += self._fan_out(frame)
+            print("[bridge] %d fragments handed off in %.1f s"
+                  % (len(frames), time.time() - started), flush=True)
+            return
         for frame in frames:
             self.sent += self._fan_out(frame)
 
