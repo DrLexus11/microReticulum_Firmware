@@ -916,6 +916,35 @@ What closes D, in order:
 4. Full Columba suite on the final commit, a bench re-run of chat, drawings,
    markers and positions, then push for review.
 
+**Progress, same day.** Addressed markers are built on both sides and need only
+their bench run -- which also confirms the `marti/dest` format ATAK really
+emits. The member table now survives a restart on both sides, proven on the
+bench: each logged restoring its peer and knew it before anyone announced.
+
+**Found while proving it: a restarted handset is off the mesh for minutes.**
+After a Columba restart the log showed, in order:
+
+```
+11:09:55  announces handed to BLE "to 0 peer(s)"   -- no link yet; silently lost
+          first BLE connect collides with the old process's link
+          "Retrying connection ... (attempt 1/3) in 60000ms"
+11:12:56  BLE carries data again, three minutes later
+```
+
+Two Columba faults, both field-relevant -- a phone restarts, or walks back
+into range of its board:
+
+- **A 60-second BLE reconnect backoff** on the only link a handset has. That
+  is inherited protocol politeness on a disaster link; the reconnect should be
+  immediate and then back off.
+- **Announces sent with no peer are lost**, and nothing re-sends them when a
+  peer connects. The persisted table blunts the consequence -- both sides
+  already know each other -- but the fix is to announce when a BLE peer comes
+  up.
+
+This is not CarriedIssues #9: there the announces *were* sent to the board and
+still never arrived.
+
 ### PR E — the node knows where it is and what it can reach
 
 - **GNSS.** `Position.h` already has the `GNSS` node-position kind; the NMEA
