@@ -58,7 +58,7 @@ where gain is the only constraint.
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
-| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation, **proven on the radios 2026-09-21, both directions**; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
+| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation, **on the radios 2026-09-21; a lost fragment proved fragments were riding bare packets, now fixed and re-testing**; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -741,10 +741,46 @@ magnitude of slack. That is not obviously wrong -- the window exists for a
 transfer that is *struggling*, not a healthy one -- but nothing has yet been
 measured near it, so it remains a guess with one healthy data point beside it.
 
-**Questions 2 and 3 are still open**, and neither will answer itself in normal
-use: fragments retrying one at a time needs deliberate loss, and the effect of a
-back-to-back burst needs a transfer of six or eight fragments rather than two.
-Both want a bigger drawing and a degraded channel.
+### Question 2 answered itself, badly, an hour later
+
+The next drawing in the other direction lost a fragment:
+
+```
+06:45:18.577  mesh packet for this node: 383 bytes, kind=fragment-v1
+06:45:18.579  fragment id=3783736296 index=0 of 2, held=0
+06:45:18.583  fragment held; transfer not yet whole
+              (nothing further, ever)
+```
+
+**Fragments did not retry one at a time. Nothing retried them at all.** The
+premise of this whole design — every fragment a whole LXMF message, inheriting
+LXMF's proof and retry — was written into the codec, the plan and the commit
+messages, and was not what the code did. `_from_atak` handed fragments to
+`_fan_out`, the same path markers take, which ends at `RNS.Packet(...).send()`:
+no proof, no retry, no propagation node. Columba's `sendTo` did the same.
+
+So one lost packet destroyed the whole event, silently, and the far end held an
+incomplete transfer until the window expired. That is exactly the all-or-nothing
+failure a `Resource` was rejected for. It was never removed — it was moved down a
+layer, where nothing was looking for it.
+
+**The morning's success was luck.** The phone-to-deck drawing crossed because
+that leg happened not to drop a packet, and a single healthy sample looked
+identical to a working design. It is the same shape as the propagation fallback
+that was broken from the day it was written: a guarantee asserted in prose,
+never exercised, and true only while nothing went wrong.
+
+Fixed by sending each fragment through the carrier — `_fan_out_reliably` here,
+`TakLxmfCarriage` in Columba. Moving the send moved the receive: fragments no
+longer arrive on the packet callback at all, so both halves reassemble on the
+LXMF path too, keyed on the member the carrier *proved* rather than on a
+destination hash.
+
+**Question 3 is still open** and now matters more. Over LXMF each fragment is a
+message with a retry budget, so a burst of eight costs more than eight packets
+did. ATAK also re-emits a shared drawing on a timer, which is why an unchanged
+drawing is now suppressed for two minutes — keyed on the uid and the frame bytes
+together, so an edited drawing still goes. None of that is measured yet.
 
 ### PR E — the node knows where it is and what it can reach
 
