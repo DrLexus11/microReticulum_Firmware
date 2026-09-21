@@ -41,10 +41,33 @@ class WireTests(unittest.TestCase):
         self.assertEqual(len(frames), 1)
         self.assertEqual(cot_fragment.decode(frames[0])[2], 1)
 
-    def test_a_drawing_is_two_fragments(self):
-        """The figure the decision was made on: a compressed drawing is about
-        700 B, and two fragments is where our scheme beats a Resource."""
-        self.assertEqual(len(cot_fragment.fragments(b"x" * 700)), 2)
+    def test_a_drawing_is_three_fragments(self):
+        """A compressed drawing is about 700 B, and that is three fragments.
+
+        It was two while a fragment was sized against the 383 B bare-packet
+        MDU. A fragment does not travel as a bare packet -- it travels as an
+        LXMF message, for the proof and the retry -- and the envelope costs a
+        measured 107 bytes, so the slice had to come down. Three is still well
+        inside the crossover where a Resource would be the better scheme.
+        """
+        self.assertEqual(len(cot_fragment.fragments(b"x" * 700)), 3)
+
+    def test_a_fragment_fits_one_lxmf_message_in_one_packet(self):
+        """The bound that matters, and the one that was wrong.
+
+        A fragment travels as an LXMF message, not as a bare packet, so 383 is
+        not its budget: the envelope costs a measured 107 bytes on the air. A
+        frame sized against 383 packs to 490 and LXMF builds a Resource over a
+        Link for it -- one link per fragment, on a path where establishment was
+        5 of 15 when busy. That is worse than the single Resource this scheme
+        exists to avoid, and it would have looked like tier 3 working.
+        """
+        biggest = max(cot_fragment.fragments(b"x" * 5000), key=len)
+        on_the_air = len(biggest) + cot_fragment.LXMF_ENVELOPE_BYTES
+
+        self.assertLessEqual(on_the_air, 383)
+        # And with the headroom for fields a message may yet carry.
+        self.assertLessEqual(len(biggest), cot_fragment.MAX_FRAGMENT_FRAME_BYTES)
 
     def test_nothing_is_not_a_transfer(self):
         with self.assertRaises(ValueError):
@@ -114,10 +137,11 @@ class ReassemblyTests(unittest.TestCase):
         is worse than dropping both."""
         mine = cot_fragment.fragments(b"A" * 700, transfer_id=7)
         theirs = cot_fragment.fragments(b"B" * 700, transfer_id=7)
-        self.assertIsNone(self.reassembler.feed(PEER, mine[0]))
-        self.assertIsNone(self.reassembler.feed(OTHER, theirs[0]))
-        self.assertEqual(self.reassembler.feed(PEER, mine[1]), b"A" * 700)
-        self.assertEqual(self.reassembler.feed(OTHER, theirs[1]), b"B" * 700)
+        for index in range(len(mine) - 1):
+            self.assertIsNone(self.reassembler.feed(PEER, mine[index]))
+            self.assertIsNone(self.reassembler.feed(OTHER, theirs[index]))
+        self.assertEqual(self.reassembler.feed(PEER, mine[-1]), b"A" * 700)
+        self.assertEqual(self.reassembler.feed(OTHER, theirs[-1]), b"B" * 700)
 
     def test_a_stale_transfer_is_dropped(self):
         """A partial drawing is worth nothing, so holding one longer buys

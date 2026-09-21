@@ -48,8 +48,30 @@ import tak_payload
 HEADER = struct.Struct(">BIBB")
 HEADER_BYTES = HEADER.size          # 7
 
-# What one fragment may carry, so the whole frame fits a Reticulum packet.
-MAX_FRAGMENT_BYTES = 383 - HEADER_BYTES
+# What one fragment may carry, so the whole frame fits ONE LXMF message in ONE
+# packet.
+#
+# Not 383. That is the bare-packet MDU, and a fragment does not travel as a
+# bare packet -- it travels as an LXMF message, because that is the only way it
+# gets a proof and a retry. Measured 2026-09-21 against LXMF 1.1.1: the
+# envelope costs a constant **107 bytes** on the air, so 276 B of frame is the
+# largest that still fits a single packet, and at 309 B LXMF stops using a
+# packet at all and builds a Resource over a Link.
+#
+# Getting this wrong is not a small loss. A 383 B fragment packs to 490 B on
+# the air, which is a Link and a Resource *per fragment* -- eight fragments,
+# eight link handshakes, on a path where establishment was measured at 5 of 15
+# when the channel was busy. That is strictly worse than the single Resource
+# this design rejected, and it would have looked like tier 3 working.
+#
+# The margin below 276 is for fields LXMF may add to a message that this bench
+# measurement did not carry -- a ticket, a stamp. Twenty bytes of headroom
+# costs nothing here: at this size a 736 B drawing is three fragments either
+# way.
+LXMF_ENVELOPE_BYTES = 107
+LXMF_HEADROOM_BYTES = 20
+MAX_FRAGMENT_FRAME_BYTES = 383 - LXMF_ENVELOPE_BYTES - LXMF_HEADROOM_BYTES
+MAX_FRAGMENT_BYTES = MAX_FRAGMENT_FRAME_BYTES - HEADER_BYTES
 
 # Above this, LXMF's own Resource is cheaper and this scheme should not be used.
 # Measured crossover is about six; see the plan. Kept as the honest bound of the
