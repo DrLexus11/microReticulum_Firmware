@@ -58,7 +58,7 @@ where gain is the only constraint.
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
-| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation, **on the radios 2026-09-21; a lost fragment proved fragments were riding bare packets, now fixed and re-testing**; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
+| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -870,6 +870,51 @@ Two things seen on the bench that are *not* fixed:
   09:28 to 09:38: the phone sent announces over BLE that never reached the deck,
   while deck-to-phone still worked. Announce rate limiting is ruled out -- the
   boards set no target. Recorded beside CarriedIssues #6, unexplained.
+
+### Closing PR D, decided 2026-09-21
+
+Tier 3 is proven on the radios in both directions, and two items that were in
+this PR have been overtaken by it -- measured, not assumed:
+
+```
+nine-line MEDEVAC   979 B raw -> 471 B tier-2 frame -> 2 proved LXMF fragments
+drawing, tier 2     736 B -> 3 fragments
+same, typed polyline ~584 B -> 3 fragments
+```
+
+- **MEDEVAC dictionary -> backlog.** It existed to squeeze a MEDEVAC into one
+  packet. Tier 3 now carries it as two *proved* messages, which is more reliable
+  than the single unproved packet the dictionary would have produced. Worth
+  revisiting only as an airtime optimisation.
+- **Typed polyline codec -> backlog.** At today's drawing sizes it saves about a
+  fifth of the bytes and no messages: three fragments either way, three proofs
+  either way. Revisit if drawings grow.
+- **Blocked-edge format -> its own item.** Still blocked on `urban-tak`; it must
+  not hold D open.
+
+What closes D, in order:
+
+1. **Addressed markers.** A recipient on the marker frame and a dispatch that
+   mirrors addressed chat -- over LXMF, so a pin sent to one person is proved.
+   Both halves, fixture vectors on both sides.
+2. **The member table survives a restart.** Seen on the bench today: a bridge
+   restarted just after the phone announced knew nobody, dropped the phone's
+   positions as from an unknown node, sent its own to no one, and both ATAKs
+   showed the other offline until the next announce. Persist the table on both
+   sides.
+3. **The locked-phone test -- a gate, not a nice-to-have.** Ground teams carry
+   handsets in pockets, locked. Columba's TAK endpoint lives in its UI process,
+   which holds no foreground service of its own; today it borrows foreground
+   rank, and a two-minute lock delivered a chat to ATAK in one second. What has
+   not been tested is a long lock, where Android's deeper sleep and Samsung's own
+   app sleeping act. The test: 30-45 minutes locked in a pocket, a chat and a
+   marker from the deck every five minutes, process ranks sampled throughout
+   (`lock_sampler.sh`), and ATAK checked on unlock. If the endpoint freezes, it
+   moves into the process that already holds the foreground service before D
+   ships. Samsung handsets also need Columba and ATAK under *Battery ->
+   Background usage limits -> Never sleeping apps*, which adb cannot read.
+4. Full Columba suite on the final commit, a bench re-run of chat, drawings,
+   markers and positions, then push for review.
 
 ### PR E — the node knows where it is and what it can reach
 
