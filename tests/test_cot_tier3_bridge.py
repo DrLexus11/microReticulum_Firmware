@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import cot_coalesce                   # noqa: E402
 import cot_fragment                   # noqa: E402
 import cot_tier2 as tier2             # noqa: E402
 import tak_payload                    # noqa: E402
@@ -128,6 +129,7 @@ class BridgeReceiveTests(unittest.TestCase):
         made._fragment_elapsed = 0.0
         made._reassembler = cot_fragment.Reassembler(
             observer=made._fragment_arrived)
+        made._freshness = cot_coalesce.Freshness()
         made._heard_mesh = lambda: None
         made.drawn = []
         made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)
@@ -198,7 +200,7 @@ class CarriedReliablyTests(unittest.TestCase):
         """Sending unreliably while the caller believes it sent reliably is
         worse than not sending. Same doctrine as an addressed chat line."""
         carrier = Mock()
-        carrier.send_frame.return_value = False
+        carrier.send_frame.return_value = None
         made = self.bridge(lxmf=carrier)
 
         self.assertEqual(made._fan_out_reliably(b"\x05frag"), 0)
@@ -222,76 +224,104 @@ class CarriedReliablyTests(unittest.TestCase):
         carrier.send_frame.assert_not_called()
 
 
-class RepeatedLargeEventTests(unittest.TestCase):
-    """ATAK re-emits a shared drawing on a timer.
+class AutoSendTests(unittest.TestCase):
+    """ATAK re-sends an event every time it changes.
 
-    Each repeat used to cost one bare packet per fragment per member. Over
-    LXMF it costs a message with a retry budget, so an unchanged drawing
-    re-sent on a share timer would load the channel for nothing -- the far end
-    has it, and LXMF is now what makes sure of that.
+    One version of a drawing costs about 7.7 s of channel for a team of seven,
+    so a drag that emits a version a second would ask for eight times what the
+    channel has. The coalescing itself is pinned in test_cot_coalesce; these
+    pin how the bridge uses it.
     """
-
-    def bridge(self):
-        made = CotBridge.__new__(CotBridge)
-        made.large_repeats_suppressed = 0
-        made._large_events = {}
-        return made
 
     def frames(self, xml):
         pipeline = CotOutbound(OUR_UID)
         with redirect_stdout(io.StringIO()):
             return pipeline.frames(xml, tier2.encode, cot_fragment.fragments)
 
-    def test_the_first_time_is_never_a_repeat(self):
-        made = self.bridge()
+    def test_the_same_drawing_cut_up_twice_has_one_digest(self):
+        """Every transfer draws a random transfer id into its headers, so
+        hashing the fragments never matched and an unchanged repeat was never
+        recognised. The first version of this gate had exactly that bug."""
         xml = big_event()
-        self.assertFalse(made._repeat_of_a_large_event(xml, self.frames(xml)))
+        first, second = self.frames(xml), self.frames(xml)
+        self.assertNotEqual(first, second, "transfer ids stopped being random")
 
-    def test_the_same_drawing_again_is_suppressed(self):
+        self.assertEqual(CotBridge._content_digest(first),
+                         CotBridge._content_digest(second))
+
+    def test_a_changed_drawing_has_a_different_digest(self):
+        self.assertNotEqual(
+            CotBridge._content_digest(self.frames(big_event())),
+            CotBridge._content_digest(self.frames(big_event(points=41))))
+
+    def bridge(self):
+        made = CotBridge.__new__(CotBridge)
+        made.sent = 0
+        made.fragmented = 0
+        made.unreachable = 0
+        made._in_flight = {}
+        made.lxmf = Mock()
+        made.lxmf.send_frame.side_effect = lambda identity, frame: Mock()
+        made.registry = Mock()
+        made.registry.members.return_value = [b"\x11" * 16]
+        made.rns = Mock()
+        return made
+
+    def test_a_new_version_withdraws_what_is_left_of_the_last(self):
+        """A version still retrying after a newer one has gone is airtime spent
+        delivering a shape the operator already moved."""
         made = self.bridge()
-        xml = big_event()
-        frames = self.frames(xml)
-        made._repeat_of_a_large_event(xml, frames)
+        frames = self.frames(big_event())
+        with redirect_stdout(io.StringIO()):
+            made._send_version("DRAW-1", frames)
+            first = list(made._in_flight["DRAW-1"])
+            made._send_version("DRAW-1", self.frames(big_event(points=41)))
 
-        self.assertTrue(made._repeat_of_a_large_event(xml, frames))
-        self.assertEqual(made.large_repeats_suppressed, 1)
+        self.assertEqual(len(first), len(frames))
+        self.assertEqual(made.lxmf.cancel.call_count, len(first))
+        for message in first:
+            made.lxmf.cancel.assert_any_call(message)
 
-    def test_an_edited_drawing_is_not_suppressed(self):
-        """Different geometry is different bytes, and an operator who moves a
-        line means it."""
+    def test_a_different_drawing_withdraws_nothing(self):
         made = self.bridge()
-        first = big_event()
-        made._repeat_of_a_large_event(first, self.frames(first))
-        edited = big_event(points=41)
+        with redirect_stdout(io.StringIO()):
+            made._send_version("DRAW-1", self.frames(big_event()))
+            made._send_version("DRAW-2", self.frames(big_event(points=41)))
+        made.lxmf.cancel.assert_not_called()
 
-        self.assertFalse(
-            made._repeat_of_a_large_event(edited, self.frames(edited)))
-
-    def test_the_window_expires(self):
+    def test_a_single_packet_version_takes_the_cheap_fan_out(self):
         made = self.bridge()
-        xml = big_event()
-        frames = self.frames(xml)
-        made._repeat_of_a_large_event(xml, frames)
-        # As though the share timer came round well after the window.
-        digest, when = made._large_events["DRAW-1"]
-        made._large_events["DRAW-1"] = (digest, when - 10_000)
+        made._fan_out = Mock(return_value=1)
+        made._send_version("SMALL", [b"\x01one"])
+        made._fan_out.assert_called_once_with(b"\x01one")
+        made.lxmf.send_frame.assert_not_called()
 
-        self.assertFalse(made._repeat_of_a_large_event(xml, frames))
 
-    def test_an_event_without_a_uid_is_not_keyed_on(self):
+class FreshnessOnReceiveTests(unittest.TestCase):
+    """An older version finishing its retries after a newer one landed."""
+
+    def bridge(self):
+        made = CotBridge.__new__(CotBridge)
+        made._freshness = cot_coalesce.Freshness()
+        return made
+
+    def event(self, when):
+        return ('<event version="2.0" uid="DRAW-1" type="u-d-f" time="%s" '
+                'start="%s" stale="2026-09-21T09:00:00Z"/>' % (when, when))
+
+    def test_a_late_older_version_is_not_drawn(self):
         made = self.bridge()
-        self.assertFalse(made._repeat_of_a_large_event("<event/>", [b"x"]))
+        with redirect_stdout(io.StringIO()):
+            self.assertTrue(made._is_fresh(self.event("2026-09-21T07:00:05Z")))
+            self.assertFalse(made._is_fresh(self.event("2026-09-21T07:00:00Z")))
 
-    def test_malformed_xml_has_no_opinion_here(self):
+    def test_a_newer_version_is_drawn(self):
         made = self.bridge()
-        self.assertFalse(made._repeat_of_a_large_event("<not xml", [b"x"]))
+        made._is_fresh(self.event("2026-09-21T07:00:00Z"))
+        self.assertTrue(made._is_fresh(self.event("2026-09-21T07:00:05Z")))
 
-    def test_the_memory_does_not_grow_without_bound(self):
-        made = self.bridge()
-        for index in range(200):
-            xml = big_event().replace("DRAW-1", "DRAW-%d" % index)
-            made._repeat_of_a_large_event(xml, [b"x%d" % index])
-        self.assertLessEqual(len(made._large_events), 65)
+    def test_malformed_xml_is_not_this_checks_business(self):
+        self.assertTrue(self.bridge()._is_fresh("<not xml"))
 
 
 class FragmentsOverLxmfArriveTests(unittest.TestCase):
@@ -316,6 +346,7 @@ class FragmentsOverLxmfArriveTests(unittest.TestCase):
         made._fragment_elapsed = 0.0
         made._reassembler = cot_fragment.Reassembler(
             observer=made._fragment_arrived)
+        made._freshness = cot_coalesce.Freshness()
         made._member_for_lxmf = lambda source: b"\x42" * 16
         made.drawn = []
         made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)

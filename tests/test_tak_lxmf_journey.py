@@ -11,6 +11,7 @@ import io
 import sys
 import time
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -24,6 +25,11 @@ except ImportError:  # pragma: no cover
 
 
 class Message:
+    # Every real LXMessage has a state, and _failed now reads it: a message
+    # LXMF reports as failed may in fact have been cancelled, superseded by a
+    # newer version, and must not then be escalated. These are real failures.
+    state = LXMF.LXMessage.FAILED if tak_lxmf is not None else None
+
     def __init__(self, method=None, attempts=None, sent_at=None):
         if method is not None:
             self.method = method
@@ -85,6 +91,28 @@ class JourneyTests(unittest.TestCase):
         self.assertEqual(made.delivered, 1)
         self.assertEqual(out.getvalue().count("\n"), 1)
         self.assertIn("delivery proof received", out.getvalue())
+
+    def test_a_cancelled_message_is_never_escalated(self):
+        """LXMF reports a cancellation through the failed callback.
+
+        A drawing's superseded version is cancelled so that it stops costing
+        airtime. Escalating it would store it at the propagation node and
+        deliver it later -- a shape the operator already moved, arriving after
+        the one that replaced it.
+        """
+        made = carrier()
+        made.propagation_node = b"\x01" * 16
+        made.router = unittest.mock.Mock()
+        cancelled = Message(method=LXMF.LXMessage.OPPORTUNISTIC, attempts=1,
+                            sent_at=time.monotonic())
+        cancelled.state = LXMF.LXMessage.CANCELLED
+        out = io.StringIO()
+        with redirect_stdout(out):
+            made._failed(cancelled)
+
+        made.router.handle_outbound.assert_not_called()
+        self.assertEqual(made.failed, 0)
+        self.assertEqual(out.getvalue(), "")
 
     def test_a_failed_direct_says_so_before_escalating(self):
         """The line that would have explained the missing ten seconds."""

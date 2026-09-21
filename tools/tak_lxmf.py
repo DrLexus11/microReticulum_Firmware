@@ -121,6 +121,7 @@ class Carrier:
         self.sent = 0
         self.delivered = 0
         self.failed = 0
+        self.cancelled = 0
         self.propagated = 0
         self.collected = 0
         self.router = LXMF.LXMRouter(identity=identity, storagepath=storage_path)
@@ -226,7 +227,7 @@ class Carrier:
         out of range gets the message when they return rather than never.
         """
         return self._send(identity, frame, text, proof_context,
-                          "direct message")
+                          "direct message") is not None
 
     def send_frame(self, identity, frame):
         """Send one TAK frame to one peer over LXMF. Returns True if accepted.
@@ -246,12 +247,25 @@ class Carrier:
         """
         return self._send(identity, frame, "", None, "event")
 
+    def cancel(self, message):
+        """Withdraw a message that has been superseded before it landed.
+
+        ATAK's auto-send re-emits a drawing every time it changes, and a
+        version still retrying after a newer one has gone is airtime spent
+        delivering a shape the operator already moved. Cancelling stops its
+        retries; one that has already landed is unaffected, and one already
+        at the propagation node is left for the receiver's freshness check.
+        """
+        self.cancelled += 1
+        self.router.cancel_outbound(message.message_id)
+
     def _send(self, identity, frame, text, proof_context, label):
-        """One frame, one LXMF message, one peer.
+        """One frame, one LXMF message, one peer. The message, or None.
 
         Shared so a fragment and a chat line cannot take subtly different
         routes: the difference between them is what they carry, not how
-        reliably it travels.
+        reliably it travels. The message is returned so that a superseded
+        one can be cancelled.
         """
         try:
             destination = delivery_destination(identity, RNS.Destination.OUT)
@@ -275,14 +289,14 @@ class Carrier:
             # tell the two apart. tak_team_acceptance.sh greps for this.
             print("[lxmf] %s sent over LXMF (%d bytes, %d of text)"
                   % (label, len(frame), len(text or "")), flush=True)
-            return True
+            return message
         except Exception as error:
             # An unreachable peer is an ordinary event on a mesh, not a fault
             # in this process. Counted so the endpoint can say so, never fatal:
             # one unreachable member must not cost the others their copy.
             self.failed += 1
             print("[lxmf] could not send %s: %s" % (label, error), flush=True)
-            return False
+            return None
 
     # ---- outcomes ----
 
@@ -363,6 +377,14 @@ class Carrier:
         partitioned, which is exactly when this path runs, so the loop would
         begin at the moment the channel can least afford it.
         """
+        if message.state == LXMF.LXMessage.CANCELLED:
+            # Not a delivery that failed: one we withdrew because a newer
+            # version superseded it. LXMF reports a cancellation through the
+            # failed callback, so without this every superseded version of an
+            # auto-sent drawing would be escalated to the propagation node --
+            # stored, and delivered later, which is the exact opposite of why
+            # it was cancelled.
+            return
         print("[lxmf] peer delivery did not land %s"
               % self._journey(message), flush=True)
         if not self.propagation_node:

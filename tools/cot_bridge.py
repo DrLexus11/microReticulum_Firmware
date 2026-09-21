@@ -34,6 +34,7 @@ import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
 import cot_chat
+import cot_coalesce
 import cot_fragment
 import cot_gateway
 import cot_marker
@@ -104,13 +105,6 @@ INBOX_ANNOUNCE_FLOOR_SECONDS = 60
 # at all, from a team we know has members, is not quiet -- it is deaf.
 MESH_SILENCE_SECONDS = 15 * 60
 
-# How long an oversized event is remembered, so ATAK's re-send of an unchanged
-# drawing does not pay for itself again. Long enough to cover a share timer,
-# short enough that a member who joins late still gets the next repeat.
-LARGE_REPEAT_SECONDS = 120
-
-# An operator drawing all morning must not grow that memory without bound.
-MAX_LARGE_EVENTS_REMEMBERED = 64
 
 # The least time between two asks of the propagation node.
 #
@@ -422,8 +416,9 @@ class CotBridge:
         # Events too big for one packet, and the ones put back together.
         self.fragmented = 0
         self.reassembled = 0
-        self.large_repeats_suppressed = 0
-        self._large_events = {}
+        self._latest = cot_coalesce.LatestWins()
+        self._freshness = cot_coalesce.Freshness()
+        self._in_flight = {}
         self._fragment_elapsed = 0.0
         self._reassembler = cot_fragment.Reassembler(
             observer=self._fragment_arrived)
@@ -664,8 +659,28 @@ class CotBridge:
             # dictionary, or simply not ours.
             self.unreadable += 1
             return
+        if not self._is_fresh(xml):
+            return
         self._to_clients(xml.encode("utf-8"), keep=True)
         self.received += 1
+
+    def _is_fresh(self, xml):
+        """False for a version older than one already drawn for its uid.
+
+        An older version can finish its retries, or come back from the
+        propagation node, after a newer one landed. Drawing it would put a
+        shape the operator already moved back on the map.
+        """
+        try:
+            event = _parse(xml)
+        except ValueError:
+            return True
+        if self._freshness.admit(event.get("uid"),
+                                 cot_coalesce.event_time(event.get("time"))):
+            return True
+        print("[bridge] dropped an older version of %s that arrived late"
+              % event.get("uid"), flush=True)
+        return False
 
     def _marker_from_mesh(self, raw):
         """Render a peer's marker as CoT for the local ATAK."""
@@ -869,24 +884,23 @@ class CotBridge:
             # than assigning it into a shared one, which silently discarded
             # every mesh-side drop recorded above.
             return
-        if len(frames) > 1:
-            if self._repeat_of_a_large_event(xml, frames):
-                return
-            self.fragmented += 1
-            print("[bridge] event too large for one packet; sending %d fragments"
-                  % len(frames), flush=True)
-            # How long the burst takes to hand off matters: chat was moved to
-            # opportunistic packets because congestion, not timeouts, was what
-            # made links slow, and this puts several messages on the air back
-            # to back.
-            started = time.time()
-            for frame in frames:
-                self.sent += self._fan_out_reliably(frame)
-            print("[bridge] %d fragments handed off in %.1f s"
-                  % (len(frames), time.time() - started), flush=True)
+        # ATAK's auto-send re-emits an event every time it changes, and one
+        # version of a drawing costs about 7.7 s of channel for a team of
+        # seven. Latest wins: the first version goes now, and what follows
+        # inside the window is coalesced into one. See tools/cot_coalesce.py.
+        uid = self._uid_of(xml)
+        if uid is None:
+            self._send_version(None, frames)
             return
-        for frame in frames:
-            self.sent += self._fan_out(frame)
+        decision, flush_at = self._latest.offer(
+            uid, frames, self._content_digest(frames), time.time())
+        if decision == cot_coalesce.SEND:
+            self._send_version(uid, frames)
+        elif decision == cot_coalesce.HOLD:
+            timer = threading.Timer(max(0.0, flush_at - time.time()),
+                                    self._flush_version, args=(uid,))
+            timer.daemon = True
+            timer.start()
 
     def _position_from_atak(self, xml):
         """Send a position report as twenty-one bytes, if it is due.
@@ -1166,7 +1180,7 @@ class CotBridge:
                   % (destination_hash.hex(), error), flush=True)
             return 0
 
-    def _fan_out_reliably(self, frame):
+    def _fan_out_reliably(self, frame, messages=None):
         """Send one fragment to every member, over LXMF. Returns how many went.
 
         **This is the difference between tier 3 working and appearing to.** A
@@ -1192,51 +1206,85 @@ class CotBridge:
         for member in self.registry.members():
             identity = self.rns.Identity.recall(member)
             if self.lxmf is not None and identity is not None:
-                if self.lxmf.send_frame(identity, frame):
+                message = self.lxmf.send_frame(identity, frame)
+                if message is not None:
                     sent += 1
+                    if messages is not None:
+                        messages.append(message)
                 else:
                     self.unreachable += 1
                 continue
             sent += self._send_to(member, frame)
         return sent
 
-    def _repeat_of_a_large_event(self, xml, frames):
-        """True if this oversized event is one ATAK has already sent us.
+    def _send_version(self, uid, frames):
+        """Put one version of an event on the air.
 
-        ATAK re-emits a drawing on a timer once it is shared, and every repeat
-        used to cost one bare packet per fragment per member. Over LXMF it
-        costs a message with a retry budget instead, so an unchanged drawing
-        re-sent every thirty seconds would put the channel under a load that
-        buys nothing: the far end already has it, and LXMF is now the thing
-        that makes sure of that.
-
-        Keyed on the event uid *and* the frames, so an edited drawing is not
-        suppressed -- different geometry is different bytes. Only repeats of
-        something byte-identical are dropped, and only for a window, so a peer
-        who joins later still gets the next one.
+        A single frame takes the cheap fan-out. A fragmented one goes over
+        LXMF, and first withdraws whatever is still retrying from the version
+        it supersedes: that is airtime spent delivering a shape the operator
+        has already moved.
         """
+        if len(frames) == 1:
+            self.sent += self._fan_out(frames[0])
+            return
+        superseded = self._in_flight.pop(uid, []) if uid else []
+        if superseded and self.lxmf is not None:
+            for message in superseded:
+                self.lxmf.cancel(message)
+            print("[bridge] withdrew %d message(s) of a superseded version"
+                  % len(superseded), flush=True)
+        self.fragmented += 1
+        print("[bridge] event too large for one packet; sending %d fragments"
+              % len(frames), flush=True)
+        # How long the burst takes to hand off matters: chat was moved to
+        # opportunistic packets because congestion, not timeouts, was what
+        # made links slow, and this puts several messages on the air back
+        # to back.
+        started = time.time()
+        messages = []
+        for frame in frames:
+            self.sent += self._fan_out_reliably(frame, messages)
+        print("[bridge] %d fragments handed off in %.1f s"
+              % (len(frames), time.time() - started), flush=True)
+        if uid:
+            self._in_flight[uid] = messages
+            if len(self._in_flight) > cot_coalesce.MAX_UIDS:
+                # Oldest first; dicts keep insertion order. Losing the handle
+                # only means that version can no longer be withdrawn early.
+                del self._in_flight[next(iter(self._in_flight))]
+
+    def _flush_version(self, uid):
+        """The trailing edge: send the latest version held for this uid."""
+        frames = self._latest.flush(uid, time.time())
+        if frames:
+            print("[bridge] sending the latest version of %s; %d superseded "
+                  "version(s) coalesced so far" % (uid, self._latest.coalesced),
+                  flush=True)
+            self._send_version(uid, frames)
+
+    @staticmethod
+    def _uid_of(xml):
+        """The event's uid, or None if there is nothing to key on."""
         try:
-            event = _parse(xml)
+            return _parse(xml).get("uid") or None
         except ValueError:
-            # Malformed enough that there is nothing to key on. Tier 2 has
-            # already refused it or will; this gate has no opinion.
-            return False
-        uid = event.get("uid") or ""
-        if not uid:
-            return False
-        digest = hashlib.sha256(b"".join(frames)).digest()
-        now = time.time()
-        seen = self._large_events.get(uid)
-        if seen and seen[0] == digest and now - seen[1] < LARGE_REPEAT_SECONDS:
-            self.large_repeats_suppressed += 1
-            return True
-        self._large_events[uid] = (digest, now)
-        # An operator drawing all morning must not grow this without bound.
-        if len(self._large_events) > MAX_LARGE_EVENTS_REMEMBERED:
-            oldest = min(self._large_events,
-                         key=lambda key: self._large_events[key][1])
-            del self._large_events[oldest]
-        return False
+            return None
+
+    @staticmethod
+    def _content_digest(frames):
+        """What a version *says*, without how it was cut up.
+
+        Hashing the frames themselves never matched: every transfer draws a
+        random transfer id into its fragment headers, so two identical
+        drawings produced different bytes and an unchanged repeat was never
+        recognised. The headers are stripped before hashing.
+        """
+        if len(frames) == 1:
+            body = frames[0]
+        else:
+            body = b"".join(frame[cot_fragment.HEADER_BYTES:] for frame in frames)
+        return hashlib.sha256(body).digest()
 
     def _fan_out(self, frame):
         """Send one frame to every member of the team. Returns how many went.
