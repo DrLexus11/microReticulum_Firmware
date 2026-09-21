@@ -1063,6 +1063,30 @@ several phones on one board, each drawn in ATAK under its own identity. That is
 what "BLE proven as the endpoint's carrier" has to mean for a team with pockets
 rather than a board each.
 
+### Lone in the field -- scheduled 2026-09-21
+
+A small group away from the main mesh, only devices in close proximity. What
+holds today, measured or not:
+
+| | With IMPR-RAD boards | Phones only |
+| --- | --- | --- |
+| Positions, markers, drawings, chat | **proven** phone-BLE-board-LoRa-board, the deck only another member | BLE phone-to-phone forms on its own; TAK over it **untested** |
+| Team known after a restart | **proven**, persisted table | same |
+| Reaching someone out of range *now* | **gap** -- store-and-forward is `lxmd` on the deck; the boards carry `LXMF_PROPAGATION_NODE`, untested with TAK and with node-to-node sync incomplete | **gap** -- Columba cannot host a propagation node |
+| Relaying beyond direct range | boards relay on the bench; the TNC-mode finding below still gates it | phones do not relay (`enable_transport = No`) |
+| Several phones on one board | one today; multi-peer is PR E | n/a |
+| Shared Wi-Fi, no infrastructure | n/a | Columba supports AutoInterface; one phone's hotspot + AutoInterface **untested** |
+
+**The drill, after D closes:** stop the deck's bridge, `rrcd` and `lxmd`, then
+measure (1) two phones over BLE alone, (2) the same over a phone hotspot and
+AutoInterface, (3) through boards with no deck, and (4) store-and-forward on a
+**board** -- message a member who is switched off, switch them on.
+
+**Work it is expected to produce:** board-hosted store-and-forward proven with
+TAK traffic, which matters most, since in a disaster simultaneous presence is
+exactly what you do not have; and phone relaying as an opt-in "lone-field
+mode" for groups with no boards.
+
 ## Two findings that gate PR E
 
 ### 1. A board that is not in TNC mode does not relay
