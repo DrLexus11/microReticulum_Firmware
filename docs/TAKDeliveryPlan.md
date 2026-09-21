@@ -58,7 +58,7 @@ where gain is the only constraint.
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
-| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation, **built on both sides 2026-09-20, not yet on radios**; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
+| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation, **proven on the radios 2026-09-21, both directions**; typed polyline codec for drawings; **a recipient on the marker frame**, so a pin can be sent to one person; **a V2 compression dictionary** that gets a nine-line MEDEVAC under the bound; wire format for a blocked route edge | the blocked-edge format alone waits on `urban-tak` |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -685,9 +685,11 @@ Both halves exist and agree on the wire: `tools/cot_fragment.py` here,
 vectors each side asserts against — the same payload produces byte-identical
 frames, and the other side's frames reassemble. 697 tests here, 6436 there.
 
-**None of that has been on a radio.** Every figure in the sections above is a
-bench measurement or an airtime calculation, and the three things a bench cannot
-answer are the three that decide whether the design holds:
+**None of that had been on a radio when this was written.** Every figure in the
+sections above was a bench measurement or an airtime calculation, and the three
+things a bench cannot answer are the three that decide whether the design holds.
+The first is now answered on hardware -- see *Tier 3 crossed LoRa* below -- and
+the other two are not:
 
 1. **Does the five-minute reassembly window fit a real LoRa transfer?** It was
    chosen against an estimate, not a measurement. Eight fragments at SF7/BW250
@@ -707,12 +709,42 @@ answer are the three that decide whether the design holds:
 **Do this before the typed polyline codec.** The codec's only purpose is to make
 drawings small enough to be worth sending, and it is built on top of
 reassembly — measuring the thing it depends on first is cheaper than finding out
-afterwards that the window or the burst was wrong.
+afterwards that the window or the burst was wrong. Reassembly is now proven at
+two fragments; the burst is not.
 
 The test shape is the one in *The test shape, and where the deck's ATAK lives*:
 a drawing from the phone's ATAK, across BLE, LoRa and the deck's Waydroid, with
 `tools/tak_link_soak.py` watching the channel. The payload should be a real
 drawing from the corpus, not generated coordinates — see the caveat above.
+
+### Tier 3 crossed LoRa, 2026-09-21
+
+A freehand drawing from the phone's ATAK, over BLE to Rev 1, LoRa to Rev 2,
+UDP to the deck and into Waydroid's ATAK. It arrived, and quickly.
+
+```
+[bridge] fragment 1 of 2, 1 held, 0.0 s since the first
+[bridge] fragment 2 of 2, 2 held, 0.5 s since the first
+[bridge] reassembled a 736 byte event from 2 fragments in 0.5 s
+```
+
+The other direction the same: a 433 B event reassembled on the handset in
+0.4 s, both fragments landing in the same buffer under one transfer id.
+
+**736 B settles the drawing figure.** The corpus estimate of ~700 B was right
+and the synthetic polyline that compressed to 233 B was, as suspected, telling
+us about deflate rather than about drawings. A real drawing is two fragments.
+
+**Question 1 is answered and the answer is that the window is enormous.** Five
+minutes against a transfer that completes in half a second is three orders of
+magnitude of slack. That is not obviously wrong -- the window exists for a
+transfer that is *struggling*, not a healthy one -- but nothing has yet been
+measured near it, so it remains a guess with one healthy data point beside it.
+
+**Questions 2 and 3 are still open**, and neither will answer itself in normal
+use: fragments retrying one at a time needs deliberate loss, and the effect of a
+back-to-back burst needs a transfer of six or eight fragments rather than two.
+Both want a bigger drawing and a degraded channel.
 
 ### PR E — the node knows where it is and what it can reach
 
