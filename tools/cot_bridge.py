@@ -35,6 +35,7 @@ import tak_groups as groups
 import tak_identity as tak_identity
 import cot_chat
 import cot_coalesce
+import cot_pending
 import cot_fragment
 import cot_gateway
 import cot_marker
@@ -264,6 +265,12 @@ class TeamAnnounceHandler:
     registry decides, and a payload it does not recognise is ordinary.
     """
 
+    # Path responses are announces too, and are how a node that has just heard
+    # from a stranger learns whether they are a teammate without waiting for
+    # their next scheduled announce. Without this, Reticulum never passes them
+    # here, and asking for a sender's announce got an answer nothing read.
+    receive_path_responses = True
+
     def __init__(self, registry, on_new_member=None, on_member_heard=None):
         self.aspect_filter = "%s.%s" % (tak_identity.NODE_APP,
                                         ".".join(tak_identity.NODE_ASPECTS))
@@ -427,6 +434,7 @@ class CotBridge:
         self.fragmented = 0
         self.reassembled = 0
         self._latest = cot_coalesce.LatestWins()
+        self._unattributed = cot_pending.PendingAttribution()
         self.markers_undeliverable = 0
         self._freshness = cot_coalesce.Freshness()
         self._in_flight = {}
@@ -500,6 +508,41 @@ class CotBridge:
         print("[bridge] team member %s is %s"
               % (claims.get("callsign", "?"), tak_identity.uid_for(destination_hash)),
               flush=True)
+        self._release_unattributed()
+
+    def _hold_unattributed(self, raw, signed_by):
+        """Keep a frame whose sender cannot be named yet, and go and ask.
+
+        Over LXMF the sender is known cryptographically even when its team
+        membership is not, so its announce can be requested now rather than
+        waited for; the answer reaches the registry because the announce
+        handler takes path responses. A bare packet names nobody that can be
+        asked, and simply waits.
+        """
+        self.unreadable += 1
+        self._unattributed.hold(raw, signed_by)
+        if signed_by is not None:
+            self.rns.Transport.request_path(signed_by)
+        print("[bridge] held a frame from a sender not yet known%s"
+              % ("; asked for its announce" if signed_by is not None else ""),
+              flush=True)
+
+    def _release_unattributed(self):
+        """Draw whatever was waiting for a member we have just learned."""
+        released = self._unattributed.ready(
+            lambda raw: self._frame_sender(raw) is not None)
+        for raw, signed_by in released:
+            self._dispatch_frame(raw, signed_by=signed_by)
+        if released:
+            print("[bridge] drew %d frame(s) held until their sender was known"
+                  % len(released), flush=True)
+
+    def _frame_sender(self, raw):
+        """The member a chat or marker frame names, or None."""
+        kind = tak_payload.kind_of(raw)
+        codec = {tak_payload.CHAT_V1: cot_chat, tak_payload.MARKER_V1: cot_marker}.get(kind)
+        decoded = codec.decode(raw) if codec else None
+        return self.registry.resolve_sender_id(decoded["sender_id"]) if decoded else None
         # Greeting happens in _member_heard, for every announce rather than
         # only this one.
 
@@ -717,10 +760,10 @@ class CotBridge:
             return False
         sender = self.registry.resolve_sender_id(decoded["sender_id"])
         if sender is None:
-            # A marker from a node this team has never heard announce. Drawing
-            # it under an invented identity would put an object on the map that
-            # nobody can be asked about.
-            self.unreadable += 1
+            # A marker from a node this team has not heard announce -- yet.
+            # Drawing it under an invented identity would put an object on the
+            # map that nobody can be asked about, so it waits instead.
+            self._hold_unattributed(raw, signed_by)
             return True
         if signed_by is not None and signed_by != sender:
             self.unreadable += 1
@@ -751,10 +794,11 @@ class CotBridge:
             return False
         sender = self.registry.resolve_sender_id(decoded["sender_id"])
         if sender is None:
-            # Chat from a node this team has never heard announce. Dropping it
-            # is the honest option: rendering it under an invented identity
-            # would put words on the screen attributed to nobody.
-            self.unreadable += 1
+            # Chat from a node this team has not heard announce -- yet.
+            # Rendering it under an invented identity would put words on the
+            # screen attributed to nobody, so it waits for the announce instead
+            # of being dropped; see tools/cot_pending.py for what dropping cost.
+            self._hold_unattributed(raw, signed_by)
             return True
         if signed_by is not None and signed_by != sender:
             # The frame names one member and the carrier proves another sent
@@ -1514,7 +1558,39 @@ class CotBridge:
             threading.Thread(target=self._serve_client, args=(connection,), daemon=True).start()
 
 
+class TimestampedStream:
+    """Prefix every line written to a stream with the time it was written.
+
+    The bridge reports through print(), and none of those lines carried a time.
+    On the bench 2026-09-21 a chat reply delivered with a proof never appeared
+    on the far ATAK, and whether it had arrived before or after the far end
+    learned its sender -- the whole question -- could only be inferred from
+    line order. Wrapping the stream stamps every line without touching the
+    dozens of places that print.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._at_line_start = True
+
+    def write(self, text):
+        out = []
+        for piece in text.splitlines(keepends=True):
+            if self._at_line_start and piece:
+                out.append(time.strftime("%H:%M:%S "))
+            out.append(piece)
+            self._at_line_start = piece.endswith("\n")
+        return self._stream.write("".join(out))
+
+    def flush(self):
+        return self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def main():
+    sys.stdout = TimestampedStream(sys.stdout)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--team", default=tak_identity.DEFAULT_TEAM)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
