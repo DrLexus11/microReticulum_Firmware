@@ -945,6 +945,21 @@ into range of its board:
 This is not CarriedIssues #9: there the announces *were* sent to the board and
 still never arrived.
 
+**Fixed in Columba the same afternoon, and measured.** Relaunched on the bench:
+
+```
+17:19:48  Columba relaunched
+17:19:53  team restored from disk; 5 announces held -- "no BLE peer yet"
+17:19:54  BLE connected, first attempt
+17:19:55  "peer up; sending 5 announce(s) held while none was"
+~17:20:08 the deck's daemon hears the handset
+```
+
+Back on the mesh in about seven seconds, and heard at the deck in about twenty,
+against three minutes that morning. The first connect succeeded, so the
+shortened retry after a GATT 133 was not exercised by this run; the held
+announces and the restored table were.
+
 ### The locked-phone gate, passed 2026-09-21
 
 53 minutes, handset locked, a chat line and a marker addressed to it sent from
