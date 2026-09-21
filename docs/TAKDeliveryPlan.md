@@ -1007,6 +1007,32 @@ convenient, not as a condition of this PR.
 
 ---
 
+### One board, one phone -- found with a third handset, 2026-09-21
+
+The multi-client question -- several phones on one board, each its own TAK
+node, rather than a board per member -- answered on hardware, and the answer is
+not yet.
+
+- **Rev 1 serves one BLE peer.** Its build uses the Bluedroid backend in
+  `BLEPeerInterface.h`, which stops advertising when a client connects and
+  restarts only on disconnect. With the Samsung attached, a Nexus 6P never saw
+  Rev 1 at all.
+- **The 7-peer backend exists and is not on the RAD boards.** `BLEPeerNimBLEInterface.h`
+  carries several peers on one GATT service with `BLE_PEER_MAX_CONNECTIONS = 7`,
+  and advertises while it has capacity. It was built for the constrained OZD and
+  kept apart so it could not perturb the backend the RAD boards were proven on.
+- **Phones do not relay for each other.** Columba runs with
+  `enable_transport = No`, so the Nexus, which found the Samsung over BLE
+  instead, reached the Samsung and nothing further; the bridge never heard it.
+  Turning transport on would work, at the cost of battery and of every phone
+  forwarding everyone's traffic. Worth keeping for range extension, not as the
+  model.
+
+**For PR E:** move the RAD boards onto the multi-peer NimBLE backend and prove
+several phones on one board, each drawn in ATAK under its own identity. That is
+what "BLE proven as the endpoint's carrier" has to mean for a team with pockets
+rather than a board each.
+
 ## Two findings that gate PR E
 
 ### 1. A board that is not in TNC mode does not relay
