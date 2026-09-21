@@ -367,6 +367,26 @@ class FragmentsOverLxmfArriveTests(unittest.TestCase):
         self.assertIn(b"DRAW-1", made.drawn[0])
         self.assertEqual(made.reassembled, 1)
 
+    def test_a_sender_that_resolves_only_sometimes_still_completes(self):
+        """Recall can fail for one message and succeed for the next.
+
+        Keyed on the resolved member, fragments 1 and 3 of a transfer landed
+        under one key and fragment 2 under another, and the drawing never
+        completed -- measured on the bench. The source hash does not change
+        between one message and the next.
+        """
+        made = self.bridge()
+        answers = iter([b"\x42" * 16, None, b"\x42" * 16, None])
+        made._member_for_lxmf = lambda source: next(answers, None)
+        pipeline = CotOutbound(OUR_UID)
+        with redirect_stdout(io.StringIO()):
+            frames = pipeline.frames(big_event(), tier2.encode, cot_fragment.fragments)
+            for frame in frames:
+                made._chat_from_lxmf(frame, b"\x77" * 16)
+
+        self.assertEqual(made.reassembled, 1)
+        self.assertEqual(len(made.drawn), 1)
+
     def test_a_partial_transfer_over_lxmf_draws_nothing(self):
         made = self.bridge()
         pipeline = CotOutbound(OUR_UID)

@@ -816,6 +816,57 @@ guarantee written down once, correct for the carrier it was written against,
 and never re-checked when the carrier changed underneath it. The reassembly
 window, the retry premise, and now the frame size.
 
+### Both directions on the map, and question 2 answered, 2026-09-21
+
+After the fixes below, a drawing crossed each way and was confirmed on the map at
+the far end.
+
+```
+Waydroid -> phone   3 fragments, 662 B
+  09:50:03  fragment 1 of 3                         first attempt
+  09:50:07  fragment 3 of 3, 4.3 s after the first
+  09:50:16  fragment 2 of 3, 13.5 s after the first  retried alone, 2 attempts
+            reassembled over LXMF
+phone -> Waydroid   3 fragments, 638 B, reassembled on the bridge in 0.9 s
+```
+
+**Question 2 is answered, and this time well.** Fragment 2 did not land first
+time; LXMF retried that one fragment on its own while the other two waited in
+the reassembler, and the drawing arrived thirteen seconds late rather than not
+at all. That is the behaviour the design was argued on, observed for the first
+time -- and only after fragments were actually made LXMF messages.
+
+Getting there took three more faults, each invisible to the tests that existed:
+
+- **Columba discarded every fragment it received.** Its backends emit an inbound
+  LXMF message to observers only if it looks like visible chat -- text, image,
+  file or audio. A fragment has none, so it was dropped inside the backend while
+  the LXMF layer had already proved it delivered. Both backends now also emit
+  anything carrying `FIELD_CUSTOM_TYPE`, upstream's marker for an application
+  payload, and the one consumer that makes conversation rows skips what is not
+  visible.
+- **One transfer split across two reassembly keys.** Keyed on the resolved team
+  member, fragments 1 and 3 landed under one key and fragment 2 under another,
+  because resolving recalls an identity and recall can fail for one message and
+  succeed for the next. Both sides now key on the LXMF source hash.
+- **A departed member still costs airtime.** A test peer left on the team drew
+  six retries per fragment and an escalation to the propagation node. That is
+  store-and-forward working, but on a drawing it is roughly 2 s of channel per
+  fragment per absent member. Worth costing before PR F.
+
+Two things seen on the bench that are *not* fixed:
+
+- **A restarted node is blind to its team until someone announces.** The member
+  table lives in memory on both sides. Restart the bridge just after the phone
+  announced and the bridge knows nobody: it drops the phone's positions as from
+  an unknown node and sends its own to no one, and both ATAKs show the other
+  offline. The greeting on hearing any peer should close this, but only if the
+  reply crosses. Persisting the member table across restarts is the fix.
+- **Phone-to-deck went quiet for about ten minutes, then recovered unaided.**
+  09:28 to 09:38: the phone sent announces over BLE that never reached the deck,
+  while deck-to-phone still worked. Announce rate limiting is ruled out -- the
+  boards set no target. Recorded beside CarriedIssues #6, unexplained.
+
 ### PR E — the node knows where it is and what it can reach
 
 - **GNSS.** `Position.h` already has the `GNSS` node-position kind; the NMEA

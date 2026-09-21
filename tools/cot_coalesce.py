@@ -64,7 +64,7 @@ class LatestWins:
         self.coalesced = 0   # versions replaced before they were sent
         self.identical = 0   # versions dropped for matching what was sent
 
-    def offer(self, uid, payload, digest, now):
+    def decide(self, uid, payload, digest, now):
         """Decide what to do with one version.
 
         Returns `(SEND, None)` to send now, `(HOLD, flush_at)` when the caller

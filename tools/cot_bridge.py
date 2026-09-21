@@ -892,7 +892,7 @@ class CotBridge:
         if uid is None:
             self._send_version(None, frames)
             return
-        decision, flush_at = self._latest.offer(
+        decision, flush_at = self._latest.decide(
             uid, frames, self._content_digest(frames), time.time())
         if decision == cot_coalesce.SEND:
             self._send_version(uid, frames)
@@ -1008,10 +1008,17 @@ class CotBridge:
         raw = bytes(frame)
         if tak_payload.kind_of(raw) == tak_payload.FRAGMENT_V1:
             # A fragment now travels this way too, because a bare packet could
-            # not promise it arrived. Keyed on the member the carrier *proved*
-            # rather than on a destination hash -- strictly better than the
-            # packet path can manage, and it costs nothing here.
-            raw = self._reassemble(raw, signed_by or b"")
+            # not promise it arrived.
+            #
+            # Keyed on the LXMF source hash itself, not on the member it
+            # resolves to. Resolution recalls an identity, and recall can fail
+            # for one message and succeed for the next -- measured on the bench
+            # 2026-09-21: fragments 1 and 3 of a transfer landed under one key,
+            # fragment 2 under another, and the drawing could never complete.
+            # The source hash is the same for every message one sender sends
+            # and LXMF has verified it; attribution still uses the resolved
+            # member, below.
+            raw = self._reassemble(raw, bytes(source_hash or b""))
             if raw is None:
                 return
             self._dispatch_frame(raw, signed_by=signed_by)
