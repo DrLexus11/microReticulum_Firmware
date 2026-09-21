@@ -960,6 +960,31 @@ against three minutes that morning. The first connect succeeded, so the
 shortened retry after a GATT 133 was not exercised by this run; the held
 announces and the restored table were.
 
+### Addressed markers, proven with three handsets, 2026-09-21
+
+A third handset, a Nexus 6P, made the property two devices cannot show
+testable: an addressed marker reaches its addressee **and nobody else**.
+
+```
+Waydroid -> LEXUS   bridge: 1 LXMF send, proved 13.1 s   Samsung got it   Nexus: nothing
+Waydroid -> NEXUS   bridge: 1 LXMF send, proved 0.1 s    Nexus got it     Samsung: nothing
+```
+
+The decisive evidence is at the sender: for each marker the bridge created
+exactly one message to exactly one member, so there was no second copy to leak.
+ATAK's "Send" to a contact carries **only a callsign** in `marti/dest`
+(`uid=''`), confirmed on the wire; the callsign path is the one that matters.
+
+**An operator trap found on the way -- a decision, not a fix.** ATAK's
+auto-send re-broadcasts a marker about every 60 s, and the repeats carry no
+addressee. A marker first sent to one person with auto-send on therefore
+reaches the whole team within a minute: on the bench the Nexus received the
+Samsung's "DECK only" auto-sent marker every minute as a plain broadcast. That
+is ATAK's documented behaviour -- auto-send *broadcasts* -- and our routing did
+exactly what the events said. The bridge and Columba could remember a marker's
+original addressee and route its repeats to that person alone; that overrides
+ATAK's definition of auto-send, so it waits for a decision.
+
 ### The locked-phone gate, passed 2026-09-21
 
 53 minutes, handset locked, a chat line and a marker addressed to it sent from
