@@ -782,6 +782,40 @@ did. ATAK also re-emits a shared drawing on a timer, which is why an unchanged
 drawing is now suppressed for two minutes — keyed on the uid and the frame bytes
 together, so an edited drawing still goes. None of that is measured yet.
 
+### A fragment is sized for LXMF, not for a packet, 2026-09-21
+
+Moving fragments onto LXMF changed what a fragment may be, and the number was
+nearly wrong in a way that would not have shown up as a failure.
+
+Measured against LXMF 1.1.1:
+
+```
+envelope on the air         107 B, constant
+largest frame, one packet   276 B
+LXMF switches to Resource   309 B
+a 383 B fragment packs to   490 B
+```
+
+**383 is the bare-packet MDU and it was never this frame's budget.** Sized
+against it, every full-size fragment becomes a Resource over its own Link --
+eight fragments, eight handshakes, on a path where establishment was 5 of 15
+when the channel was busy. Strictly worse than the single Resource this scheme
+was chosen over, and invisible: the fragments would mostly arrive, slowly, and
+nothing in any log would say why.
+
+The slice is therefore 249 B inside a 256 B frame, leaving twenty bytes of
+headroom for fields a message may yet carry that the bench measurement did not
+-- a ticket, a stamp. A compressed drawing is three fragments rather than two.
+
+This is a wire change: `tak_native_v1.json` is regenerated and copied to
+`columba`, and both sides now assert the frame against the envelope rather than
+against 383.
+
+**The pattern is worth naming.** Three times now the same shape: a bound or a
+guarantee written down once, correct for the carrier it was written against,
+and never re-checked when the carrier changed underneath it. The reassembly
+window, the retry premise, and now the frame size.
+
 ### PR E — the node knows where it is and what it can reach
 
 - **GNSS.** `Position.h` already has the `GNSS` node-position kind; the NMEA
