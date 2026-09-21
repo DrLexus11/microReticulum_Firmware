@@ -417,6 +417,7 @@ class CotBridge:
         self.fragmented = 0
         self.reassembled = 0
         self._latest = cot_coalesce.LatestWins()
+        self.markers_undeliverable = 0
         self._freshness = cot_coalesce.Freshness()
         self._in_flight = {}
         self._fragment_elapsed = 0.0
@@ -682,8 +683,14 @@ class CotBridge:
               % event.get("uid"), flush=True)
         return False
 
-    def _marker_from_mesh(self, raw):
-        """Render a peer's marker as CoT for the local ATAK."""
+    def _marker_from_mesh(self, raw, signed_by=None):
+        """Render a peer's marker as CoT for the local ATAK.
+
+        `signed_by` is the member LXMF proves sent it, for a marker that came
+        addressed; a broadcast one arrives as a bare packet and has none. Where
+        there is a proof it must agree with the frame's claimed sender, or any
+        member could drop a pin on this map under another member's name.
+        """
         decoded = cot_marker.decode(raw)
         if decoded is None:
             return False
@@ -693,6 +700,11 @@ class CotBridge:
             # it under an invented identity would put an object on the map that
             # nobody can be asked about.
             self.unreadable += 1
+            return True
+        if signed_by is not None and signed_by != sender:
+            self.unreadable += 1
+            print("[bridge] marker claims one member and was sent by another; "
+                  "not drawn", flush=True)
             return True
         claims = self.registry.describe(sender) or {}
         now = datetime.now(timezone.utc)
@@ -1023,6 +1035,11 @@ class CotBridge:
                 return
             self._dispatch_frame(raw, signed_by=signed_by)
             return
+        if tak_payload.kind_of(raw) == tak_payload.MARKER_V1:
+            # A pin sent to this node in particular comes by LXMF, so that it
+            # is proved -- and so the carrier can say who sent it.
+            self._marker_from_mesh(raw, signed_by=signed_by)
+            return
         if self._chat_from_mesh(raw, signed_by=signed_by):
             self.received += 1
 
@@ -1060,8 +1077,79 @@ class CotBridge:
                 # Handled: suppressed rather than passed on to tier 2, which
                 # would spend more airtime than the codec just saved.
                 return True
-        self.markers_sent += self._fan_out(frame)
+        addressed, recipients = self._marker_recipients(xml)
+        if not addressed:
+            self.markers_sent += self._fan_out(frame)
+            return True
+        # Sent to somebody in particular. Broadcasting it anyway is the
+        # anti-pattern this exists to stop: every pin dropped for one person
+        # shown to everybody, which is the confidentiality problem the chat
+        # path was built to avoid, on a different codec.
+        if not recipients:
+            self.markers_undeliverable += 1
+            print("[bridge] marker addressed to nobody on this team; not sent, "
+                  "and not broadcast instead", flush=True)
+            return True
+        for member in recipients:
+            self._dispatch_addressed_marker(member, frame)
         return True
+
+    def _marker_recipients(self, xml):
+        """Who a marker was sent to: (addressed, member hashes).
+
+        ATAK's "Send" to a contact puts the recipient in `detail/marti/dest`,
+        the same mechanism it uses to route anything through a server. A
+        broadcast carries no marti at all, and that is the whole difference
+        between the two.
+
+        A `dest` names a peer by UID or by callsign. A UID is resolved exactly;
+        a callsign is matched against what members announced, and every member
+        announcing it is a recipient -- the operator chose a name on the map,
+        and two members showing the same name were both that name to them. A
+        name nobody on the team carries resolves to nobody, and the caller
+        refuses rather than broadcasts.
+        """
+        try:
+            event = _parse(xml)
+        except ValueError:
+            return False, []
+        dests = event.findall("detail/marti/dest")
+        if not dests:
+            return False, []
+        members = list(self.registry.members())
+        recipients = []
+        for dest in dests:
+            uid, callsign = dest.get("uid") or "", dest.get("callsign") or ""
+            print("[bridge] marker addressed to uid=%r callsign=%r"
+                  % (uid, callsign), flush=True)
+            exact = tak_identity.destination_for(uid) if uid else None
+            if exact is not None and exact in members:
+                found = [exact]
+            else:
+                found = [member for member in members
+                         if callsign and (self.registry.describe(member) or {})
+                         .get("callsign") == callsign]
+            recipients.extend(m for m in found if m not in recipients)
+        return True, recipients
+
+    def _dispatch_addressed_marker(self, destination, frame):
+        """Send one marker to one member, over LXMF so it is proved.
+
+        A broadcast pin is sent as a bare packet to everyone, and a lost one is
+        refreshed by the next re-send. A pin sent to one person is a message to
+        that person, and gets what their chat gets: a proof and a retry. The
+        bare packet is the fallback only for a member whose identity cannot be
+        recalled, or --no-lxmf -- never for LXMF declining, for the reason
+        _dispatch_addressed_chat gives.
+        """
+        identity = self.rns.Identity.recall(destination)
+        if self.lxmf is not None and identity is not None:
+            if self.lxmf.send_frame(identity, frame) is not None:
+                self.markers_sent += 1
+            else:
+                self.markers_undeliverable += 1
+            return
+        self.markers_sent += self._send_to(destination, frame)
 
     def _dispatch_addressed_chat(self, destination, frame, decoded):
         """Send one addressed line to one peer, by the strongest route there is.
