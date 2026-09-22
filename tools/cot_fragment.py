@@ -41,6 +41,7 @@ small enough that a corrupt count cannot ask a receiver for megabytes.
 
 import os
 import struct
+import threading
 import time
 
 import tak_payload
@@ -124,6 +125,13 @@ def decode(frame):
     """
     if not isinstance(frame, (bytes, bytearray)) or len(frame) <= HEADER_BYTES:
         return None
+    # No sender of ours produces a fragment above the frame bound, so nothing
+    # larger is one. Checked before anything is unpacked: over LXMF a single
+    # message can be arbitrarily large, and without this a malformed fragment
+    # would have the reassembler hold a slice of any size, which is the memory
+    # and one-packet bound the whole scheme rests on.
+    if len(frame) > MAX_FRAGMENT_FRAME_BYTES:
+        return None
     frame = bytes(frame)
     kind, transfer_id, index, count = HEADER.unpack(frame[:HEADER_BYTES])
     if kind != tak_payload.FRAGMENT_V1:
@@ -151,6 +159,12 @@ class Reassembler:
         self.partial = {}
         self.completed = 0
         self.dropped = 0
+        # Fed from two threads at once: Reticulum's packet callback and LXMF's
+        # delivery callback. A fragment, an expiry and a completion racing on
+        # the same dictionary lost entries or raised -- on exactly the path a
+        # proved retry takes. Held for the whole of feed(), which is a handful
+        # of dictionary operations.
+        self._lock = threading.Lock()
         # A diagnostic seam, not part of the wire. The reassembly window was
         # chosen against an estimate of how long a transfer takes on LoRa, and
         # the only way to find out whether that estimate was right is to watch
@@ -168,8 +182,11 @@ class Reassembler:
         decoded = decode(frame)
         if decoded is None:
             return None
+        with self._lock:
+            return self._feed(sender, decoded, time.time() if now is None else now)
+
+    def _feed(self, sender, decoded, now):
         transfer_id, index, count, slice_ = decoded
-        now = time.time() if now is None else now
         self._expire(now)
         key = (bytes(sender or b""), transfer_id)
         entry = self.partial.get(key)
@@ -209,4 +226,5 @@ class Reassembler:
             self.dropped += 1
 
     def pending(self):
-        return len(self.partial)
+        with self._lock:
+            return len(self.partial)

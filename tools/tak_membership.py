@@ -260,7 +260,19 @@ class MemberRegistry:
             "members": {dest.hex(): entry for dest, entry in self._members.items()},
         }
         temporary = "%s.tmp" % path
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # A temp left behind by a crash, or planted, must not decide where the
+        # roster goes or who can read it. O_CREAT|O_TRUNC alone follows a
+        # symlink and keeps an existing file's mode, and os.replace would then
+        # promote that file to the roster. So: remove whatever is there without
+        # following it, create afresh and exclusively without following links,
+        # and set the mode on the descriptor rather than trusting the umask.
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600)
+        os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(payload, handle)
         os.replace(temporary, path)

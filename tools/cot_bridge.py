@@ -669,14 +669,16 @@ class CotBridge:
         self._heard_mesh()
         raw = bytes(data)
         if tak_payload.kind_of(raw) == tak_payload.FRAGMENT_V1:
-            # Keyed on the sender, so two peers picking the same transfer id
-            # cannot merge into a frame neither of them sent.
-            sender = getattr(getattr(packet, "link", None), "hash", None)
-            if sender is None:
-                sender = getattr(packet, "destination_hash", b"")
-            raw = self._reassemble(raw, sender)
-            if raw is None:
-                return
+            # Not reassembled. A bare packet names no sender -- its destination
+            # hash is ours, not theirs -- so there is nothing to key the
+            # transfer on, and two peers using the same transfer id could be
+            # merged into one event. Fragments travel over LXMF, which proves
+            # who sent them; neither half of this project sends them any other
+            # way.
+            self.unreadable += 1
+            print("[bridge] fragment arrived as a bare packet, which cannot "
+                  "say who sent it; not reassembled", flush=True)
+            return
         self._dispatch_frame(raw)
 
     def _reassemble(self, raw, sender):
@@ -715,7 +717,11 @@ class CotBridge:
             if self._chat_from_mesh(raw, signed_by=signed_by):
                 return
         elif kind == tak_payload.MARKER_V1:
-            if self._marker_from_mesh(raw):
+            # signed_by passed through, as for chat. A marker held until its
+            # sender was known comes back here; dropping the proof would let one
+            # claiming Alice but proved by Mallory be drawn as Alice the moment
+            # Alice announced.
+            if self._marker_from_mesh(raw, signed_by=signed_by):
                 return
         try:
             xml = tier2.decode(raw)
@@ -1356,25 +1362,29 @@ class CotBridge:
         fan-out: it has nothing to be incomplete against, and the airtime
         costing in pivot 5 assumed that.
 
-        The fallback to a bare packet is for a peer whose identity cannot be
-        recalled, and for `--no-lxmf`. It is deliberately *not* a fallback for
-        LXMF declining, for the same reason `_dispatch_addressed_chat` refuses
-        one: sending unreliably while the caller believes it sent reliably is
-        worse than not sending.
+        **There is no bare-packet fallback, deliberately.** A bare packet
+        names no sender, so the receiver cannot key a fragment on who sent it,
+        and two peers picking the same transfer id could be merged into one
+        event -- the sender isolation the reassembler promises holds only for
+        fragments LXMF carried. A bare fragment is also exactly the unproved
+        slice whose loss lost a whole drawing on the bench. A member whose
+        identity cannot be recalled gets a path request and is counted
+        unreachable; the next version will find them.
         """
         sent = 0
         for member in self.registry.members():
             identity = self.rns.Identity.recall(member)
-            if self.lxmf is not None and identity is not None:
-                message = self.lxmf.send_frame(identity, frame)
-                if message is not None:
-                    sent += 1
-                    if messages is not None:
-                        messages.append(message)
-                else:
-                    self.unreachable += 1
+            if identity is None:
+                self.rns.Transport.request_path(member)
+                self.unreachable += 1
                 continue
-            sent += self._send_to(member, frame)
+            message = self.lxmf.send_frame(identity, frame)
+            if message is not None:
+                sent += 1
+                if messages is not None:
+                    messages.append(message)
+            else:
+                self.unreachable += 1
         return sent
 
     def _send_version(self, uid, frames):
@@ -1385,15 +1395,26 @@ class CotBridge:
         it supersedes: that is airtime spent delivering a shape the operator
         has already moved.
         """
-        if len(frames) == 1:
-            self.sent += self._fan_out(frames[0])
-            return
+        # Withdrawn before the path is chosen, not after. A version that
+        # shrinks from fragments to one frame takes the fast path below, and
+        # withdrawing only on the fragmented path left the old fragments
+        # retrying -- able to land after the version that replaced them.
         superseded = self._in_flight.pop(uid, []) if uid else []
         if superseded and self.lxmf is not None:
             for message in superseded:
                 self.lxmf.cancel(message)
             print("[bridge] withdrew %d message(s) of a superseded version"
                   % len(superseded), flush=True)
+        if len(frames) == 1:
+            self.sent += self._fan_out(frames[0])
+            return
+        if self.lxmf is None:
+            # Tier 3 needs LXMF: a fragment is only worth sending proved and
+            # attributable. Said out loud rather than sent unreliably.
+            self.pipeline.dropped += 1
+            print("[bridge] not sent: event needs %d fragments and tier 3 needs "
+                  "LXMF, which --no-lxmf turned off" % len(frames), flush=True)
+            return
         self.fragmented += 1
         print("[bridge] event too large for one packet; sending %d fragments"
               % len(frames), flush=True)
@@ -1567,23 +1588,34 @@ class TimestampedStream:
     learned its sender -- the whole question -- could only be inferred from
     line order. Wrapping the stream stamps every line without touching the
     dozens of places that print.
+
+    **Lines are assembled per thread.** print() writes the message and the
+    newline in separate calls, and the announce, LXMF, timer and client threads
+    all print -- so with one shared "at line start" flag, another thread could
+    append its text between them, on a line with no stamp. A lock around each
+    write cannot fix that, since the split is *between* writes. Each thread
+    keeps its own partial line; only a completed line is stamped and written,
+    whole, under a lock.
     """
 
     def __init__(self, stream):
         self._stream = stream
-        self._at_line_start = True
+        self._lock = threading.Lock()
+        self._partial = threading.local()
 
     def write(self, text):
-        out = []
-        for piece in text.splitlines(keepends=True):
-            if self._at_line_start and piece:
-                out.append(time.strftime("%H:%M:%S "))
-            out.append(piece)
-            self._at_line_start = piece.endswith("\n")
-        return self._stream.write("".join(out))
+        buffered = getattr(self._partial, "text", "") + text
+        lines = buffered.split("\n")
+        self._partial.text = lines.pop()
+        if lines:
+            stamp = time.strftime("%H:%M:%S ")
+            with self._lock:
+                self._stream.write("".join(stamp + line + "\n" for line in lines))
+        return len(text)
 
     def flush(self):
-        return self._stream.flush()
+        with self._lock:
+            return self._stream.flush()
 
     def __getattr__(self, name):
         return getattr(self._stream, name)

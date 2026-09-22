@@ -152,5 +152,24 @@ class ReceiveTests(unittest.TestCase):
         self.assertEqual(made.unreadable, 1)
 
 
+class HeldMarkerKeepsItsProofTests(unittest.TestCase):
+    """A marker held until its sender was known comes back through
+    _dispatch_frame; the carrier proof must come back with it."""
+
+    def test_a_released_marker_whose_proof_disagrees_is_not_drawn(self):
+        made = ReceiveTests.bridge(ReceiveTests())
+        frame = cot_marker.marker_from_cot(marker(), 0x11111111)
+        with redirect_stdout(io.StringIO()):
+            made._dispatch_frame(frame, signed_by=BRAVO)     # claims LEXUS
+        self.assertEqual(made.drawn, [])
+
+    def test_a_released_marker_whose_proof_agrees_is_drawn(self):
+        made = ReceiveTests.bridge(ReceiveTests())
+        frame = cot_marker.marker_from_cot(marker(), 0x11111111)
+        with redirect_stdout(io.StringIO()):
+            made._dispatch_frame(frame, signed_by=LEXUS)
+        self.assertEqual(len(made.drawn), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

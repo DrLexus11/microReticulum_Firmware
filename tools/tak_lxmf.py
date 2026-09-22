@@ -230,7 +230,12 @@ class Carrier:
                           "direct message") is not None
 
     def send_frame(self, identity, frame):
-        """Send one TAK frame to one peer over LXMF. Returns True if accepted.
+        """Send one TAK frame to one peer over LXMF.
+
+        Returns the LXMessage if LXMF accepted it, None if not -- the message
+        itself, not a boolean, because it is the handle `cancel()` needs to
+        withdraw a superseded version. Test the result with `is not None`;
+        an equality or identity check against True loses the handle.
 
         Chat is not the only thing that needs to arrive. A tier-3 fragment is
         one slice of an event that is worthless without the others, and the
@@ -250,9 +255,11 @@ class Carrier:
     def cancel(self, message):
         """Withdraw a message that has been superseded before it landed.
 
-        ATAK's auto-send re-emits a drawing every time it changes, and a
-        version still retrying after a newer one has gone is airtime spent
-        delivering a shape the operator already moved. Cancelling stops its
+        An operator who edits a shared drawing and sends it again produces a
+        newer version of the same event, and the older one still retrying is
+        airtime spent delivering a shape the operator already moved. (Not
+        ATAK's auto-send: that is markers-only, periodic, and never reaches
+        tier 3.) Cancelling stops its
         retries; one that has already landed is unaffected, and one already
         at the propagation node is left for the receiver's freshness check.
         """

@@ -213,5 +213,90 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(whole, b"x" * 900)
 
 
+class SharedFixtureTests(unittest.TestCase):
+    """The byte-level vectors both repositories read.
+
+    tak_native_v1.json is copied into columba and asserted on there. Until this
+    class the Python suite never read its fragment block -- it generated its own
+    vectors -- so the fixture could drift from cot_fragment.fragments with no
+    Python test failing, and the cross-language contract would have been kept
+    by one side only.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import json
+        path = Path(__file__).resolve().parent / "fixtures" / "tak_native_v1.json"
+        cls.block = json.loads(path.read_text())["fragment"]
+
+    def test_the_limits_are_the_ones_the_code_uses(self):
+        self.assertEqual(self.block["kind"], tak_payload.FRAGMENT_V1)
+        self.assertEqual(self.block["header_bytes"], cot_fragment.HEADER_BYTES)
+        self.assertEqual(self.block["max_fragment_bytes"], cot_fragment.MAX_FRAGMENT_BYTES)
+        self.assertEqual(self.block["max_fragment_frame_bytes"], cot_fragment.MAX_FRAGMENT_FRAME_BYTES)
+        self.assertEqual(self.block["max_fragments"], cot_fragment.MAX_FRAGMENTS)
+        self.assertEqual(self.block["reassembly_timeout_seconds"],
+                         cot_fragment.REASSEMBLY_TIMEOUT_SECONDS)
+
+    def test_cutting_the_fixture_payload_yields_the_fixture_frames(self):
+        payload = bytes.fromhex(self.block["payload"])
+        frames = cot_fragment.fragments(payload, transfer_id=self.block["transfer_id"])
+        self.assertEqual([frame.hex() for frame in frames], self.block["frames"])
+
+    def test_the_fixture_frames_reassemble_to_the_fixture_payload(self):
+        reassembler = cot_fragment.Reassembler()
+        whole = None
+        for hex_frame in self.block["frames"]:
+            whole = reassembler.feed(PEER, bytes.fromhex(hex_frame)) or whole
+        self.assertEqual(whole, bytes.fromhex(self.block["payload"]))
+
+
+class HostileFrameTests(unittest.TestCase):
+    def test_a_frame_above_the_wire_maximum_is_not_a_fragment(self):
+        """Over LXMF one message can be any size. Without this a malformed
+        count-1 fragment had the reassembler hold a slice of any size."""
+        header = cot_fragment.HEADER.pack(tak_payload.FRAGMENT_V1, 1, 0, 1)
+        huge = header + b"x" * (cot_fragment.MAX_FRAGMENT_FRAME_BYTES + 1 - len(header))
+        self.assertIsNone(cot_fragment.decode(huge))
+        self.assertIsNone(cot_fragment.Reassembler().feed(PEER, huge))
+
+    def test_a_frame_at_the_wire_maximum_still_is(self):
+        header = cot_fragment.HEADER.pack(tak_payload.FRAGMENT_V1, 1, 0, 1)
+        largest = header + b"x" * (cot_fragment.MAX_FRAGMENT_FRAME_BYTES - len(header))
+        self.assertIsNotNone(cot_fragment.decode(largest))
+
+
+class ConcurrentFeedTests(unittest.TestCase):
+    def test_two_callback_threads_feeding_at_once_lose_nothing(self):
+        """Reticulum's packet callback and LXMF's delivery callback both feed
+        the reassembler. Unsynchronised, a fragment, an expiry and a completion
+        racing on the same dictionary lost entries or raised."""
+        import threading
+        reassembler = cot_fragment.Reassembler(max_transfers=10_000)
+        transfers = [cot_fragment.fragments(bytes([n % 256]) * 900, transfer_id=n)
+                     for n in range(300)]
+        completed, errors = [], []
+
+        def feed(indices):
+            try:
+                for n in indices:
+                    for frame in transfers[n]:
+                        whole = reassembler.feed(PEER, frame)
+                        if whole is not None:
+                            completed.append(n)
+            except Exception as error:                 # noqa: BLE001
+                errors.append(error)
+
+        workers = [threading.Thread(target=feed, args=(range(k, 300, 4),)) for k in range(4)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(completed), list(range(300)))
+        self.assertEqual(reassembler.pending(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

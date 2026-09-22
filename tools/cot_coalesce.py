@@ -94,6 +94,11 @@ class LatestWins:
                 return SEND, None
             replacing = uid in self._held
             self._held[uid] = (payload, digest)
+            # Bounded on its own as well: a held version waits on a timer the
+            # caller arranged, and a burst of distinct uids must not be able to
+            # pile up frames and timers faster than _sent evicts them.
+            while len(self._held) > self.max_uids:
+                del self._held[next(iter(self._held))]
             if replacing:
                 self.coalesced += 1
                 return DROP, None
@@ -122,6 +127,10 @@ class LatestWins:
         if len(self._sent) > self.max_uids:
             oldest = min(self._sent, key=lambda key: self._sent[key][0])
             del self._sent[oldest]
+            # Its held version goes with it. Left behind, a version created and
+            # then evicted over and over would retain frames without limit,
+            # despite both tables being described as bounded.
+            self._held.pop(oldest, None)
 
 
 def event_time(value):

@@ -360,6 +360,12 @@ class CotOutbound:
         None is ordinary and covers three cases: our own event coming back,
         something that is not CoT at all, and an event we could not encode.
         """
+        # Cleared on every call, so it only ever describes *this* event. It was
+        # set on the size-refusal path alone, and frames() reads it to decide
+        # whether to cut an event up: after one oversized event, our own echo
+        # or a malformed event left the old "tier 3" reason in place, and
+        # frames() fragmented it and put it on the mesh.
+        self.last_drop = None
         if isinstance(cot_xml, (bytes, bytearray)):
             try:
                 cot_xml = bytes(cot_xml).decode("utf-8", errors="strict")

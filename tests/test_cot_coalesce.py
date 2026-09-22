@@ -65,6 +65,22 @@ class LatestWinsTests(unittest.TestCase):
     def test_a_flush_with_nothing_held_is_nothing(self):
         self.assertIsNone(self.gate.flush("D", 10))
 
+    def test_evicting_a_uid_drops_its_held_version_too(self):
+        gate = cot_coalesce.LatestWins(window_seconds=10, max_uids=2)
+        gate.decide("A", "a1", b"a1", 0)
+        gate.decide("A", "a2", b"a2", 1)          # held
+        gate.decide("B", "b1", b"b1", 2)
+        gate.decide("C", "c1", b"c1", 3)          # evicts A from _sent
+        self.assertNotIn("A", gate._held)
+
+    def test_held_versions_are_bounded_on_their_own(self):
+        gate = cot_coalesce.LatestWins(window_seconds=10, max_uids=4)
+        for index in range(50):
+            uid = "D%d" % index
+            gate.decide(uid, "v1", b"1", 0)
+            gate.decide(uid, "v2", b"2", 1)       # held for every uid
+        self.assertLessEqual(len(gate._held), 4)
+
     def test_the_memory_does_not_grow_without_bound(self):
         gate = cot_coalesce.LatestWins(window_seconds=10, max_uids=8)
         for index in range(100):

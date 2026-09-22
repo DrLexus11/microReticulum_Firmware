@@ -228,6 +228,40 @@ class SurvivesRestartTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
 
 
+class SaveCannotBeRedirectedTests(unittest.TestCase):
+    """A leftover or planted temp file must not decide where the roster goes
+    or who can read it."""
+
+    def setUp(self):
+        import tempfile
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = str(Path(self.directory.name) / "tak_members.json")
+        self.registry = membership.MemberRegistry("Cyan", SECRET, own_hash=bytes([0xAA] * 16))
+        self.registry.remember(bytes([1] * 16), membership.member_payload("Cyan", SECRET, "LEXUS"), now=100)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_a_world_readable_leftover_temp_does_not_make_the_roster_readable(self):
+        import os
+        import stat
+        Path(self.path + ".tmp").write_text("stale")
+        os.chmod(self.path + ".tmp", 0o644)
+        self.registry.save(self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_a_symlinked_temp_does_not_redirect_the_write(self):
+        import os
+        elsewhere = Path(self.directory.name) / "elsewhere.json"
+        elsewhere.write_text("untouched")
+        os.symlink(elsewhere, self.path + ".tmp")
+        self.registry.save(self.path)
+
+        self.assertEqual(elsewhere.read_text(), "untouched")
+        self.assertFalse(os.path.islink(self.path))
+        self.assertIn("LEXUS", Path(self.path).read_text())
+
+
 class GreetTests(unittest.TestCase):
     """A node that starts late hears everyone who announces after it and
     nobody who announced before. Without greeting, the first node up stays

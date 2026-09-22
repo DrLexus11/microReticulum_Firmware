@@ -94,6 +94,25 @@ class SendPathTests(unittest.TestCase):
                                      cot_fragment.fragments), [])
 
 
+class StaleRefusalTests(unittest.TestCase):
+    """A refusal describes one event, never the next."""
+
+    def test_our_own_echo_after_an_oversized_event_is_not_fragmented(self):
+        pipeline = CotOutbound(OUR_UID)
+        with redirect_stdout(io.StringIO()):
+            self.assertGreater(len(pipeline.frames(big_event(), tier2.encode,
+                                                   cot_fragment.fragments)), 1)
+            echo = big_event().replace('uid="DRAW-1"', 'uid="%s"' % OUR_UID)
+            self.assertEqual(pipeline.frames(echo, tier2.encode, cot_fragment.fragments), [])
+
+    def test_malformed_input_after_an_oversized_event_is_not_fragmented(self):
+        pipeline = CotOutbound(OUR_UID)
+        with redirect_stdout(io.StringIO()):
+            pipeline.frames(big_event(), tier2.encode, cot_fragment.fragments)
+            self.assertEqual(pipeline.frames("<event broken", tier2.encode,
+                                             cot_fragment.fragments), [])
+
+
 class RoundTripTests(unittest.TestCase):
     def test_what_goes_out_in_pieces_comes_back_whole(self):
         pipeline = CotOutbound(OUR_UID)
@@ -147,7 +166,10 @@ class BridgeReceiveTests(unittest.TestCase):
             made._from_mesh(frames[0], packet)
         self.assertEqual(made.drawn, [])
 
-    def test_the_last_fragment_delivers_the_whole_event(self):
+    def test_a_whole_transfer_as_bare_packets_is_not_reassembled(self):
+        """A bare packet names no sender -- its destination hash is ours -- so
+        two peers using one transfer id could be merged. Fragments travel over
+        LXMF; the reassembly that matters is FragmentsOverLxmfArriveTests."""
         made = self.bridge()
         pipeline = CotOutbound(OUR_UID)
         with redirect_stdout(io.StringIO()):
@@ -158,9 +180,9 @@ class BridgeReceiveTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             for frame in frames:
                 made._from_mesh(frame, packet)
-        self.assertEqual(len(made.drawn), 1)
-        self.assertIn(b"DRAW-1", made.drawn[0])
-        self.assertEqual(made.reassembled, 1)
+        self.assertEqual(made.drawn, [])
+        self.assertEqual(made.reassembled, 0)
+        self.assertEqual(made.unreadable, len(frames))
 
 
 class CarriedReliablyTests(unittest.TestCase):
@@ -207,21 +229,32 @@ class CarriedReliablyTests(unittest.TestCase):
         self.assertEqual(made.packets, [])
         self.assertEqual(made.unreachable, 2)
 
-    def test_without_lxmf_the_bare_packet_is_still_the_route(self):
-        """--no-lxmf is how somebody chooses best effort. It is not something
-        to hand them by accident, and it is not nothing either."""
+    def test_without_lxmf_an_event_needing_fragments_is_refused_not_sent_bare(self):
+        """--no-lxmf chooses best effort, and a best-effort fragment is the one
+        whose loss lost a whole drawing on the bench -- and one no receiver can
+        attribute. Refused, and said so."""
         made = self.bridge(lxmf=None)
+        made._in_flight = {}
+        made.fragmented = 0
+        made.pipeline = Mock()
+        made.pipeline.dropped = 0
+        made._fan_out = Mock()
+        with redirect_stdout(io.StringIO()):
+            made._send_version("DRAW-1", [b"\x05one", b"\x05two"])
 
-        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 2)
-        self.assertEqual(len(made.packets), 2)
+        self.assertEqual(made.packets, [])
+        made._fan_out.assert_not_called()
+        self.assertEqual(made.pipeline.dropped, 1)
 
-    def test_a_peer_whose_identity_is_lost_still_gets_a_packet(self):
+    def test_a_peer_whose_identity_is_lost_is_asked_for_a_path_not_sent_a_bare_fragment(self):
         carrier = Mock()
         made = self.bridge(lxmf=carrier, recall=False)
 
-        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 2)
-        self.assertEqual(len(made.packets), 2)
+        self.assertEqual(made._fan_out_reliably(b"\x05frag"), 0)
+        self.assertEqual(made.packets, [])
         carrier.send_frame.assert_not_called()
+        self.assertEqual(made.rns.Transport.request_path.call_count, 2)
+        self.assertEqual(made.unreachable, 2)
 
 
 class AutoSendTests(unittest.TestCase):
@@ -281,6 +314,19 @@ class AutoSendTests(unittest.TestCase):
         self.assertEqual(made.lxmf.cancel.call_count, len(first))
         for message in first:
             made.lxmf.cancel.assert_any_call(message)
+
+    def test_a_version_that_shrinks_to_one_frame_still_withdraws_the_last(self):
+        """The fast path used to return before withdrawing, so fragments of the
+        superseded version kept retrying and could land after this one."""
+        made = self.bridge()
+        made._fan_out = Mock(return_value=1)
+        with redirect_stdout(io.StringIO()):
+            made._send_version("DRAW-1", self.frames(big_event()))
+            first = list(made._in_flight["DRAW-1"])
+            made._send_version("DRAW-1", [b"\x01small"])
+
+        self.assertEqual(made.lxmf.cancel.call_count, len(first))
+        made._fan_out.assert_called_once_with(b"\x01small")
 
     def test_a_different_drawing_withdraws_nothing(self):
         made = self.bridge()
