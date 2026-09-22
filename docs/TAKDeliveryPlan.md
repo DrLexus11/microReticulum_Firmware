@@ -1029,6 +1029,62 @@ Started 2026-09-22 on `feature/tak-d2-bulk` in both repositories. The bulk half
 is still gated on the capture; the decisions it needed are made below, so the
 capture is the only thing between it and code.
 
+**The capture, 2026-09-22: what ATAK does with a data package.** Waydroid's
+ATAK, whose only connection is the bridge, sent `Recon1.zip` (33,503 B) to
+NEXUS. It treats the host its streaming connection names as a TAK server and
+uses that host's port 8443 for files -- and on the deck that port belonged to
+tak-lab's OTS, which took the upload. From OTS's nginx log:
+
+```
+GET  /Marti/sync/missionquery?hash=<sha256>                  404  have it?  no
+POST /Marti/sync/missionupload?hash=<sha256>&filename=Recon1.zip&creatorUid=ANDROID-...  200
+PUT  /Marti/api/sync/metadata/<sha256>/tool                  200
+     then, over the bridge, one b-f-t-r per recipient:
+     <fileshare filename senderUrl="https://192.168.240.1:8443/Marti/api/sync/metadata/<sha256>/tool"
+                sizeInBytes sha256 senderUid senderCallsign name/>
+     <ackrequest ... ackrequested="true"/>  <marti><dest callsign="NEXUS"/></marti>
+     stale 10 s after time
+GET  missionquery (second send)                              200  already there, no upload
+```
+
+So the shim is four calls, keyed on SHA-256, served on the endpoint's host at
+8443, over TLS. The notice already carries the name, size and hash the
+descriptor needs. The receiving side rewrites `senderUrl` to itself and restamps
+the ten-second stale, which would otherwise expire before a LoRa fetch ends.
+
+**Found alongside it, not yet fixed:** the notice went out as an ordinary tier-3
+event, to every member. `marti/dest` is honoured for chat and markers, not for
+the generic path, so anything large sent to one person -- this notice, a drawing
+shared with one contact -- reaches the whole team. Next on the list, both sides.
+
+**Port 8443 on the deck.** OTS's nginx listens on `*:8443`. A second server block
+listening on `192.168.240.1:8443` takes only waydroid0 -- nginx binds the
+wildcard once and routes on the address dialled -- and proxies to the bridge's
+file service on `127.0.0.1:18443`, terminating TLS with the certificate ATAK
+already accepted. LAN, Tailscale and loopback still reach OTS. The config is
+host-local (`~/.impr-tak/ots-nginx.conf`, previous version beside it as
+`.pre-d2`), so the block is recorded here:
+
+```nginx
+server {
+    listen 192.168.240.1:8443 ssl;
+    http2 on;
+    ssl_certificate     /certs/opentakserver.pem;
+    ssl_certificate_key /certs/opentakserver.nopass.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 64m;
+    location / {
+        proxy_pass http://127.0.0.1:18443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_request_buffering off;
+    }
+}
+```
+
+On a handset ATAK's host is `127.0.0.1`, so Columba serves 8443 itself; whether
+ATAK checks that certificate is still to be tested.
+
 **Thumbnail budget: the descriptor and thumbnail together fit three fragments.**
 Chosen from what the radios have already shown rather than from an estimate. A
 drawing is three fragments, and three fragments have crossed LoRa both ways,
