@@ -1240,6 +1240,15 @@ class CotBridge:
         if tak_payload.kind_of(raw) == tak_payload.FILE_REQUEST_V1:
             self._file_requested(raw, signed_by)
             return
+        if tak_payload.kind_of(raw) == tak_payload.COT_TIER2:
+            # An event addressed to this node that fitted in one frame. It
+            # comes by LXMF so that it is proved; a member it is, or it is not
+            # drawn, the same gate a fragment passes.
+            if signed_by is None or signed_by not in self.registry.members():
+                self.unreadable += 1
+                return
+            self._dispatch_frame(raw, signed_by=signed_by)
+            return
         if self._chat_from_mesh(raw, signed_by=signed_by):
             self.received += 1
 
@@ -1544,7 +1553,14 @@ class CotBridge:
             print("[bridge] withdrew %d message(s) of a superseded version"
                   % len(superseded), flush=True)
         if len(frames) == 1:
-            self.sent += self._fan_out(frames[0], recipients)
+            if recipients is not None and self.lxmf is not None:
+                # Addressed: over LXMF, like an addressed marker, so it is
+                # proved and the receiver knows who sent it. A file notice
+                # that arrived as a bare packet named nobody to fetch from,
+                # and reached ATAK unfetched -- on the bench, 2026-09-22.
+                self.sent += self._fan_out_reliably(frames[0], None, recipients)
+            else:
+                self.sent += self._fan_out(frames[0], recipients)
             return
         if self.lxmf is None:
             # Tier 3 needs LXMF: a fragment is only worth sending proved and

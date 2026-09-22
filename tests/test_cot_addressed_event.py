@@ -87,6 +87,35 @@ class AddressedEventTests(unittest.TestCase):
         self.assertEqual(set(made.to), {LEXUS, NEXUS})
         made.lxmf.cancel.assert_not_called()
 
+    def test_a_small_addressed_event_goes_over_lxmf_so_it_is_proved(self):
+        """A file notice small enough for one frame went as a bare packet,
+        which names no sender: the receiver had nobody to fetch the file from."""
+        made = bridge()
+        made._send_to = Mock(return_value=1)
+        with redirect_stdout(io.StringIO()):
+            made._send_version("NOTICE-1", [b"\x01one frame"], [NEXUS])
+        self.assertEqual(made.to, [NEXUS])
+        made._send_to.assert_not_called()
+
+    def test_a_small_broadcast_still_takes_the_cheap_fan_out(self):
+        made = bridge()
+        made._send_to = Mock(return_value=1)
+        with redirect_stdout(io.StringIO()):
+            made._send_version("NOTICE-1", [b"\x01one frame"], None)
+        self.assertEqual(made.to, [])
+        self.assertEqual(made._send_to.call_count, 3)
+
+    def test_a_single_frame_over_lxmf_is_drawn_only_from_a_member(self):
+        made = bridge()
+        made.unreadable = 0
+        made._dispatch_frame = Mock()
+        made._member_for_lxmf = lambda source: source
+        with redirect_stdout(io.StringIO()):
+            made._chat_from_lxmf(b"\x01tier two", LEXUS)
+            made._chat_from_lxmf(b"\x01tier two", b"\x99" * 16)
+        made._dispatch_frame.assert_called_once_with(b"\x01tier two", signed_by=LEXUS)
+        self.assertEqual(made.unreadable, 1)
+
     def test_a_version_key_round_trips_its_addressees(self):
         key = CotBridge._version_key("DRAW-1", [NEXUS, LEXUS])
         self.assertEqual(sorted(CotBridge._recipients_in(key)), sorted([LEXUS, NEXUS]))
