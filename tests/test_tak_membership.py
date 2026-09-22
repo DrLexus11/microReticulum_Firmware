@@ -155,6 +155,113 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.describe(self.peer)["callsign"], "PEER")
 
 
+class SurvivesRestartTests(unittest.TestCase):
+    """A node that restarts must not be blind to its team.
+
+    Seen on the bench 2026-09-21: a bridge restarted just after the phone
+    announced knew nobody, dropped the phone's positions as from an unknown
+    node, sent its own to no one, and both ATAKs showed the other offline.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = str(Path(self.directory.name) / "tak_members.json")
+        self.own = bytes([0xAA] * 16)
+        self.peer = bytes([0x01] * 16)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def registry(self, secret=SECRET, team="Cyan"):
+        return membership.MemberRegistry(team, secret, own_hash=self.own)
+
+    def test_a_restarted_node_still_knows_its_team(self):
+        before = self.registry()
+        before.remember(self.peer, membership.member_payload("Cyan", SECRET, "LEXUS"), now=100)
+        before.save(self.path)
+
+        after = self.registry()
+        self.assertEqual(after.load(self.path, now=200), 1)
+        self.assertEqual(after.members(now=200), [self.peer])
+        self.assertEqual(after.describe(self.peer)["callsign"], "LEXUS")
+
+    def test_a_sender_id_resolves_straight_after_a_restart(self):
+        """The whole point: the first position after the restart is drawn."""
+        before = self.registry()
+        before.remember(self.peer, membership.member_payload("Cyan", SECRET, "LEXUS"), now=100)
+        before.save(self.path)
+        after = self.registry()
+        after.load(self.path, now=200)
+
+        self.assertEqual(after.resolve_sender_id(after.sender_id_for(self.peer), now=200),
+                         self.peer)
+
+    def test_another_team_starts_empty(self):
+        """A node moved to another team, or given a new secret, must not start
+        out addressing the old one."""
+        before = self.registry()
+        before.remember(self.peer, membership.member_payload("Cyan", SECRET, "LEXUS"), now=100)
+        before.save(self.path)
+
+        self.assertEqual(self.registry(secret=OTHER).load(self.path, now=200), 0)
+        self.assertEqual(self.registry(team="Red").load(self.path, now=200), 0)
+
+    def test_members_gone_past_expiry_are_not_restored(self):
+        before = self.registry()
+        before.remember(self.peer, membership.member_payload("Cyan", SECRET, "LEXUS"), now=100)
+        before.save(self.path)
+
+        after = self.registry()
+        self.assertEqual(after.load(self.path, now=100 + membership.DEFAULT_EXPIRY_SECONDS + 1), 0)
+
+    def test_a_first_start_or_a_damaged_file_restores_nothing_and_does_not_raise(self):
+        self.assertEqual(self.registry().load(self.path), 0)
+        Path(self.path).write_text("{not json")
+        self.assertEqual(self.registry().load(self.path), 0)
+
+    def test_the_saved_roster_is_readable_by_its_owner_only(self):
+        """Callsigns, roles and which nodes are one team."""
+        import os
+        import stat
+        self.registry().save(self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+
+class SaveCannotBeRedirectedTests(unittest.TestCase):
+    """A leftover or planted temp file must not decide where the roster goes
+    or who can read it."""
+
+    def setUp(self):
+        import tempfile
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = str(Path(self.directory.name) / "tak_members.json")
+        self.registry = membership.MemberRegistry("Cyan", SECRET, own_hash=bytes([0xAA] * 16))
+        self.registry.remember(bytes([1] * 16), membership.member_payload("Cyan", SECRET, "LEXUS"), now=100)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_a_world_readable_leftover_temp_does_not_make_the_roster_readable(self):
+        import os
+        import stat
+        Path(self.path + ".tmp").write_text("stale")
+        os.chmod(self.path + ".tmp", 0o644)
+        self.registry.save(self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_a_symlinked_temp_does_not_redirect_the_write(self):
+        import os
+        elsewhere = Path(self.directory.name) / "elsewhere.json"
+        elsewhere.write_text("untouched")
+        os.symlink(elsewhere, self.path + ".tmp")
+        self.registry.save(self.path)
+
+        self.assertEqual(elsewhere.read_text(), "untouched")
+        self.assertFalse(os.path.islink(self.path))
+        self.assertIn("LEXUS", Path(self.path).read_text())
+
+
 class GreetTests(unittest.TestCase):
     """A node that starts late hears everyone who announces after it and
     nobody who announced before. Without greeting, the first node up stays

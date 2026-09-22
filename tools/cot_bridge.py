@@ -19,6 +19,7 @@ it competes with ATAK for a port ATAK already owns. See DEFAULT_PORT below.
 import argparse
 import collections
 import os
+import hashlib
 import struct
 from datetime import datetime, timedelta, timezone
 import socket
@@ -33,13 +34,17 @@ import cot_tier2 as tier2
 import tak_groups as groups
 import tak_identity as tak_identity
 import cot_chat
+import cot_coalesce
+import cot_pending
+import cot_fragment
 import cot_gateway
 import cot_marker
 import cot_position
 import position_codec
 import tak_membership as membership
 import tak_payload
-from cot_endpoint import CotClient, CotOutbound, CotStream, ping_reply
+from cot_endpoint import (CotClient, CotOutbound, CotStream, _parse,
+                          ping_reply)
 
 # Not 8087.
 #
@@ -100,6 +105,7 @@ INBOX_ANNOUNCE_FLOOR_SECONDS = 60
 # minutes and a team can simply have nothing to say. Fifteen minutes of nothing
 # at all, from a team we know has members, is not quiet -- it is deaf.
 MESH_SILENCE_SECONDS = 15 * 60
+
 
 # The least time between two asks of the propagation node.
 #
@@ -259,6 +265,12 @@ class TeamAnnounceHandler:
     registry decides, and a payload it does not recognise is ordinary.
     """
 
+    # Path responses are announces too, and are how a node that has just heard
+    # from a stranger learns whether they are a teammate without waiting for
+    # their next scheduled announce. Without this, Reticulum never passes them
+    # here, and asking for a sender's announce got an answer nothing read.
+    receive_path_responses = True
+
     def __init__(self, registry, on_new_member=None, on_member_heard=None):
         self.aspect_filter = "%s.%s" % (tak_identity.NODE_APP,
                                         ".".join(tak_identity.NODE_ASPECTS))
@@ -303,7 +315,8 @@ class CotBridge:
                  callsign="BRIDGE", role="Team Member",
                  lxmf_storage=None, propagation_node=None,
                  announce_interval=ANNOUNCE_INTERVAL_SECONDS,
-                 bind_host=BIND_HOST, lxmf_direct_only=False):
+                 bind_host=BIND_HOST, lxmf_direct_only=False,
+                 members_path=None):
         import RNS
         self.rns = RNS
         self.bind_host = bind_host
@@ -336,6 +349,15 @@ class CotBridge:
         # its single hop -- so a team is a membership set and traffic for it is
         # addressed to each member. See docs/TAKIntegrationPivots.md.
         self.registry = membership.MemberRegistry(team, secret, own_hash=self.node.hash)
+        # The table outlives a restart, so a node that comes back is not blind
+        # to its team until somebody happens to announce. See
+        # MemberRegistry.save for what that cost on the bench.
+        self.members_path = members_path
+        if members_path:
+            restored = self.registry.load(members_path)
+            if restored:
+                print("[bridge] restored %d team member(s) from before the restart"
+                      % restored, flush=True)
         self.announce_handler = TeamAnnounceHandler(self.registry, self._member_joined,
                                                     self._member_heard)
         RNS.Transport.register_announce_handler(self.announce_handler)
@@ -408,6 +430,17 @@ class CotBridge:
         self.positions_out_of_order = 0
         # Frames whose claimed sender did not match the carrier's proof.
         self.chat_misattributed = 0
+        # Events too big for one packet, and the ones put back together.
+        self.fragmented = 0
+        self.reassembled = 0
+        self._latest = cot_coalesce.LatestWins()
+        self._unattributed = cot_pending.PendingAttribution()
+        self.markers_undeliverable = 0
+        self._freshness = cot_coalesce.Freshness()
+        self._in_flight = {}
+        self._fragment_elapsed = 0.0
+        self._reassembler = cot_fragment.Reassembler(
+            observer=self._fragment_arrived)
         # When the propagation node was last asked what it is holding.
         self._last_collect = 0.0
         # When the LXMF inbox was last announced, which is on its own clock.
@@ -475,6 +508,41 @@ class CotBridge:
         print("[bridge] team member %s is %s"
               % (claims.get("callsign", "?"), tak_identity.uid_for(destination_hash)),
               flush=True)
+        self._release_unattributed()
+
+    def _hold_unattributed(self, raw, signed_by):
+        """Keep a frame whose sender cannot be named yet, and go and ask.
+
+        Over LXMF the sender is known cryptographically even when its team
+        membership is not, so its announce can be requested now rather than
+        waited for; the answer reaches the registry because the announce
+        handler takes path responses. A bare packet names nobody that can be
+        asked, and simply waits.
+        """
+        self.unreadable += 1
+        self._unattributed.hold(raw, signed_by)
+        if signed_by is not None:
+            self.rns.Transport.request_path(signed_by)
+        print("[bridge] held a frame from a sender not yet known%s"
+              % ("; asked for its announce" if signed_by is not None else ""),
+              flush=True)
+
+    def _release_unattributed(self):
+        """Draw whatever was waiting for a member we have just learned."""
+        released = self._unattributed.ready(
+            lambda raw: self._frame_sender(raw) is not None)
+        for raw, signed_by in released:
+            self._dispatch_frame(raw, signed_by=signed_by)
+        if released:
+            print("[bridge] drew %d frame(s) held until their sender was known"
+                  % len(released), flush=True)
+
+    def _frame_sender(self, raw):
+        """The member a chat or marker frame names, or None."""
+        kind = tak_payload.kind_of(raw)
+        codec = {tak_payload.CHAT_V1: cot_chat, tak_payload.MARKER_V1: cot_marker}.get(kind)
+        decoded = codec.decode(raw) if codec else None
+        return self.registry.resolve_sender_id(decoded["sender_id"]) if decoded else None
         # Greeting happens in _member_heard, for every announce rather than
         # only this one.
 
@@ -514,6 +582,16 @@ class CotBridge:
               "check the radio rather than the team."
               % (silent_for // 60, len(self.registry.members())), flush=True)
 
+    def _save_members(self):
+        """Keep the saved table current. A failure is reported, never fatal:
+        a node that cannot write its roster still serves its team today."""
+        if not self.members_path:
+            return
+        try:
+            self.registry.save(self.members_path)
+        except OSError as error:
+            print("[bridge] could not save the team table: %s" % error, flush=True)
+
     def _member_heard(self, destination_hash, outcome):
         """Say who we are back, whoever just spoke.
 
@@ -528,6 +606,7 @@ class CotBridge:
         is still worth answering, but not within the same few seconds.
         """
         self._heard_mesh()
+        self._save_members()
         if self.registry.should_greet():
             try:
                 # greeting=True: whoever just spoke may have only now arrived,
@@ -573,22 +652,76 @@ class CotBridge:
                 # next one is half an hour away and members are kept far longer.
                 print("[bridge] announce failed: %s" % error, flush=True)
 
+    def _fragment_arrived(self, index, count, held, elapsed):
+        """One line per fragment, so a slow transfer is visible as it happens.
+
+        The five-minute reassembly window was chosen against an estimate. This
+        is what says whether the estimate was right -- and, if fragments are
+        arriving minutes apart, it says so while there is still something to
+        watch rather than after the transfer has already been given up on.
+        """
+        self._fragment_elapsed = elapsed
+        print("[bridge] fragment %d of %d, %d held, %.1f s since the first"
+              % (index + 1, count, held, elapsed), flush=True)
+
     # ---- mesh -> ATAK ----
     def _from_mesh(self, data, packet):
         self._heard_mesh()
         raw = bytes(data)
-        # Byte zero says which codec produced this. One namespace shared by all
-        # of them rather than three independent version counters -- see
-        # tools/tak_payload.py for why that distinction matters.
+        if tak_payload.kind_of(raw) == tak_payload.FRAGMENT_V1:
+            # Not reassembled. A bare packet names no sender -- its destination
+            # hash is ours, not theirs -- so there is nothing to key the
+            # transfer on, and two peers using the same transfer id could be
+            # merged into one event. Fragments travel over LXMF, which proves
+            # who sent them; neither half of this project sends them any other
+            # way.
+            self.unreadable += 1
+            print("[bridge] fragment arrived as a bare packet, which cannot "
+                  "say who sent it; not reassembled", flush=True)
+            return
+        self._dispatch_frame(raw)
+
+    def _reassemble(self, raw, sender):
+        """One fragment in; the whole event out once the last one lands.
+
+        Shared by both carriers. A fragment can arrive as a bare packet or as
+        an LXMF message, and which one it was says nothing about how it should
+        be put back together -- a second copy of this would be a second place
+        for the ordering and the timeout to be got wrong.
+        """
+        whole = self._reassembler.feed(sender, raw)
+        if whole is None:
+            return None
+        print("[bridge] reassembled a %d byte event from %d fragments "
+              "in %.1f s" % (len(whole), raw[6], self._fragment_elapsed),
+              flush=True)
+        self.reassembled += 1
+        return whole
+
+    def _dispatch_frame(self, raw, signed_by=None):
+        """Hand one whole frame to whichever codec made it.
+
+        Byte zero says which that is. One namespace shared by all of them
+        rather than three independent version counters -- see
+        tools/tak_payload.py for why that distinction matters.
+
+        `signed_by` is the member the carrier proves sent this, where the
+        carrier can prove anything, and is passed to the codecs that can use
+        it. A bare packet carries no such proof and honestly passes None.
+        """
         kind = tak_payload.kind_of(raw)
         if kind == tak_payload.POSITION_V2:
             if self._position_from_mesh(raw):
                 return
         elif kind == tak_payload.CHAT_V1:
-            if self._chat_from_mesh(raw):
+            if self._chat_from_mesh(raw, signed_by=signed_by):
                 return
         elif kind == tak_payload.MARKER_V1:
-            if self._marker_from_mesh(raw):
+            # signed_by passed through, as for chat. A marker held until its
+            # sender was known comes back here; dropping the proof would let one
+            # claiming Alice but proved by Mallory be drawn as Alice the moment
+            # Alice announced.
+            if self._marker_from_mesh(raw, signed_by=signed_by):
                 return
         try:
             xml = tier2.decode(raw)
@@ -597,20 +730,51 @@ class CotBridge:
             # dictionary, or simply not ours.
             self.unreadable += 1
             return
+        if not self._is_fresh(xml):
+            return
         self._to_clients(xml.encode("utf-8"), keep=True)
         self.received += 1
 
-    def _marker_from_mesh(self, raw):
-        """Render a peer's marker as CoT for the local ATAK."""
+    def _is_fresh(self, xml):
+        """False for a version older than one already drawn for its uid.
+
+        An older version can finish its retries, or come back from the
+        propagation node, after a newer one landed. Drawing it would put a
+        shape the operator already moved back on the map.
+        """
+        try:
+            event = _parse(xml)
+        except ValueError:
+            return True
+        if self._freshness.admit(event.get("uid"),
+                                 cot_coalesce.event_time(event.get("time"))):
+            return True
+        print("[bridge] dropped an older version of %s that arrived late"
+              % event.get("uid"), flush=True)
+        return False
+
+    def _marker_from_mesh(self, raw, signed_by=None):
+        """Render a peer's marker as CoT for the local ATAK.
+
+        `signed_by` is the member LXMF proves sent it, for a marker that came
+        addressed; a broadcast one arrives as a bare packet and has none. Where
+        there is a proof it must agree with the frame's claimed sender, or any
+        member could drop a pin on this map under another member's name.
+        """
         decoded = cot_marker.decode(raw)
         if decoded is None:
             return False
         sender = self.registry.resolve_sender_id(decoded["sender_id"])
         if sender is None:
-            # A marker from a node this team has never heard announce. Drawing
-            # it under an invented identity would put an object on the map that
-            # nobody can be asked about.
+            # A marker from a node this team has not heard announce -- yet.
+            # Drawing it under an invented identity would put an object on the
+            # map that nobody can be asked about, so it waits instead.
+            self._hold_unattributed(raw, signed_by)
+            return True
+        if signed_by is not None and signed_by != sender:
             self.unreadable += 1
+            print("[bridge] marker claims one member and was sent by another; "
+                  "not drawn", flush=True)
             return True
         claims = self.registry.describe(sender) or {}
         now = datetime.now(timezone.utc)
@@ -636,10 +800,11 @@ class CotBridge:
             return False
         sender = self.registry.resolve_sender_id(decoded["sender_id"])
         if sender is None:
-            # Chat from a node this team has never heard announce. Dropping it
-            # is the honest option: rendering it under an invented identity
-            # would put words on the screen attributed to nobody.
-            self.unreadable += 1
+            # Chat from a node this team has not heard announce -- yet.
+            # Rendering it under an invented identity would put words on the
+            # screen attributed to nobody, so it waits for the announce instead
+            # of being dropped; see tools/cot_pending.py for what dropping cost.
+            self._hold_unattributed(raw, signed_by)
             return True
         if signed_by is not None and signed_by != sender:
             # The frame names one member and the carrier proves another sent
@@ -792,13 +957,33 @@ class CotBridge:
             return
         if self._marker_from_atak(xml):
             return
-        frame = self.pipeline.frame(xml, tier2.encode)
-        if frame is None:
+        # Cut up rather than refused. An event over the one-packet bound used
+        # to be dropped outright, which is why drawings and a nine-line MEDEVAC
+        # never crossed at all. Ordinary events still come back as one frame
+        # and cost nothing for this.
+        frames = self.pipeline.frames(xml, tier2.encode, cot_fragment.fragments)
+        if not frames:
             # The pipeline keeps its own refusal count; reading it here rather
             # than assigning it into a shared one, which silently discarded
             # every mesh-side drop recorded above.
             return
-        self.sent += self._fan_out(frame)
+        # An edited and re-sent drawing arrives as several versions of one
+        # event, and one version costs about 7.7 s of channel for a team of
+        # seven. Latest wins: the first version goes now, and what follows
+        # inside the window is coalesced into one. See tools/cot_coalesce.py.
+        uid = self._uid_of(xml)
+        if uid is None:
+            self._send_version(None, frames)
+            return
+        decision, flush_at = self._latest.decide(
+            uid, frames, self._content_digest(frames), time.time())
+        if decision == cot_coalesce.SEND:
+            self._send_version(uid, frames)
+        elif decision == cot_coalesce.HOLD:
+            timer = threading.Timer(max(0.0, flush_at - time.time()),
+                                    self._flush_version, args=(uid,))
+            timer.daemon = True
+            timer.start()
 
     def _position_from_atak(self, xml):
         """Send a position report as twenty-one bytes, if it is due.
@@ -902,7 +1087,31 @@ class CotBridge:
         LXMF already proves who sent this, cryptographically, and that proof
         was being thrown away. Binding the two costs one recall.
         """
-        if self._chat_from_mesh(frame, signed_by=self._member_for_lxmf(source_hash)):
+        signed_by = self._member_for_lxmf(source_hash)
+        raw = bytes(frame)
+        if tak_payload.kind_of(raw) == tak_payload.FRAGMENT_V1:
+            # A fragment now travels this way too, because a bare packet could
+            # not promise it arrived.
+            #
+            # Keyed on the LXMF source hash itself, not on the member it
+            # resolves to. Resolution recalls an identity, and recall can fail
+            # for one message and succeed for the next -- measured on the bench
+            # 2026-09-21: fragments 1 and 3 of a transfer landed under one key,
+            # fragment 2 under another, and the drawing could never complete.
+            # The source hash is the same for every message one sender sends
+            # and LXMF has verified it; attribution still uses the resolved
+            # member, below.
+            raw = self._reassemble(raw, bytes(source_hash or b""))
+            if raw is None:
+                return
+            self._dispatch_frame(raw, signed_by=signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.MARKER_V1:
+            # A pin sent to this node in particular comes by LXMF, so that it
+            # is proved -- and so the carrier can say who sent it.
+            self._marker_from_mesh(raw, signed_by=signed_by)
+            return
+        if self._chat_from_mesh(raw, signed_by=signed_by):
             self.received += 1
 
     def _member_for_lxmf(self, source_hash):
@@ -939,8 +1148,79 @@ class CotBridge:
                 # Handled: suppressed rather than passed on to tier 2, which
                 # would spend more airtime than the codec just saved.
                 return True
-        self.markers_sent += self._fan_out(frame)
+        addressed, recipients = self._marker_recipients(xml)
+        if not addressed:
+            self.markers_sent += self._fan_out(frame)
+            return True
+        # Sent to somebody in particular. Broadcasting it anyway is the
+        # anti-pattern this exists to stop: every pin dropped for one person
+        # shown to everybody, which is the confidentiality problem the chat
+        # path was built to avoid, on a different codec.
+        if not recipients:
+            self.markers_undeliverable += 1
+            print("[bridge] marker addressed to nobody on this team; not sent, "
+                  "and not broadcast instead", flush=True)
+            return True
+        for member in recipients:
+            self._dispatch_addressed_marker(member, frame)
         return True
+
+    def _marker_recipients(self, xml):
+        """Who a marker was sent to: (addressed, member hashes).
+
+        ATAK's "Send" to a contact puts the recipient in `detail/marti/dest`,
+        the same mechanism it uses to route anything through a server. A
+        broadcast carries no marti at all, and that is the whole difference
+        between the two.
+
+        A `dest` names a peer by UID or by callsign. A UID is resolved exactly;
+        a callsign is matched against what members announced, and every member
+        announcing it is a recipient -- the operator chose a name on the map,
+        and two members showing the same name were both that name to them. A
+        name nobody on the team carries resolves to nobody, and the caller
+        refuses rather than broadcasts.
+        """
+        try:
+            event = _parse(xml)
+        except ValueError:
+            return False, []
+        dests = event.findall("detail/marti/dest")
+        if not dests:
+            return False, []
+        members = list(self.registry.members())
+        recipients = []
+        for dest in dests:
+            uid, callsign = dest.get("uid") or "", dest.get("callsign") or ""
+            print("[bridge] marker addressed to uid=%r callsign=%r"
+                  % (uid, callsign), flush=True)
+            exact = tak_identity.destination_for(uid) if uid else None
+            if exact is not None and exact in members:
+                found = [exact]
+            else:
+                found = [member for member in members
+                         if callsign and (self.registry.describe(member) or {})
+                         .get("callsign") == callsign]
+            recipients.extend(m for m in found if m not in recipients)
+        return True, recipients
+
+    def _dispatch_addressed_marker(self, destination, frame):
+        """Send one marker to one member, over LXMF so it is proved.
+
+        A broadcast pin is sent as a bare packet to everyone, and a lost one is
+        refreshed by the next re-send. A pin sent to one person is a message to
+        that person, and gets what their chat gets: a proof and a retry. The
+        bare packet is the fallback only for a member whose identity cannot be
+        recalled, or --no-lxmf -- never for LXMF declining, for the reason
+        _dispatch_addressed_chat gives.
+        """
+        identity = self.rns.Identity.recall(destination)
+        if self.lxmf is not None and identity is not None:
+            if self.lxmf.send_frame(identity, frame) is not None:
+                self.markers_sent += 1
+            else:
+                self.markers_undeliverable += 1
+            return
+        self.markers_sent += self._send_to(destination, frame)
 
     def _dispatch_addressed_chat(self, destination, frame, decoded):
         """Send one addressed line to one peer, by the strongest route there is.
@@ -1066,6 +1346,127 @@ class CotBridge:
                   % (destination_hash.hex(), error), flush=True)
             return 0
 
+    def _fan_out_reliably(self, frame, messages=None):
+        """Send one fragment to every member, over LXMF. Returns how many went.
+
+        **This is the difference between tier 3 working and appearing to.** A
+        bare packet has no proof, no retry and no propagation node, so one lost
+        fragment loses the whole event and nothing anywhere notices: the far
+        end holds an incomplete transfer until the reassembly window expires
+        and then drops it. Measured on hardware 2026-09-21, and it is exactly
+        the all-or-nothing failure the design rejected a `Resource` for.
+
+        LXMF is what the design said from the beginning -- every fragment a
+        whole message, so each retries on its own and a drawing arrives late
+        rather than not at all. A single-packet event still takes the cheap
+        fan-out: it has nothing to be incomplete against, and the airtime
+        costing in pivot 5 assumed that.
+
+        **There is no bare-packet fallback, deliberately.** A bare packet
+        names no sender, so the receiver cannot key a fragment on who sent it,
+        and two peers picking the same transfer id could be merged into one
+        event -- the sender isolation the reassembler promises holds only for
+        fragments LXMF carried. A bare fragment is also exactly the unproved
+        slice whose loss lost a whole drawing on the bench. A member whose
+        identity cannot be recalled gets a path request and is counted
+        unreachable; the next version will find them.
+        """
+        sent = 0
+        for member in self.registry.members():
+            identity = self.rns.Identity.recall(member)
+            if identity is None:
+                self.rns.Transport.request_path(member)
+                self.unreachable += 1
+                continue
+            message = self.lxmf.send_frame(identity, frame)
+            if message is not None:
+                sent += 1
+                if messages is not None:
+                    messages.append(message)
+            else:
+                self.unreachable += 1
+        return sent
+
+    def _send_version(self, uid, frames):
+        """Put one version of an event on the air.
+
+        A single frame takes the cheap fan-out. A fragmented one goes over
+        LXMF, and first withdraws whatever is still retrying from the version
+        it supersedes: that is airtime spent delivering a shape the operator
+        has already moved.
+        """
+        # Withdrawn before the path is chosen, not after. A version that
+        # shrinks from fragments to one frame takes the fast path below, and
+        # withdrawing only on the fragmented path left the old fragments
+        # retrying -- able to land after the version that replaced them.
+        superseded = self._in_flight.pop(uid, []) if uid else []
+        if superseded and self.lxmf is not None:
+            for message in superseded:
+                self.lxmf.cancel(message)
+            print("[bridge] withdrew %d message(s) of a superseded version"
+                  % len(superseded), flush=True)
+        if len(frames) == 1:
+            self.sent += self._fan_out(frames[0])
+            return
+        if self.lxmf is None:
+            # Tier 3 needs LXMF: a fragment is only worth sending proved and
+            # attributable. Said out loud rather than sent unreliably.
+            self.pipeline.dropped += 1
+            print("[bridge] not sent: event needs %d fragments and tier 3 needs "
+                  "LXMF, which --no-lxmf turned off" % len(frames), flush=True)
+            return
+        self.fragmented += 1
+        print("[bridge] event too large for one packet; sending %d fragments"
+              % len(frames), flush=True)
+        # How long the burst takes to hand off matters: chat was moved to
+        # opportunistic packets because congestion, not timeouts, was what
+        # made links slow, and this puts several messages on the air back
+        # to back.
+        started = time.time()
+        messages = []
+        for frame in frames:
+            self.sent += self._fan_out_reliably(frame, messages)
+        print("[bridge] %d fragments handed off in %.1f s"
+              % (len(frames), time.time() - started), flush=True)
+        if uid:
+            self._in_flight[uid] = messages
+            if len(self._in_flight) > cot_coalesce.MAX_UIDS:
+                # Oldest first; dicts keep insertion order. Losing the handle
+                # only means that version can no longer be withdrawn early.
+                del self._in_flight[next(iter(self._in_flight))]
+
+    def _flush_version(self, uid):
+        """The trailing edge: send the latest version held for this uid."""
+        frames = self._latest.flush(uid, time.time())
+        if frames:
+            print("[bridge] sending the latest version of %s; %d superseded "
+                  "version(s) coalesced so far" % (uid, self._latest.coalesced),
+                  flush=True)
+            self._send_version(uid, frames)
+
+    @staticmethod
+    def _uid_of(xml):
+        """The event's uid, or None if there is nothing to key on."""
+        try:
+            return _parse(xml).get("uid") or None
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _content_digest(frames):
+        """What a version *says*, without how it was cut up.
+
+        Hashing the frames themselves never matched: every transfer draws a
+        random transfer id into its fragment headers, so two identical
+        drawings produced different bytes and an unchanged repeat was never
+        recognised. The headers are stripped before hashing.
+        """
+        if len(frames) == 1:
+            body = frames[0]
+        else:
+            body = b"".join(frame[cot_fragment.HEADER_BYTES:] for frame in frames)
+        return hashlib.sha256(body).digest()
+
     def _fan_out(self, frame):
         """Send one frame to every member of the team. Returns how many went.
 
@@ -1178,7 +1579,50 @@ class CotBridge:
             threading.Thread(target=self._serve_client, args=(connection,), daemon=True).start()
 
 
+class TimestampedStream:
+    """Prefix every line written to a stream with the time it was written.
+
+    The bridge reports through print(), and none of those lines carried a time.
+    On the bench 2026-09-21 a chat reply delivered with a proof never appeared
+    on the far ATAK, and whether it had arrived before or after the far end
+    learned its sender -- the whole question -- could only be inferred from
+    line order. Wrapping the stream stamps every line without touching the
+    dozens of places that print.
+
+    **Lines are assembled per thread.** print() writes the message and the
+    newline in separate calls, and the announce, LXMF, timer and client threads
+    all print -- so with one shared "at line start" flag, another thread could
+    append its text between them, on a line with no stamp. A lock around each
+    write cannot fix that, since the split is *between* writes. Each thread
+    keeps its own partial line; only a completed line is stamped and written,
+    whole, under a lock.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._lock = threading.Lock()
+        self._partial = threading.local()
+
+    def write(self, text):
+        buffered = getattr(self._partial, "text", "") + text
+        lines = buffered.split("\n")
+        self._partial.text = lines.pop()
+        if lines:
+            stamp = time.strftime("%H:%M:%S ")
+            with self._lock:
+                self._stream.write("".join(stamp + line + "\n" for line in lines))
+        return len(text)
+
+    def flush(self):
+        with self._lock:
+            return self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 def main():
+    sys.stdout = TimestampedStream(sys.stdout)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--team", default=tak_identity.DEFAULT_TEAM)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -1288,7 +1732,10 @@ def main():
                        propagation_node=propagation_node,
                        announce_interval=args.announce_interval,
                        bind_host=bind_host,
-                       lxmf_direct_only=args.lxmf_direct_only)
+                       lxmf_direct_only=args.lxmf_direct_only,
+                       members_path=os.path.join(
+                           os.path.expanduser(args.config or "~/.reticulum"),
+                           "tak_members.json"))
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:

@@ -505,3 +505,34 @@ bench and says nothing about a channel with ten nodes on it. The figure to carry
 forward is the *method* -- measure the tail, not the median -- rather than
 "100%".
 
+
+## 9. Phone-to-deck went silent for ten minutes after a reinstall, 2026-09-21
+
+**Open. Cause not established; the evidence rotated out before it was read.**
+
+Columba was reinstalled on the handset at 09:28 and its BLE link to Rev 1 came
+back up at 09:28:49. From then until about 09:38 nothing the phone sent reached
+the deck, and it recovered without anyone touching anything.
+
+What is established, from what was captured at the time:
+
+- **One direction only.** The phone put announces on BLE at 09:28:55, 09:29:03
+  and 09:31:22; the deck's daemon last heard it at 09:28:04 and not again until
+  09:39:10. Deck-to-phone still worked at 09:33:59 -- Rev 1 was receiving on
+  LoRa and sending on BLE throughout.
+- **Not announce rate limiting.** The deck daemon carries a 30 s ceiling, and
+  microReticulum applies no limit at all unless an interface sets a target,
+  which this firmware never does.
+- **The BLE link came up oddly.** Two connections to the same board within a
+  second, the first negotiating MTU 20 and the second MTU 509, and every packet
+  from the phone was then sent twice.
+
+The leading suspect is Rev 1's BLE *receive* path after that double connection,
+with a stall that cleared on some timer. That is a suspect, not a finding.
+
+**Why there is no finding.** Columba's BLE debug logging fills the handset's
+app log buffer in about twenty minutes, and the window had rotated out by the
+time it was looked for. A host-side capture of the handset's radio-stack log now
+runs during bench sessions, so a recurrence will be readable. The next thing to
+check on a recurrence is whether Rev 1 logs anything received over BLE from the
+phone at all.

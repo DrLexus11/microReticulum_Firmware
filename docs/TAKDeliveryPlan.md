@@ -58,7 +58,8 @@ where gain is the only constraint.
 | --- | --- | --- | --- |
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
-| **D** | *Everything that does not fit one packet* | Tier 3 `Link`/`Resource` fragmentation; typed polyline codec for drawings; wire format for a blocked route edge | nothing |
+| **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
+| **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail** small enough for LoRa); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and deferred or consented on LoRa. Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | a capture of what ATAK emits for a data package and a QuickPic over our endpoint |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -533,6 +534,9 @@ reports honestly that nothing is arriving.
   specified and never built. Anything over the 383 B MDU is refused outright,
   which is why **drawings do not cross at all** despite being on the LoRa
   requirement list.
+
+  **Closed in code 2026-09-20**, both halves, on `feature/tak-tier3-fragments`
+  in this repo and in `columba`. What that leaves is below.
 - A typed polyline takes a drawing from 17 packets to 2 (6 311 B → ~584 B,
   5.26 s → 0.50 s, estimated from the corpus — there is no drawing fixture yet).
   It still needs fragmentation: 584 > 383.
@@ -541,8 +545,483 @@ reports honestly that nothing is arriving.
   edge is impassable" should be designed with the codecs rather than bolted on
   afterwards. See *The sibling repo* below.
 
+- **A marker cannot be sent to one person.** Reported 2026-09-20. `cot_chat`
+  carries a recipient and addresses one peer; `cot_marker` has no such field at
+  all, so `_marker_from_atak` can only fan out. On a team that is an
+  anti-pattern: every pin an operator drops for one person is shown to
+  everybody, which is the confidentiality problem the chat path was built to
+  avoid, on a different codec.
+
+  **ATAK already tells us.** "Send to" on a marker emits `<marti><dest
+  callsign="..."/></marti>`, the same mechanism chat reads — the information is
+  on the wire and this side discards it. So the work is a recipient field in
+  the marker frame and a dispatch that mirrors `_dispatch_addressed_chat`, not
+  a new idea.
+
+  It is a wire-format change, so it lands with the other two here rather than
+  alone.
+
+### Tier 3: how it fragments, decided 2026-09-20
+
+**Half of tier 3 already exists and nobody noticed.** Ask LXMF for
+OPPORTUNISTIC and it promotes anything over the single-packet limit to DIRECT
+over a `Resource` by itself, with RNS's windowing, retries and proof:
+
+```
+chat-sized  (84 B)    -> OPPORTUNISTIC via PACKET
+drawing     (600 B)   -> DIRECT        via RESOURCE
+data pkg    (5000 B)  -> DIRECT        via RESOURCE
+```
+
+So an addressed oversized event would already cross. What stops it is this side:
+`cot_tier2.encode()` refuses above 383 B before LXMF is ever handed the payload.
+
+**The fan-out is already N unicasts**, not a group broadcast -- `_fan_out` calls
+`_send_to` once per member. So a drawing to the team costs N transmissions
+whichever mechanism carries it, and the choice is only what each one is.
+
+### The measurement that decided it
+
+Per member, one direction, at SF7/BW250/CR4:5. "Ours" is one LXMF message per
+fragment, each with its own delivery proof and retry. "Resource" is one link
+handshake, amortised, then the segments.
+
+```
+frags   payload    ours       Resource
+    2     766 B     741 ms     1068 ms    ours
+    4    1532 B    1482 ms     1646 ms    ours
+    6    2298 B    2224 ms     2224 ms    even
+   20    7660 B    7412 ms     6267 ms    Resource
+```
+
+The crossover is **about six fragments, near 2.3 KB**. Below it the link
+handshake costs more than per-fragment proofs; above it the handshake amortises
+and `Resource` wins.
+
+**Everything on the LoRa requirement list is below the crossover.** A compressed
+drawing is 700 B, two fragments. A nine-line MEDEVAC is one. Images and data
+packages -- the cases where `Resource` wins -- are explicitly the HaLow phase,
+on a link where a handshake is cheap anyway.
+
+### The decision
+
+**Fragment ourselves below the crossover; let LXMF promote above it.**
+
+Each fragment is an ordinary LXMF message carrying a transfer id, an index and a
+count. That reuses LXMF's per-message delivery proof and retry rather than
+reimplementing selective retransmission -- the far end only has to reassemble,
+which is a buffer, an ordering and a timeout.
+
+Above the threshold, hand the whole payload to LXMF as one message and let it
+do what it already does. No new code for that path at all.
+
+**The airtime is not the strongest argument; the failure mode is.** A `Resource`
+is all-or-nothing on a link that may not establish -- establishment was measured
+at 5 of 15 on a congested channel -- while independent proved fragments retry one
+at a time and a drawing arrives late rather than not at all. On a disaster mesh
+that difference matters more than four seconds.
+
+### Event coverage, measured 2026-09-20
+
+Tier 2 is a generic passthrough: any CoT type that fits 383 B crosses whether or
+not it has a typed codec. So the question was never "what do we support", it was
+"what fits". Measured against representative events:
+
+```
+alert    b-a-o-tbl    392 B raw ->  153 B frame   crosses today
+medevac  b-r-f-h-c    783 B raw ->  393 B frame   REFUSED, by ten bytes
+```
+
+**Alerts already work** and need nothing. **A nine-line MEDEVAC/CASEVAC fails by
+ten bytes** -- arguably the highest-stakes message this system carries, missing
+the bound by under three percent.
+
+It does not need tier 3. The `_medevac_` block is dense, repetitive attribute
+names, which is exactly what the compression dictionary exists for: adding that
+vocabulary takes the same event from **393 B to 326 B**, comfortably inside the
+bound.
+
+That is a wire change, and the encoding byte is already the mechanism for it --
+`ENCODING_DEFLATE_DICT_V1`. The safe shape is a V2 dictionary that the encoder
+uses **only when V1 would exceed the bound**: everything that crosses today
+keeps crossing as V1 for older nodes, and V2 carries only traffic that would
+otherwise not have crossed at all, so a node that cannot read it loses nothing
+it was getting before.
+
+*Caveat on the drawing figure above.* A synthetic polyline of evenly spaced
+points compressed to 233 B and appeared to cross. Real drawings do not: the
+corpus figure of ~700 B stands, and the synthetic one says more about deflate
+than about drawings. Do not re-measure this with generated coordinates.
+
+### What link latency means for tier 3
+
+Measured 2026-09-20 while investigating slow link establishment.
+
+RNS budgets `MTU x per-byte-latency + 6 s` per hop, and the per-byte latency
+comes from the **next hop's** interface. The deck's next hop is the UDP
+interface to Rev 2, which declares **10 Mbps** -- so RNS computes about 6.0004 s
+per hop while the actual bottleneck is the LoRa leg two hops further on, which
+it cannot see. Declaring an honest bitrate there barely moves the number,
+because the 6 s constant dominates it.
+
+So the timeout is loose rather than tight, and **it is not what makes links
+slow**. What does is packet loss on a marginal channel, multiplied by hop count,
+against a handshake that needs roughly three round trips before any payload
+moves. Cutting congestion moved establishment from 5/15 to 30/30 without
+touching a timeout.
+
+**The design input for tier 3 is therefore uncomfortable.** Fragmentation over
+`Resource` means a Link, on a path where the Link is the expensive part -- the
+same reasoning that moved chat to opportunistic packets argues against building
+drawings on top of one. Worth costing our own fragmentation over opportunistic
+packets, with reassembly at the far end, before committing to `Resource`.
+
 Tier 3 is also the path images and data packages ride in the HaLow phase, so
 this lays that foundation early rather than retrofitting it.
+
+### Tier 3 is built. What the radios still have to say, 2026-09-20
+
+Both halves exist and agree on the wire: `tools/cot_fragment.py` here,
+`CotFragment`/`CotReassembler` in `columba`, and `tak_native_v1.json` carries the
+vectors each side asserts against — the same payload produces byte-identical
+frames, and the other side's frames reassemble. 697 tests here, 6436 there.
+
+**None of that had been on a radio when this was written.** Every figure in the
+sections above was a bench measurement or an airtime calculation, and the three
+things a bench cannot answer are the three that decide whether the design holds.
+The first is now answered on hardware -- see *Tier 3 crossed LoRa* below -- and
+the other two are not:
+
+1. **Does the five-minute reassembly window fit a real LoRa transfer?** It was
+   chosen against an estimate, not a measurement. Eight fragments at SF7/BW250
+   is about 2.4 s of airtime and far more of waiting — proofs, retries, a
+   contended channel. If a slow transfer routinely outlives the window, the
+   window is wrong; if it completes in twenty seconds, the window is holding
+   memory for nothing.
+2. **Do fragments actually retry one at a time?** That is the whole argument for
+   fragmenting ourselves instead of using a `Resource` — independent proofs mean
+   a drawing arrives late rather than not at all. It has never been observed
+   under loss. Dropping one fragment deliberately is the test.
+3. **What does eight messages at once do to the channel?** Chat moved to
+   opportunistic packets because congestion, not timeouts, was what made links
+   slow. A fragmented drawing puts eight of them on the air back to back, which
+   is exactly the shape of traffic that caused the problem.
+
+**Do this before the typed polyline codec.** The codec's only purpose is to make
+drawings small enough to be worth sending, and it is built on top of
+reassembly — measuring the thing it depends on first is cheaper than finding out
+afterwards that the window or the burst was wrong. Reassembly is now proven at
+two fragments; the burst is not.
+
+The test shape is the one in *The test shape, and where the deck's ATAK lives*:
+a drawing from the phone's ATAK, across BLE, LoRa and the deck's Waydroid, with
+`tools/tak_link_soak.py` watching the channel. The payload should be a real
+drawing from the corpus, not generated coordinates — see the caveat above.
+
+### Tier 3 crossed LoRa, 2026-09-21
+
+A freehand drawing from the phone's ATAK, over BLE to Rev 1, LoRa to Rev 2,
+UDP to the deck and into Waydroid's ATAK. It arrived, and quickly.
+
+```
+[bridge] fragment 1 of 2, 1 held, 0.0 s since the first
+[bridge] fragment 2 of 2, 2 held, 0.5 s since the first
+[bridge] reassembled a 736 byte event from 2 fragments in 0.5 s
+```
+
+The other direction the same: a 433 B event reassembled on the handset in
+0.4 s, both fragments landing in the same buffer under one transfer id.
+
+**736 B settles the drawing figure.** The corpus estimate of ~700 B was right
+and the synthetic polyline that compressed to 233 B was, as suspected, telling
+us about deflate rather than about drawings. A real drawing is two fragments.
+
+**Question 1 is answered and the answer is that the window is enormous.** Five
+minutes against a transfer that completes in half a second is three orders of
+magnitude of slack. That is not obviously wrong -- the window exists for a
+transfer that is *struggling*, not a healthy one -- but nothing has yet been
+measured near it, so it remains a guess with one healthy data point beside it.
+
+### Question 2 answered itself, badly, an hour later
+
+The next drawing in the other direction lost a fragment:
+
+```
+06:45:18.577  mesh packet for this node: 383 bytes, kind=fragment-v1
+06:45:18.579  fragment id=3783736296 index=0 of 2, held=0
+06:45:18.583  fragment held; transfer not yet whole
+              (nothing further, ever)
+```
+
+**Fragments did not retry one at a time. Nothing retried them at all.** The
+premise of this whole design — every fragment a whole LXMF message, inheriting
+LXMF's proof and retry — was written into the codec, the plan and the commit
+messages, and was not what the code did. `_from_atak` handed fragments to
+`_fan_out`, the same path markers take, which ends at `RNS.Packet(...).send()`:
+no proof, no retry, no propagation node. Columba's `sendTo` did the same.
+
+So one lost packet destroyed the whole event, silently, and the far end held an
+incomplete transfer until the window expired. That is exactly the all-or-nothing
+failure a `Resource` was rejected for. It was never removed — it was moved down a
+layer, where nothing was looking for it.
+
+**The morning's success was luck.** The phone-to-deck drawing crossed because
+that leg happened not to drop a packet, and a single healthy sample looked
+identical to a working design. It is the same shape as the propagation fallback
+that was broken from the day it was written: a guarantee asserted in prose,
+never exercised, and true only while nothing went wrong.
+
+Fixed by sending each fragment through the carrier — `_fan_out_reliably` here,
+`TakLxmfCarriage` in Columba. Moving the send moved the receive: fragments no
+longer arrive on the packet callback at all, so both halves reassemble on the
+LXMF path too, keyed on the member the carrier *proved* rather than on a
+destination hash.
+
+**Question 3 is still open** and now matters more. Over LXMF each fragment is a
+message with a retry budget, so a burst of eight costs more than eight packets
+did. (A premise here was wrong: ATAK's auto-send is markers-only, periodic
+rather than on-change, and carried by the marker codec -- checked against ATAK
+5.6's manual and code, and a dragged auto-sent unit marker kept up well on the
+radios. The coalescing below stands for re-sent drawings, not auto-send.) An
+unchanged
+drawing is now suppressed for two minutes — keyed on the uid and the frame bytes
+together, so an edited drawing still goes. None of that is measured yet.
+
+### A fragment is sized for LXMF, not for a packet, 2026-09-21
+
+Moving fragments onto LXMF changed what a fragment may be, and the number was
+nearly wrong in a way that would not have shown up as a failure.
+
+Measured against LXMF 1.1.1:
+
+```
+envelope on the air         107 B, constant
+largest frame, one packet   276 B
+LXMF switches to Resource   309 B
+a 383 B fragment packs to   490 B
+```
+
+**383 is the bare-packet MDU and it was never this frame's budget.** Sized
+against it, every full-size fragment becomes a Resource over its own Link --
+eight fragments, eight handshakes, on a path where establishment was 5 of 15
+when the channel was busy. Strictly worse than the single Resource this scheme
+was chosen over, and invisible: the fragments would mostly arrive, slowly, and
+nothing in any log would say why.
+
+The slice is therefore 249 B inside a 256 B frame, leaving twenty bytes of
+headroom for fields a message may yet carry that the bench measurement did not
+-- a ticket, a stamp. A compressed drawing is three fragments rather than two.
+
+This is a wire change: `tak_native_v1.json` is regenerated and copied to
+`columba`, and both sides now assert the frame against the envelope rather than
+against 383.
+
+**The pattern is worth naming.** Three times now the same shape: a bound or a
+guarantee written down once, correct for the carrier it was written against,
+and never re-checked when the carrier changed underneath it. The reassembly
+window, the retry premise, and now the frame size.
+
+### Both directions on the map, and question 2 answered, 2026-09-21
+
+After the fixes below, a drawing crossed each way and was confirmed on the map at
+the far end.
+
+```
+Waydroid -> phone   3 fragments, 662 B
+  09:50:03  fragment 1 of 3                         first attempt
+  09:50:07  fragment 3 of 3, 4.3 s after the first
+  09:50:16  fragment 2 of 3, 13.5 s after the first  retried alone, 2 attempts
+            reassembled over LXMF
+phone -> Waydroid   3 fragments, 638 B, reassembled on the bridge in 0.9 s
+```
+
+**Question 2 is answered, and this time well.** Fragment 2 did not land first
+time; LXMF retried that one fragment on its own while the other two waited in
+the reassembler, and the drawing arrived thirteen seconds late rather than not
+at all. That is the behaviour the design was argued on, observed for the first
+time -- and only after fragments were actually made LXMF messages.
+
+Getting there took three more faults, each invisible to the tests that existed:
+
+- **Columba discarded every fragment it received.** Its backends emit an inbound
+  LXMF message to observers only if it looks like visible chat -- text, image,
+  file or audio. A fragment has none, so it was dropped inside the backend while
+  the LXMF layer had already proved it delivered. Both backends now also emit
+  anything carrying `FIELD_CUSTOM_TYPE`, upstream's marker for an application
+  payload, and the one consumer that makes conversation rows skips what is not
+  visible.
+- **One transfer split across two reassembly keys.** Keyed on the resolved team
+  member, fragments 1 and 3 landed under one key and fragment 2 under another,
+  because resolving recalls an identity and recall can fail for one message and
+  succeed for the next. Both sides now key on the LXMF source hash.
+- **A departed member still costs airtime.** A test peer left on the team drew
+  six retries per fragment and an escalation to the propagation node. That is
+  store-and-forward working, but on a drawing it is roughly 2 s of channel per
+  fragment per absent member. Worth costing before PR F.
+
+Two things seen on the bench that are *not* fixed:
+
+- **A restarted node is blind to its team until someone announces.** The member
+  table lives in memory on both sides. Restart the bridge just after the phone
+  announced and the bridge knows nobody: it drops the phone's positions as from
+  an unknown node and sends its own to no one, and both ATAKs show the other
+  offline. The greeting on hearing any peer should close this, but only if the
+  reply crosses. Persisting the member table across restarts is the fix.
+- **Phone-to-deck went quiet for about ten minutes, then recovered unaided.**
+  09:28 to 09:38: the phone sent announces over BLE that never reached the deck,
+  while deck-to-phone still worked. Announce rate limiting is ruled out -- the
+  boards set no target. Recorded beside CarriedIssues #6, unexplained.
+
+### Closing PR D, decided 2026-09-21
+
+Tier 3 is proven on the radios in both directions, and two items that were in
+this PR have been overtaken by it -- measured, not assumed:
+
+```
+nine-line MEDEVAC   979 B raw -> 471 B tier-2 frame -> 2 proved LXMF fragments
+drawing, tier 2     736 B -> 3 fragments
+same, typed polyline ~584 B -> 3 fragments
+```
+
+- **MEDEVAC dictionary -> backlog.** It existed to squeeze a MEDEVAC into one
+  packet. Tier 3 now carries it as two *proved* messages, which is more reliable
+  than the single unproved packet the dictionary would have produced. Worth
+  revisiting only as an airtime optimisation.
+- **Typed polyline codec -> backlog.** At today's drawing sizes it saves about a
+  fifth of the bytes and no messages: three fragments either way, three proofs
+  either way. Revisit if drawings grow.
+- **Blocked-edge format -> its own item.** Still blocked on `urban-tak`; it must
+  not hold D open.
+
+What closes D, in order:
+
+1. **Addressed markers.** A recipient on the marker frame and a dispatch that
+   mirrors addressed chat -- over LXMF, so a pin sent to one person is proved.
+   Both halves, fixture vectors on both sides.
+2. **The member table survives a restart.** Seen on the bench today: a bridge
+   restarted just after the phone announced knew nobody, dropped the phone's
+   positions as from an unknown node, sent its own to no one, and both ATAKs
+   showed the other offline until the next announce. Persist the table on both
+   sides.
+3. **The locked-phone test -- a gate, not a nice-to-have.** Ground teams carry
+   handsets in pockets, locked. Columba's TAK endpoint lives in its UI process,
+   which holds no foreground service of its own; today it borrows foreground
+   rank, and a two-minute lock delivered a chat to ATAK in one second. What has
+   not been tested is a long lock, where Android's deeper sleep and Samsung's own
+   app sleeping act. The test: 30-45 minutes locked in a pocket, a chat and a
+   marker from the deck every five minutes, process ranks sampled throughout
+   (`lock_sampler.sh`), and ATAK checked on unlock. If the endpoint freezes, it
+   moves into the process that already holds the foreground service before D
+   ships. Samsung handsets also need Columba and ATAK under *Battery ->
+   Background usage limits -> Never sleeping apps*, which adb cannot read.
+4. Full Columba suite on the final commit, a bench re-run of chat, drawings,
+   markers and positions, then push for review.
+
+**Progress, same day.** Addressed markers are built on both sides and need only
+their bench run -- which also confirms the `marti/dest` format ATAK really
+emits. The member table now survives a restart on both sides, proven on the
+bench: each logged restoring its peer and knew it before anyone announced.
+
+**Found while proving it: a restarted handset is off the mesh for minutes.**
+After a Columba restart the log showed, in order:
+
+```
+11:09:55  announces handed to BLE "to 0 peer(s)"   -- no link yet; silently lost
+          first BLE connect collides with the old process's link
+          "Retrying connection ... (attempt 1/3) in 60000ms"
+11:12:56  BLE carries data again, three minutes later
+```
+
+Two Columba faults, both field-relevant -- a phone restarts, or walks back
+into range of its board:
+
+- **A 60-second BLE reconnect backoff** on the only link a handset has. That
+  is inherited protocol politeness on a disaster link; the reconnect should be
+  immediate and then back off.
+- **Announces sent with no peer are lost**, and nothing re-sends them when a
+  peer connects. The persisted table blunts the consequence -- both sides
+  already know each other -- but the fix is to announce when a BLE peer comes
+  up.
+
+This is not CarriedIssues #9: there the announces *were* sent to the board and
+still never arrived.
+
+**Fixed in Columba the same afternoon, and measured.** Relaunched on the bench:
+
+```
+17:19:48  Columba relaunched
+17:19:53  team restored from disk; 5 announces held -- "no BLE peer yet"
+17:19:54  BLE connected, first attempt
+17:19:55  "peer up; sending 5 announce(s) held while none was"
+~17:20:08 the deck's daemon hears the handset
+```
+
+Back on the mesh in about seven seconds, and heard at the deck in about twenty,
+against three minutes that morning. The first connect succeeded, so the
+shortened retry after a GATT 133 was not exercised by this run; the held
+announces and the restored table were.
+
+### Addressed markers, proven with three handsets, 2026-09-21
+
+A third handset, a Nexus 6P, made the property two devices cannot show
+testable: an addressed marker reaches its addressee **and nobody else**.
+
+```
+Waydroid -> LEXUS   bridge: 1 LXMF send, proved 13.1 s   Samsung got it   Nexus: nothing
+Waydroid -> NEXUS   bridge: 1 LXMF send, proved 0.1 s    Nexus got it     Samsung: nothing
+```
+
+The decisive evidence is at the sender: for each marker the bridge created
+exactly one message to exactly one member, so there was no second copy to leak.
+ATAK's "Send" to a contact carries **only a callsign** in `marti/dest`
+(`uid=''`), confirmed on the wire; the callsign path is the one that matters.
+
+**An operator trap found on the way -- a decision, not a fix.** ATAK's
+auto-send re-broadcasts a marker about every 60 s, and the repeats carry no
+addressee. A marker first sent to one person with auto-send on therefore
+reaches the whole team within a minute: on the bench the Nexus received the
+Samsung's "DECK only" auto-sent marker every minute as a plain broadcast. That
+is ATAK's documented behaviour -- auto-send *broadcasts* -- and our routing did
+exactly what the events said. The bridge and Columba could remember a marker's
+original addressee and route its repeats to that person alone; that overrides
+ATAK's definition of auto-send, so it waits for a decision.
+
+**Decided the same day: follow ATAK.** Auto-send broadcasts, as ATAK defines
+it, and operators are briefed that a marker with auto-send on reaches the whole
+team whatever it was first sent to. No routing override.
+
+### The locked-phone gate, passed 2026-09-21
+
+53 minutes, handset locked, a chat line and a marker addressed to it sent from
+the deck every five to six minutes:
+
+```
+chat              10 / 10 delivered   0-16 s, typically 1-3 s
+addressed marker  10 / 10 delivered   3-20 s, typically ~5 s
+```
+
+Confirmed at both ends: Columba logged every frame while the phone was locked,
+and the operator found all ten of each in ATAK's chat pane on unlocking. ATAK
+and both Columba processes held foreground-service rank for the whole run --
+including Columba's UI process, which hosts the TAK endpoint and has no
+foreground service of its own -- with no disconnects between ATAK and the
+endpoint and no restarts. The screen was off for 78% of samples.
+
+What it does not cover:
+
+- **The screen woke for each ping's notification**, so the handset never sat
+  undisturbed for the half hour or more where Android's deepest sleep and
+  Samsung's app sleeping act. Realistic -- a team's own traffic does the same --
+  but a quiet-channel run is the harder test. Repeat it on the Nexus 6P, whose
+  battery is the larger unknown.
+- **Outbound from a locked phone** was not measured directly, though Columba
+  kept reporting positions throughout.
+- A few messages raised no lock-screen notification, although all reached ATAK.
+  Display, not delivery; noted, not chased.
+
+The endpoint's structural risk stands in the code but did not show in practice.
+It is worth moving into the process that holds the foreground service when
+convenient, not as a condition of this PR.
 
 ### PR E — the node knows where it is and what it can reach
 
@@ -557,6 +1036,56 @@ this lays that foundation early rather than retrofitting it.
   deliberately removed BLE to isolate the deck hop.
 
 ---
+
+### One board, one phone -- found with a third handset, 2026-09-21
+
+The multi-client question -- several phones on one board, each its own TAK
+node, rather than a board per member -- answered on hardware, and the answer is
+not yet.
+
+- **Rev 1 serves one BLE peer.** Its build uses the Bluedroid backend in
+  `BLEPeerInterface.h`, which stops advertising when a client connects and
+  restarts only on disconnect. With the Samsung attached, a Nexus 6P never saw
+  Rev 1 at all.
+- **The 7-peer backend exists and is not on the RAD boards.** `BLEPeerNimBLEInterface.h`
+  carries several peers on one GATT service with `BLE_PEER_MAX_CONNECTIONS = 7`,
+  and advertises while it has capacity. It was built for the constrained OZD and
+  kept apart so it could not perturb the backend the RAD boards were proven on.
+- **Phones do not relay for each other.** Columba runs with
+  `enable_transport = No`, so the Nexus, which found the Samsung over BLE
+  instead, reached the Samsung and nothing further; the bridge never heard it.
+  Turning transport on would work, at the cost of battery and of every phone
+  forwarding everyone's traffic. Worth keeping for range extension, not as the
+  model.
+
+**For PR E:** move the RAD boards onto the multi-peer NimBLE backend and prove
+several phones on one board, each drawn in ATAK under its own identity. That is
+what "BLE proven as the endpoint's carrier" has to mean for a team with pockets
+rather than a board each.
+
+### Lone in the field -- scheduled 2026-09-21
+
+A small group away from the main mesh, only devices in close proximity. What
+holds today, measured or not:
+
+| | With IMPR-RAD boards | Phones only |
+| --- | --- | --- |
+| Positions, markers, drawings, chat | **proven** phone-BLE-board-LoRa-board, the deck only another member | BLE phone-to-phone forms on its own; TAK over it **untested** |
+| Team known after a restart | **proven**, persisted table | same |
+| Reaching someone out of range *now* | **gap** -- store-and-forward is `lxmd` on the deck; the boards carry `LXMF_PROPAGATION_NODE`, untested with TAK and with node-to-node sync incomplete | **gap** -- Columba cannot host a propagation node |
+| Relaying beyond direct range | boards relay on the bench; the TNC-mode finding below still gates it | phones do not relay (`enable_transport = No`) |
+| Several phones on one board | one today; multi-peer is PR E | n/a |
+| Shared Wi-Fi, no infrastructure | n/a | Columba supports AutoInterface; one phone's hotspot + AutoInterface **untested** |
+
+**The drill, after D closes:** stop the deck's bridge, `rrcd` and `lxmd`, then
+measure (1) two phones over BLE alone, (2) the same over a phone hotspot and
+AutoInterface, (3) through boards with no deck, and (4) store-and-forward on a
+**board** -- message a member who is switched off, switch them on.
+
+**Work it is expected to produce:** board-hosted store-and-forward proven with
+TAK traffic, which matters most, since in a disaster simultaneous presence is
+exactly what you do not have; and phone relaying as an opt-in "lone-field
+mode" for groups with no boards.
 
 ## Two findings that gate PR E
 
