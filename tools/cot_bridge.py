@@ -957,12 +957,17 @@ class CotBridge:
         QuickPic. Reading it off the wire here is the only view there is: the
         codecs below reshape everything they handle. Owner-only, because the
         file holds positions and callsigns.
+
+        Written as the bytes that arrived, and never allowed to raise: the
+        first version assumed text, and every event ATAK sent killed its
+        connection before reaching the mesh.
         """
         try:
+            raw = xml if isinstance(xml, (bytes, bytearray)) else str(xml).encode("utf-8")
             fd = os.open(self.capture_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as out:
-                out.write(xml.rstrip() + "\n")
-        except OSError as error:
+            with os.fdopen(fd, "ab") as out:
+                out.write(bytes(raw).rstrip() + b"\n")
+        except Exception as error:   # a diagnostic must not cost the traffic
             print("[bridge] capture failed: %s" % error, flush=True)
 
     def _from_atak(self, xml):

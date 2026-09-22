@@ -32,6 +32,21 @@ class CaptureTests(unittest.TestCase):
                 self.assertEqual(kept.read(), EVENT + "\n" + EVENT + "\n")
             self.assertEqual(stat.S_IMODE(os.stat(made.capture_path).st_mode), 0o600)
 
+    def test_bytes_as_they_arrive_from_atak_are_kept(self):
+        """The bridge hands _from_atak bytes. Assuming text killed ATAK's
+        connection on every event, on the bench 2026-09-22."""
+        with tempfile.TemporaryDirectory() as folder:
+            made = CotBridge.__new__(CotBridge)
+            made.capture_path = os.path.join(folder, "atak.cot")
+            made._capture(EVENT.encode("utf-8"))
+            with open(made.capture_path, "rb") as kept:
+                self.assertEqual(kept.read(), EVENT.encode("utf-8") + b"\n")
+
+    def test_a_capture_that_fails_does_not_raise(self):
+        made = CotBridge.__new__(CotBridge)
+        made.capture_path = "/nonexistent-directory/atak.cot"
+        made._capture(EVENT.encode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
