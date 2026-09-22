@@ -60,6 +60,10 @@ import LXMF
 # cannot reach. A flat pair crosses both of Columba's backends unchanged, and
 # CUSTOM_DATA is the semantically right field besides: this is an app's data,
 # not metadata about somebody's message.
+# Inbound transfer limit, in LXMF's unit of kilobytes: the largest file
+# tak_files sends, plus the frame header and LXMF's envelope.
+DELIVERY_LIMIT_KB = 17_000
+
 FIELD_CUSTOM_TYPE = 0xFB
 FIELD_CUSTOM_DATA = 0xFC
 
@@ -124,7 +128,11 @@ class Carrier:
         self.cancelled = 0
         self.propagated = 0
         self.collected = 0
-        self.router = LXMF.LXMRouter(identity=identity, storagepath=storage_path)
+        # A file is one LXMF message, and LXMF refuses an inbound transfer over
+        # 1,000 KB by default. A QuickPic measured 3,008,206 bytes on the bench
+        # (2026-09-22). Raised to hold the largest file tak_files will send.
+        self.router = LXMF.LXMRouter(identity=identity, storagepath=storage_path,
+                                     delivery_limit=DELIVERY_LIMIT_KB)
         self.destination = self.router.register_delivery_identity(
             identity, display_name=callsign)
         self.router.register_delivery_callback(self._inbound)

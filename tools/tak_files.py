@@ -41,8 +41,10 @@ HASH_BYTES = 32
 MAX_NAME_BYTES = 200
 
 # The largest file this will store or send. A data package is typically tens
-# to hundreds of kilobytes; this bounds what one upload can make the deck hold.
-MAX_FILE_BYTES = 64 * 1024 * 1024
+# to hundreds of kilobytes, a QuickPic a few megabytes (3,008,206 bytes on the
+# bench). Every receiver's LXMF router must accept this much in one transfer;
+# see DELIVERY_LIMIT_KB in tak_lxmf.
+MAX_FILE_BYTES = 16 * 1000 * 1000
 
 FILESHARE_TYPE = "b-f-t-r"
 
