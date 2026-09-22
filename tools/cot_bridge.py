@@ -946,7 +946,28 @@ class CotBridge:
                 pass
 
     # ---- ATAK -> mesh ----
+    # Where every event from ATAK is appended, verbatim, or None. Class level so
+    # a bridge built without __init__ in a test has it.
+    capture_path = None
+
+    def _capture(self, xml):
+        """Keep ATAK's event as it arrived, for designing against.
+
+        D2 is gated on knowing what ATAK emits for a data package and a
+        QuickPic. Reading it off the wire here is the only view there is: the
+        codecs below reshape everything they handle. Owner-only, because the
+        file holds positions and callsigns.
+        """
+        try:
+            fd = os.open(self.capture_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as out:
+                out.write(xml.rstrip() + "\n")
+        except OSError as error:
+            print("[bridge] capture failed: %s" % error, flush=True)
+
     def _from_atak(self, xml):
+        if self.capture_path:
+            self._capture(xml)
         # The echo guard first, for everything, before anything is learned from
         # the event or spent on it. Our own self-report coming back is a
         # well-formed self-report, and learning from it would teach this
@@ -1675,6 +1696,9 @@ def main():
                              "and cannot reach this machine's loopback. There "
                              "is no authentication on this endpoint, so name "
                              "the interface you mean." % BIND_HOST)
+    parser.add_argument("--capture", default=None, metavar="PATH",
+                        help="append every event ATAK sends, verbatim, to PATH "
+                             "(owner-only; it holds positions and callsigns)")
     parser.add_argument("--propagation-node", default=None,
                         help="destination hash of an LXMF propagation node, "
                              "which is what holds a line for a peer who is out "
@@ -1749,6 +1773,9 @@ def main():
                        members_path=os.path.join(
                            os.path.expanduser(args.config or "~/.reticulum"),
                            "tak_members.json"))
+    if args.capture:
+        bridge.capture_path = os.path.expanduser(args.capture)
+        print("[bridge] capturing every event from ATAK to %s" % bridge.capture_path, flush=True)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:
