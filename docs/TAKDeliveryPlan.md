@@ -1085,6 +1085,49 @@ server {
 On a handset ATAK's host is `127.0.0.1`, so Columba serves 8443 itself; whether
 ATAK checks that certificate is still to be tested.
 
+**On the bench, 2026-09-22: files cross the mesh.** Built on both sides the
+same day -- the upload API ATAK uses (the bridge behind nginx, Columba on
+127.0.0.1:8080), the notice addressed like a marker, the fetch gate, and
+FILE_REQUEST/FILE over LXMF, sent only to a proved addressee:
+
+```
+Waydroid -> NEXUS   Recon1.zip 33,503 B     path 8 ms   fetched in 2 s    opened in ATAK
+Waydroid -> NEXUS   RECON2.zip  6,251 B                 fetched in 3 s
+NEXUS -> DECK       QuickPic   106,441 B    path 57 ms  fetched in 4 s    opened in Waydroid's ATAK
+DECK -> LEXUS       RECON2.zip              path 4.9 s, 336 bps   deferred, as designed
+NEXUS <-> LEXUS     QuickPics               path 1.3-2.5 s        deferred both ways
+```
+
+Found on the way, each fixed and tested on both sides:
+
+- **ATAK uploads over plain HTTP on 8080** when its connection is plain TCP,
+  whatever `senderUrl` it writes; the waydroid0 nginx block covers 8080 too.
+- **On a handset ATAK uploads to 127.0.0.1:8080 before sending the notice**,
+  and with nothing there the notice never left: the deck received nothing.
+- **A single-frame addressed event went as a bare packet**, which names no
+  sender, so the receiver had nobody to fetch from. Addressed now means LXMF.
+- **LXMF refuses an inbound transfer over 1,000 KB by default.** A full-size
+  QuickPic was 3,008,206 bytes; both routers take 17,000 KB, files are capped
+  at 16 MB.
+- **Two ATAKs on one Wi-Fi bypass the mesh.** ATAK's own multicast mesh found
+  the phones directly and moved files ATAK to ATAK ("local transfer ...
+  peerhosted"), so a working phone-to-phone send proved nothing about ours. Mesh
+  tests need ATAK's *Enable Mesh Network Mode* off, or the phones on separate
+  networks.
+
+**Open from the same run:**
+
+- **The leg to LEXUS lost heavily**: notice fragments exhausted six attempts
+  each and went to the propagation node, and one message needed all six --
+  about ten seconds of Rev 1 transmitting for a notice of ~370 B. Earlier the
+  same leg delivered first or fourth time. Cause not yet known.
+- **ATAK reports a deferred send as failed**: it asked for a download ack
+  that cannot come while the file waits. Until PR F, Columba should say
+  "queued for LEXUS, waiting for a fast path" as a chat line.
+- **Each waiting file probes its own path**, so three files from one sender
+  are three link handshakes over LoRa; one probe per sender will do.
+- **The thumbnail**, so a QuickPic over LoRa shows as something.
+
 **Thumbnail budget: the descriptor and thumbnail together fit three fragments.**
 Chosen from what the radios have already shown rather than from an estimate. A
 drawing is three fragments, and three fragments have crossed LoRa both ways,
