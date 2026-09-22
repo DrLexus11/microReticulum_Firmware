@@ -747,6 +747,8 @@ class CotBridge:
             return
         if not self._is_fresh(xml):
             return
+        if self._file_offered_here(xml, signed_by):
+            return
         self._to_clients(xml.encode("utf-8"), keep=True)
         self.received += 1
 
@@ -989,6 +991,137 @@ class CotBridge:
               % (notice["filename"], notice["size"],
                  "the team" if recipients is None else "%d member(s)" % len(recipients)),
               flush=True)
+
+    # ---- files offered to this node ----
+    #
+    # The deck's half of what Columba's TakFileTransfers does for a handset: a
+    # notice is held until its file is here, the path to its sender measured
+    # first, and Waydroid's ATAK only ever sees an offer it can complete.
+
+    # A link handshake faster than this is a fast path. Measured 2026-09-22:
+    # Nexus over TCP 0.008 s; A54 over BLE and LoRa 4.9 s.
+    FAST_RTT_SECONDS = 0.5
+    FIRST_RETRY_SECONDS = 60
+    MAX_RETRY_SECONDS = 15 * 60
+    HOLD_SECONDS = 24 * 60 * 60
+    PROBE_TIMEOUT_SECONDS = 10
+
+    def _pending_files(self):
+        pending = getattr(self, "_files_pending", None)
+        if pending is None:
+            pending = self._files_pending = {}
+        return pending
+
+    def _files_base(self):
+        return "http://%s:8080" % self.bind_host
+
+    def _file_offered_here(self, xml, signed_by):
+        """Take a file notice addressed here. True when it was one."""
+        if self.files is None:
+            return False
+        notice = tak_files.parse_notice(xml)
+        if notice is None:
+            return False
+        if self.files.has(notice["hash"]):
+            self._offer_to_atak(notice, xml)
+            return True
+        if signed_by is None:
+            print("[files] %s offered by a sender this node cannot name; not fetched"
+                  % notice["filename"], flush=True)
+            return True
+        print("[files] %s (%d bytes) offered; measuring the path to its sender"
+              % (notice["filename"], notice["size"]), flush=True)
+        entry = self._pending_files().setdefault(notice["hash"], {
+            "notice": notice, "xml": xml, "sender": signed_by, "since": time.time(),
+            "backoff": self.FIRST_RETRY_SECONDS, "probing": False})
+        self._attempt_file(notice["hash"], entry)
+        return True
+
+    def _attempt_file(self, file_hash, entry):
+        if entry["probing"]:
+            return
+        if time.time() - entry["since"] > self.HOLD_SECONDS:
+            self._pending_files().pop(file_hash, None)
+            print("[files] %s never found a fast path; given up after a day"
+                  % entry["notice"]["filename"], flush=True)
+            return
+        entry["probing"] = True
+        self._measure_path(entry["sender"],
+                           lambda rtt: self._path_measured(file_hash, entry, rtt))
+
+    def _measure_path(self, member, done):
+        """The round trip of a link handshake to a member's inbox, or None.
+
+        A link, not the path table's first hop: from the deck the first hop is
+        TCP to rrcd even when LoRa lies beyond it.
+        """
+        identity = self.rns.Identity.recall(member)
+        if identity is None:
+            self.rns.Transport.request_path(member)
+            done(None)
+            return
+        answered = threading.Event()
+
+        def established(link):
+            if not answered.is_set():
+                answered.set()
+                rtt = getattr(link, "rtt", None)
+                link.teardown()
+                done(rtt)
+
+        def timed_out():
+            if not answered.is_set():
+                answered.set()
+                done(None)
+
+        destination = self.rns.Destination(identity, self.rns.Destination.OUT,
+                                           self.rns.Destination.SINGLE, "lxmf", "delivery")
+        self.rns.Link(destination, established_callback=established)
+        timer = threading.Timer(self.PROBE_TIMEOUT_SECONDS, timed_out)
+        timer.daemon = True
+        timer.start()
+
+    def _path_measured(self, file_hash, entry, rtt):
+        entry["probing"] = False
+        name = entry["notice"]["filename"]
+        print("[files] path to the sender of %s: rtt=%s s" % (name, rtt), flush=True)
+        if rtt is not None and rtt < self.FAST_RTT_SECONDS:
+            identity = self.rns.Identity.recall(entry["sender"])
+            if identity is not None and self.lxmf is not None:
+                self.lxmf.send_request(identity, tak_files.encode_request(file_hash))
+                print("[files] fast path; asked for %s" % name, flush=True)
+                return
+        delay = entry["backoff"]
+        entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
+        print("[files] slow or no path; %s waits, next try in %d s" % (name, delay), flush=True)
+        timer = threading.Timer(delay, self._attempt_file, args=(file_hash, entry))
+        timer.daemon = True
+        timer.start()
+
+    def _file_arrived(self, raw, member):
+        """A file arrived: kept only if asked for, from whom it was asked."""
+        decoded = tak_files.decode_file(raw)
+        if decoded is None:
+            print("[files] a file arrived that is not what its hash names; discarded", flush=True)
+            return
+        file_hash, name, data = decoded
+        entry = self._pending_files().get(file_hash)
+        if entry is None or member is None or member != entry["sender"]:
+            print("[files] a file arrived that was not asked for, or not from its "
+                  "sender; discarded", flush=True)
+            return
+        if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:
+            return
+        self._pending_files().pop(file_hash, None)
+        print("[files] %s arrived, %d bytes, in %.0f s"
+              % (entry["notice"]["filename"], len(data), time.time() - entry["since"]), flush=True)
+        self._offer_to_atak(entry["notice"], entry["xml"])
+
+    def _offer_to_atak(self, notice, xml):
+        url = tak_files.content_url(self._files_base(), notice["hash"])
+        self._to_clients(tak_files.rewrite_notice(xml, url).encode("utf-8"), keep=True)
+        self.received += 1
+        print("[files] %s offered to ATAK from %s" % (notice["filename"], url), flush=True)
 
     def _file_requested(self, raw, member):
         """A member asked for a file: send it if they were offered it.
@@ -1239,6 +1372,9 @@ class CotBridge:
             return
         if tak_payload.kind_of(raw) == tak_payload.FILE_REQUEST_V1:
             self._file_requested(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_V1:
+            self._file_arrived(raw, signed_by)
             return
         if tak_payload.kind_of(raw) == tak_payload.COT_TIER2:
             # An event addressed to this node that fitted in one frame. It

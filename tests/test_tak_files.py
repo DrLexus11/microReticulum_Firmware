@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from contextlib import redirect_stdout
@@ -215,6 +216,76 @@ class BridgeTests(unittest.TestCase):
         self.run_quietly(self.made._file_requested, tak_files.encode_request(HASH), None)
         self.made.lxmf.send_file.assert_not_called()
         self.assertEqual(self.made.unreadable, 1)
+
+
+
+class DeckReceivesTests(unittest.TestCase):
+    """A file a handset's ATAK sent to the deck: fetched over a fast path,
+    deferred over a slow one, and offered to Waydroid's ATAK only once here."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        made = CotBridge.__new__(CotBridge)
+        made.bind_host = "192.168.240.1"
+        made.received = 0
+        made.files = tak_files.FileStore(self.folder.name)
+        made.rns = Mock()
+        made.rns.Identity.recall.side_effect = lambda member: member
+        made.lxmf = Mock()
+        made.drawn = []
+        made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)
+        self.rtt = 0.008
+        made._measure_path = lambda member, done: done(self.rtt)
+        self.made = made
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def offered(self, sender=ALPHA):
+        with redirect_stdout(io.StringIO()):
+            return self.made._file_offered_here(notice(dest="DECK"), sender)
+
+    def arrives(self, sender=ALPHA, frame=None):
+        with redirect_stdout(io.StringIO()):
+            self.made._file_arrived(frame or tak_files.encode_file(HASH, "Recon1.zip", DATA), sender)
+
+    def test_over_a_fast_path_it_is_fetched_then_offered(self):
+        self.assertTrue(self.offered())
+        self.made.lxmf.send_request.assert_called_once_with(ALPHA, tak_files.encode_request(HASH))
+        self.assertEqual(self.made.drawn, [], "ATAK is not offered what it cannot fetch yet")
+
+        self.arrives()
+        self.assertEqual(self.made.files.read(HASH), DATA)
+        self.assertEqual(len(self.made.drawn), 1)
+        self.assertIn(b"http://192.168.240.1:8080/Marti/sync/content?hash=" + HASH.encode(),
+                      self.made.drawn[0])
+
+    def test_over_a_slow_path_it_waits(self):
+        self.rtt = 4.9
+        with unittest.mock.patch("threading.Timer"):
+            self.offered()
+        self.made.lxmf.send_request.assert_not_called()
+        self.assertEqual(self.made.drawn, [])
+
+    def test_a_file_from_someone_other_than_its_sender_is_discarded(self):
+        self.offered(sender=ALPHA)
+        self.arrives(sender=BRAVO)
+        self.assertFalse(self.made.files.has(HASH))
+        self.assertEqual(self.made.drawn, [])
+
+    def test_a_file_nobody_asked_for_is_discarded(self):
+        self.arrives()
+        self.assertFalse(self.made.files.has(HASH))
+
+    def test_a_file_already_held_is_offered_at_once(self):
+        self.made.files.put(DATA, "Recon1.zip")
+        self.offered()
+        self.made.lxmf.send_request.assert_not_called()
+        self.assertEqual(len(self.made.drawn), 1)
+
+    def test_anything_else_passes_through(self):
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(self.made._file_offered_here(notice().replace("b-f-t-r", "u-d-f"), ALPHA))
 
 
 if __name__ == "__main__":

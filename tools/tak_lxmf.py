@@ -264,6 +264,12 @@ class Carrier:
         return self._send(identity, frame, "", None, "file",
                           method=LXMF.LXMessage.DIRECT, escalate=False)
 
+    def send_request(self, identity, frame):
+        """Ask a peer for a file. Never left at a propagation node: answered
+        later, it would bring the file over whatever path exists then, which
+        may be the LoRa leg the fetch gate avoided."""
+        return self._send(identity, frame, "", None, "file request", escalate=False)
+
     def cancel(self, message):
         """Withdraw a message that has been superseded before it landed.
 
