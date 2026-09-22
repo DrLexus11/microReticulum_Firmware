@@ -156,6 +156,19 @@ ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 # worth an operator noticing. A stale track that never expires is the failure
 # that matters here -- a marker where somebody used to be, still being trusted.
 POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
+
+
+def position_stale_seconds(fix):
+    """How long to draw this fix as current: twice its sender's cadence.
+
+    A handset reporting while ATAK is closed states its interval, and it is
+    minutes on purpose. Held to the one-minute default, its track would go
+    grey between every pair of reports -- the one feature built to keep a
+    locked phone on the map would show it as lost most of the time.
+    """
+    if fix.interval_min > 0:
+        return max(POSITION_STALE_SECONDS, 2 * 60 * fix.interval_min)
+    return POSITION_STALE_SECONDS
 # Loopback by default. This endpoint applies no authentication at all, so what
 # it assumes is that only this device can reach it.
 BIND_HOST = "127.0.0.1"
@@ -859,7 +872,7 @@ class CotBridge:
         claims = self.registry.describe(sender) or {}
         self._to_clients(cot_gateway.build_cot(
             fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
-            POSITION_STALE_SECONDS, team=self.team))
+            position_stale_seconds(fix), team=self.team))
         self.positions_received += 1
         return True
 

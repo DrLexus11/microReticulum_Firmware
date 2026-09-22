@@ -59,7 +59,7 @@ where gain is the only constraint.
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
 | **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
-| **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail** small enough for LoRa); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and deferred or consented on LoRa. Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | a capture of what ATAK emits for a data package and a QuickPic over our endpoint |
+| **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail**, the descriptor and thumbnail together **no more than three fragments**); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and **deferred on LoRa**; a **retention page** in Columba for held files, promoted to the PR F plugin. Also carries **position while ATAK is closed** (built 2026-09-22, see *PR D2* below). Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | the bulk half: a capture of what ATAK emits for a data package and a QuickPic over our endpoint. The position half: nothing |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -1022,6 +1022,77 @@ What it does not cover:
 The endpoint's structural risk stands in the code but did not show in practice.
 It is worth moving into the process that holds the foreground service when
 convenient, not as a condition of this PR.
+
+### PR D2 -- bulk, and position while ATAK is closed
+
+Started 2026-09-22 on `feature/tak-d2-bulk` in both repositories. The bulk half
+is still gated on the capture; the decisions it needed are made below, so the
+capture is the only thing between it and code.
+
+**Thumbnail budget: the descriptor and thumbnail together fit three fragments.**
+Chosen from what the radios have already shown rather than from an estimate. A
+drawing is three fragments, and three fragments have crossed LoRa both ways,
+including one that needed a retry, and arrived in 13.5 s at worst. The
+airtime, at SF7/BW250 from `tools/position_budget.py`, counting a full 363 B
+fragment packet and its proof:
+
+```
+fragments   one recipient   team of seven (six copies)
+    1          0.37 s              2.2 s
+    2          0.74 s              4.4 s
+    3          1.11 s              6.7 s     <- a drawing; measured 7.7 s a version
+    4          1.48 s              8.9 s
+    8          2.97 s             17.8 s
+```
+
+Three fragments is 747 B of payload. Once the descriptor's fields are counted,
+the image gets roughly 600 B. The descriptor is designed after the capture, so
+that figure is pinned then; the encoder steps size and quality down until the
+image fits, and sends no thumbnail rather than a fourth fragment. The open
+cost is a burst: five QuickPics in a row are over half a minute of channel for
+a team of seven. Pacing is decided after the capture, when it is known what
+ATAK sends per picture.
+
+**LoRa fetch: deferred, with no way to force it.** A full file moves only over a
+path measured to be fast. On LoRa the descriptor and thumbnail arrive, and the
+file waits until a fast path appears. A consent prompt belongs to PR F.
+
+**Retention: a page in Columba now, the plugin in PR F.** The page lists what
+this handset holds -- files it sent that others may still fetch, and files it
+received: size, age, and a delete. PR F's plugin takes the page over. Until
+then only the sender holds full files; no board or propagation node does.
+
+**Position while ATAK is closed -- built.** Columba's first ATAK feature
+reported the handset's position to a fixed gateway, alongside ATAK rather than
+instead of it. A teammate saw the operator twice, and the second copy was not
+even the same contact: the gateway built its uid from four bytes of identity,
+which is the pivot 1 problem. Now:
+
+- **ATAK connected: Columba sends nothing.** ATAK reports for itself.
+- **ATAK closed** (locked, pocketed, killed for memory): Columba reports through
+  the endpoint, as the same frame ATAK's own reports become, from the same node.
+  The receiver draws it on the same track under the same callsign, so the
+  operator is one EUD whether or not ATAK is open.
+- **The interval is the operator's choice** -- 1, 2, 5 or 10 minutes -- and each
+  report **states it**: a new optional byte, `FLAG_INTERVAL` 0x10, last in the
+  frame, in all three codecs. A receiver keeps the track current for twice
+  that, never less than the default. Without it a five-minute reporter went
+  grey between every pair of reports. Decoders that predate it stop at the
+  fields they know, so deployed boards are unaffected; tested on both sides.
+- **The callsign survives a restart.** It is learned from ATAK and now
+  remembered, so a handset restarted with ATAK closed announces its operator's
+  name, not the `COLUMBA` placeholder.
+- **The switch depends on the endpoint.** Without a running endpoint and a team
+  there is nobody to report to; the card disables the switch and says why, and
+  shows what it is doing now: standing by for ATAK, or reporting.
+- **A report counts only if a teammate's packet went out.** A cycle that sent
+  nothing -- no fix, no teammate reachable -- retries in 30 s rather than
+  waiting a whole interval.
+
+Background location while locked was already solved: the service claims the
+location foreground type, measured on the A54. **Still to see on hardware:**
+close ATAK on the handset, lock it, and watch the same contact keep moving on
+Waydroid's map, current for twice the interval.
 
 ### PR E — the node knows where it is and what it can reach
 

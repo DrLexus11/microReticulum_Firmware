@@ -66,7 +66,8 @@ class WireAgreementTests(unittest.TestCase):
         for name, value in (("ALT", self.codec.FLAG_ALT),
                             ("COURSE", self.codec.FLAG_COURSE),
                             ("SPEED", self.codec.FLAG_SPEED),
-                            ("SATS", self.codec.FLAG_SATS)):
+                            ("SATS", self.codec.FLAG_SATS),
+                            ("INTERVAL", self.codec.FLAG_INTERVAL)):
             declared = define(self.header, "POSITION_FLAG_%s" % name)
             self.assertEqual(int(declared, 16), value,
                              "POSITION_FLAG_%s disagrees" % name)
@@ -90,7 +91,7 @@ class RoundTripTests(unittest.TestCase):
         fix = self.codec.PositionFix(
             lat_e7=411234567, lon_e7=291234567, fix_unix_s=1788681206,
             accuracy_m=12, alt_known=True, alt_m=847, course_known=True,
-            course_ddeg=1800, speed_cms=500, sats=9)
+            course_ddeg=1800, speed_cms=500, sats=9, interval_min=5)
         raw = self.codec.encode(fix)
         self.assertEqual(len(raw), self.codec.WIRE_MAX_LEN)
         back = self.codec.decode(raw)
@@ -104,6 +105,25 @@ class RoundTripTests(unittest.TestCase):
         self.assertEqual(back.course_ddeg, fix.course_ddeg)
         self.assertEqual(back.speed_cms, fix.speed_cms)
         self.assertEqual(back.sats, fix.sats)
+        self.assertEqual(back.interval_min, 5)
+
+    def test_a_decoder_that_predates_the_interval_still_reads_the_fix(self):
+        """The interval is last on purpose: a board's decoder stops at the
+        fields it knows, so a handset stating its interval is still heard by
+        every node already deployed. Checked here by clearing the bit and leaving
+        the byte trailing -- what an older decoder effectively sees."""
+        fix = self.codec.PositionFix(lat_e7=411234567, lon_e7=291234567, sats=9,
+                                     interval_min=5)
+        raw = self.codec.encode(fix)
+        self.assertEqual(raw[-1], 5)
+        older = bytes([raw[0], raw[1] & ~self.codec.FLAG_INTERVAL]) + raw[2:]
+        back = self.codec.decode(older)
+        self.assertEqual((back.lat_e7, back.sats, back.interval_min), (411234567, 9, 0))
+
+    def test_an_unstated_interval_costs_nothing(self):
+        raw = self.codec.encode(self.codec.PositionFix(lat_e7=1, lon_e7=2))
+        self.assertEqual(len(raw), self.codec.WIRE_BASE_LEN)
+        self.assertEqual(self.codec.decode(raw).interval_min, 0)
 
     def test_a_bare_fix_is_the_base_length(self):
         fix = self.codec.PositionFix(lat_e7=-337654321, lon_e7=1512345678)
@@ -227,7 +247,7 @@ class SenderIdentityTests(unittest.TestCase):
     def test_the_sender_costs_little_enough_to_be_worth_it(self):
         # Still comfortably inside the §2 budget after the addition.
         self.assertLessEqual(self.codec.WIRE_MAX_LEN, 25)
-        self.assertEqual(self.codec.WIRE_MAX_LEN - self.codec.WIRE_BASE_LEN, 5)
+        self.assertEqual(self.codec.WIRE_MAX_LEN - self.codec.WIRE_BASE_LEN, 6)
 
 
 class SendPathTests(unittest.TestCase):

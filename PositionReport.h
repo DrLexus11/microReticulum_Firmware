@@ -66,8 +66,9 @@
 //   +1         course       uint8   2-degree units      FLAG_COURSE
 //   +1         speed        uint8   half-metre/s units  FLAG_SPEED
 //   +1         sats         uint8                       FLAG_SATS
+//   +1         interval     uint8   minutes to the next FLAG_INTERVAL
 //
-// Nineteen bytes minimum, twenty-four full. Against ~700 for the XML that comes
+// Nineteen bytes minimum, twenty-five full. Against ~700 for the XML that comes
 // out of the gateway at the other end.
 //
 // Version 2 added sender_id, and version 1 is refused rather than accepted
@@ -79,12 +80,17 @@
 // compatible with and a silent downgrade would only hide the bug.
 #define POSITION_WIRE_VERSION 2
 #define POSITION_WIRE_BASE_LEN 19
-#define POSITION_WIRE_MAX_LEN 24
+#define POSITION_WIRE_MAX_LEN 25
 
 #define POSITION_FLAG_ALT    0x01
 #define POSITION_FLAG_COURSE 0x02
 #define POSITION_FLAG_SPEED  0x04
 #define POSITION_FLAG_SATS   0x08
+// The sender's own statement of when it reports next, so a receiver keeps the
+// track current that long. Set by a handset reporting while ATAK is closed;
+// this node never sets it, and the decoder below stops at the fields it reads,
+// so the trailing byte is ignored rather than refused.
+#define POSITION_FLAG_INTERVAL 0x10
 
 // Seconds, not milliseconds. CoT staleness is a minute-scale concern and four
 // bytes of seconds reach 2106; milliseconds would cost four more bytes to say
