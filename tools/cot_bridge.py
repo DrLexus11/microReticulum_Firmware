@@ -449,6 +449,7 @@ class CotBridge:
         self._latest = cot_coalesce.LatestWins()
         self._unattributed = cot_pending.PendingAttribution()
         self.markers_undeliverable = 0
+        self.unaddressable = 0
         self._freshness = cot_coalesce.Freshness()
         self._in_flight = {}
         self._fragment_elapsed = 0.0
@@ -1015,17 +1016,27 @@ class CotBridge:
         # event, and one version costs about 7.7 s of channel for a team of
         # seven. Latest wins: the first version goes now, and what follows
         # inside the window is coalesced into one. See tools/cot_coalesce.py.
-        uid = self._uid_of(xml)
-        if uid is None:
-            self._send_version(None, frames)
+        # Sent to the people ATAK named, not to the team. Nobody on the team
+        # by that name is refused rather than broadcast, as for markers: a
+        # broadcast would show everyone what was meant for one person.
+        addressed, recipients = self._addressees(xml)
+        if addressed and not recipients:
+            self.unaddressable += 1
+            print("[bridge] not sent: addressed to nobody on this team, and not "
+                  "broadcast instead", flush=True)
+            return
+        recipients = recipients if addressed else None
+        key = self._version_key(self._uid_of(xml), recipients)
+        if key is None:
+            self._send_version(None, frames, recipients)
             return
         decision, flush_at = self._latest.decide(
-            uid, frames, self._content_digest(frames), time.time())
+            key, frames, self._content_digest(frames), time.time())
         if decision == cot_coalesce.SEND:
-            self._send_version(uid, frames)
+            self._send_version(key, frames, recipients)
         elif decision == cot_coalesce.HOLD:
             timer = threading.Timer(max(0.0, flush_at - time.time()),
-                                    self._flush_version, args=(uid,))
+                                    self._flush_version, args=(key,))
             timer.daemon = True
             timer.start()
 
@@ -1192,7 +1203,7 @@ class CotBridge:
                 # Handled: suppressed rather than passed on to tier 2, which
                 # would spend more airtime than the codec just saved.
                 return True
-        addressed, recipients = self._marker_recipients(xml)
+        addressed, recipients = self._addressees(xml)
         if not addressed:
             self.markers_sent += self._fan_out(frame)
             return True
@@ -1209,8 +1220,12 @@ class CotBridge:
             self._dispatch_addressed_marker(member, frame)
         return True
 
-    def _marker_recipients(self, xml):
-        """Who a marker was sent to: (addressed, member hashes).
+    def _addressees(self, xml):
+        """Who an event was sent to: (addressed, member hashes).
+
+        Markers first used this; every event does now. A data package notice
+        addressed to one contact went to the whole team on the bench
+        (2026-09-22), and so would a drawing shared with one person.
 
         ATAK's "Send" to a contact puts the recipient in `detail/marti/dest`,
         the same mechanism it uses to route anything through a server. A
@@ -1235,8 +1250,8 @@ class CotBridge:
         recipients = []
         for dest in dests:
             uid, callsign = dest.get("uid") or "", dest.get("callsign") or ""
-            print("[bridge] marker addressed to uid=%r callsign=%r"
-                  % (uid, callsign), flush=True)
+            print("[bridge] %s addressed to uid=%r callsign=%r"
+                  % (event.get("type") or "event", uid, callsign), flush=True)
             exact = tak_identity.destination_for(uid) if uid else None
             if exact is not None and exact in members:
                 found = [exact]
@@ -1390,7 +1405,7 @@ class CotBridge:
                   % (destination_hash.hex(), error), flush=True)
             return 0
 
-    def _fan_out_reliably(self, frame, messages=None):
+    def _fan_out_reliably(self, frame, messages=None, recipients=None):
         """Send one fragment to every member, over LXMF. Returns how many went.
 
         **This is the difference between tier 3 working and appearing to.** A
@@ -1416,7 +1431,8 @@ class CotBridge:
         unreachable; the next version will find them.
         """
         sent = 0
-        for member in self.registry.members():
+        members = self.registry.members() if recipients is None else recipients
+        for member in members:
             identity = self.rns.Identity.recall(member)
             if identity is None:
                 self.rns.Transport.request_path(member)
@@ -1431,8 +1447,12 @@ class CotBridge:
                 self.unreachable += 1
         return sent
 
-    def _send_version(self, uid, frames):
-        """Put one version of an event on the air.
+    def _send_version(self, uid, frames, recipients=None):
+        """Put one version of an event on the air, to everyone or to recipients.
+
+        `uid` is the version key from _version_key, which names the addressees
+        as well as the event: one drawing shared with A and then with B is two
+        streams of versions, and must neither coalesce nor withdraw each other.
 
         A single frame takes the cheap fan-out. A fragmented one goes over
         LXMF, and first withdraws whatever is still retrying from the version
@@ -1450,7 +1470,7 @@ class CotBridge:
             print("[bridge] withdrew %d message(s) of a superseded version"
                   % len(superseded), flush=True)
         if len(frames) == 1:
-            self.sent += self._fan_out(frames[0])
+            self.sent += self._fan_out(frames[0], recipients)
             return
         if self.lxmf is None:
             # Tier 3 needs LXMF: a fragment is only worth sending proved and
@@ -1469,7 +1489,7 @@ class CotBridge:
         started = time.time()
         messages = []
         for frame in frames:
-            self.sent += self._fan_out_reliably(frame, messages)
+            self.sent += self._fan_out_reliably(frame, messages, recipients)
         print("[bridge] %d fragments handed off in %.1f s"
               % (len(frames), time.time() - started), flush=True)
         if uid:
@@ -1486,7 +1506,28 @@ class CotBridge:
             print("[bridge] sending the latest version of %s; %d superseded "
                   "version(s) coalesced so far" % (uid, self._latest.coalesced),
                   flush=True)
-            self._send_version(uid, frames)
+            self._send_version(uid, frames, self._recipients_in(uid))
+
+    # Separates an event's uid from its addressees inside a version key. Not a
+    # character a uid can contain in XML.
+    ADDRESSED_KEY_SEP = "\x00"
+
+    @classmethod
+    def _version_key(cls, uid, recipients):
+        """What latest-wins keys on: the event, and who it is for."""
+        if uid is None:
+            return None
+        if recipients is None:
+            return uid
+        return uid + cls.ADDRESSED_KEY_SEP + ",".join(sorted(r.hex() for r in recipients))
+
+    @classmethod
+    def _recipients_in(cls, key):
+        """The addressees a version key names, or None for a broadcast."""
+        if key is None or cls.ADDRESSED_KEY_SEP not in key:
+            return None
+        listed = key.split(cls.ADDRESSED_KEY_SEP, 1)[1]
+        return [bytes.fromhex(part) for part in listed.split(",") if part]
 
     @staticmethod
     def _uid_of(xml):
@@ -1511,15 +1552,16 @@ class CotBridge:
             body = b"".join(frame[cot_fragment.HEADER_BYTES:] for frame in frames)
         return hashlib.sha256(body).digest()
 
-    def _fan_out(self, frame):
-        """Send one frame to every member of the team. Returns how many went.
+    def _fan_out(self, frame, recipients=None):
+        """Send one frame to every member, or to recipients. Returns how many went.
 
         One routed unicast each, because that is the only thing that crosses a
         hop. The airtime is real and is the reason position does not come this
         way: a marker is an operator action and rare, a position report is a
         beacon. See pivot 5 for the costing.
         """
-        return sum(self._send_to(member, frame) for member in self.registry.members())
+        members = self.registry.members() if recipients is None else recipients
+        return sum(self._send_to(member, frame) for member in members)
 
     def _serve_client(self, connection):
         stream = CotStream()
