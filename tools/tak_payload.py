@@ -20,6 +20,8 @@ POSITION_V2 = 2
 CHAT_V1 = 3
 MARKER_V1 = 4
 FRAGMENT_V1 = 5
+FILE_REQUEST_V1 = 6
+FILE_V1 = 7
 
 # Every kind that may appear as byte zero, and what produced it. A reader that
 # does not recognise a kind should drop the frame rather than guess: a peer
@@ -30,6 +32,8 @@ KINDS = {
     CHAT_V1: "chat-v1",
     MARKER_V1: "marker-v1",
     FRAGMENT_V1: "fragment-v1",
+    FILE_REQUEST_V1: "file-request-v1",
+    FILE_V1: "file-v1",
 }
 
 

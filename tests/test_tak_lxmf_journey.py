@@ -114,6 +114,22 @@ class JourneyTests(unittest.TestCase):
         self.assertEqual(made.failed, 0)
         self.assertEqual(out.getvalue(), "")
 
+    def test_a_file_that_did_not_land_is_never_escalated(self):
+        """A propagation node holding a file would hand it on over whatever
+        path the receiver has -- the LoRa leg the fetch gate avoids. The
+        receiver asks again on its next fast path instead."""
+        made = carrier()
+        made.propagation_node = b"\x01" * 16
+        made.router = unittest.mock.Mock()
+        failed_file = Message(method=LXMF.LXMessage.DIRECT, attempts=5,
+                              sent_at=time.monotonic())
+        failed_file.tak_escalate = False
+        with redirect_stdout(io.StringIO()):
+            made._failed(failed_file)
+
+        made.router.handle_outbound.assert_not_called()
+        self.assertEqual(made.failed, 1)
+
     def test_a_failed_direct_says_so_before_escalating(self):
         """The line that would have explained the missing ten seconds."""
         made = carrier()

@@ -42,6 +42,7 @@ import cot_marker
 import cot_position
 import position_codec
 import tak_membership as membership
+import tak_files
 import tak_payload
 from cot_endpoint import (CotClient, CotOutbound, CotStream, _parse,
                           learn_atak_uid, ping_reply)
@@ -951,6 +952,75 @@ class CotBridge:
     # a bridge built without __init__ in a test has it.
     capture_path = None
 
+    # Files ATAK uploaded and the service it uploads them to; None until
+    # enable_files. Class level for the same reason as capture_path.
+    files = None
+    file_service = None
+
+    def enable_files(self, root, port=None):
+        """Hold ATAK's files and serve its upload API. See tools/tak_files.py."""
+        import tak_file_service
+        self.files = tak_files.FileStore(root)
+        self.file_service = tak_file_service.FileService(
+            self.files, "https://%s:8443" % self.bind_host,
+            port=port or tak_file_service.DEFAULT_PORT)
+        self.file_service.start()
+        print("[files] holding files in %s; ATAK uploads through %s:8443 -> 127.0.0.1:%d"
+              % (root, self.bind_host, self.file_service.port), flush=True)
+
+    def _grant_file(self, xml, recipients):
+        """Remember who a file notice went to, so only they may fetch the file.
+
+        ATAK uploads first and then sends one notice per recipient; the notice
+        is what says who the file is for. A file nobody was sent a notice for is
+        served to nobody.
+        """
+        if self.files is None:
+            return
+        notice = tak_files.parse_notice(xml)
+        if notice is None:
+            return
+        if not self.files.has(notice["hash"]):
+            print("[files] ATAK offered %s, which was never uploaded here; the "
+                  "receiver will not be able to fetch it" % notice["filename"], flush=True)
+            return
+        self.files.grant(notice["hash"], recipients)
+        print("[files] %s (%d bytes) offered to %s"
+              % (notice["filename"], notice["size"],
+                 "the team" if recipients is None else "%d member(s)" % len(recipients)),
+              flush=True)
+
+    def _file_requested(self, raw, member):
+        """A member asked for a file: send it if they were offered it.
+
+        The member is the one LXMF proved, never a claim in the frame. A file
+        goes only to somebody its notice was addressed to -- the same rule that
+        keeps a pin sent to one person off everyone else's map.
+        """
+        file_hash = tak_files.decode_request(raw)
+        if file_hash is None or member is None:
+            self.unreadable += 1
+            return
+        who = (self.registry.describe(member) or {}).get("callsign", member.hex()[:8])
+        if self.files is None or not self.files.has(file_hash):
+            print("[files] %s asked for %s, which is not held here" % (who, file_hash[:16]),
+                  flush=True)
+            return
+        if not self.files.may_fetch(file_hash, member,
+                                    lambda peer: peer in self.registry.members()):
+            print("[files] %s asked for %s and was never offered it; refused"
+                  % (who, file_hash[:16]), flush=True)
+            return
+        identity = self.rns.Identity.recall(member)
+        if identity is None or self.lxmf is None:
+            self.rns.Transport.request_path(member)
+            print("[files] cannot reach %s to send %s yet" % (who, file_hash[:16]), flush=True)
+            return
+        data = self.files.read(file_hash)
+        name = self.files.meta(file_hash).get("filename", "")
+        self.lxmf.send_file(identity, tak_files.encode_file(file_hash, name, data))
+        print("[files] sending %s (%d bytes) to %s" % (name, len(data), who), flush=True)
+
     def _capture(self, xml):
         """Keep ATAK's event as it arrived, for designing against.
 
@@ -1026,6 +1096,7 @@ class CotBridge:
                   "broadcast instead", flush=True)
             return
         recipients = recipients if addressed else None
+        self._grant_file(xml, recipients)
         key = self._version_key(self._uid_of(xml), recipients)
         if key is None:
             self._send_version(None, frames, recipients)
@@ -1165,6 +1236,9 @@ class CotBridge:
             # A pin sent to this node in particular comes by LXMF, so that it
             # is proved -- and so the carrier can say who sent it.
             self._marker_from_mesh(raw, signed_by=signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_REQUEST_V1:
+            self._file_requested(raw, signed_by)
             return
         if self._chat_from_mesh(raw, signed_by=signed_by):
             self.received += 1
@@ -1748,6 +1822,10 @@ def main():
                              "and cannot reach this machine's loopback. There "
                              "is no authentication on this endpoint, so name "
                              "the interface you mean." % BIND_HOST)
+    parser.add_argument("--no-files", action="store_true",
+                        help="do not hold ATAK's data packages or serve its upload API")
+    parser.add_argument("--files-port", type=int, default=18443,
+                        help="loopback port ATAK's uploads are proxied to (default 18443)")
     parser.add_argument("--capture", default=None, metavar="PATH",
                         help="append every event ATAK sends, verbatim, to PATH "
                              "(owner-only; it holds positions and callsigns)")
@@ -1825,6 +1903,9 @@ def main():
                        members_path=os.path.join(
                            os.path.expanduser(args.config or "~/.reticulum"),
                            "tak_members.json"))
+    if not args.no_files:
+        bridge.enable_files(os.path.join(os.path.expanduser(args.config or "~/.reticulum"),
+                                         "tak_files"), args.files_port)
     if args.capture:
         bridge.capture_path = os.path.expanduser(args.capture)
         print("[bridge] capturing every event from ATAK to %s" % bridge.capture_path, flush=True)
