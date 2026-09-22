@@ -210,6 +210,29 @@ class BridgeTests(unittest.TestCase):
         self.run_quietly(self.made._file_requested, tak_files.encode_request(HASH), BRAVO)
         self.made.lxmf.send_file.assert_not_called()
 
+    def test_a_sender_is_told_when_an_offer_goes_unfetched(self):
+        self.made.uid = "urtn-" + "aa" * 16
+        self.made.drawn = []
+        self.made._to_clients = lambda payload=None, keep=False: self.made.drawn.append(payload)
+        self.made.files.put(DATA, "Recon1.zip")
+        with unittest.mock.patch("threading.Timer"):
+            self.run_quietly(self.made._grant_file, notice(), [ALPHA])
+        self.made._offer_unfetched((HASH, ALPHA))
+        self.made._offer_unfetched((HASH, ALPHA))
+        self.assertEqual(len(self.made.drawn), 1)
+        self.assertIn("not fetched yet by PEER", self.made.drawn[0].decode())
+
+    def test_a_fetched_offer_says_nothing(self):
+        self.made.uid = "urtn-" + "aa" * 16
+        self.made.drawn = []
+        self.made._to_clients = lambda payload=None, keep=False: self.made.drawn.append(payload)
+        self.made.files.put(DATA, "Recon1.zip")
+        with unittest.mock.patch("threading.Timer"):
+            self.run_quietly(self.made._grant_file, notice(), [ALPHA])
+        self.run_quietly(self.made._file_requested, tak_files.encode_request(HASH), ALPHA)
+        self.made._offer_unfetched((HASH, ALPHA))
+        self.assertEqual(self.made.drawn, [])
+
     def test_an_unproved_request_is_refused(self):
         self.made.files.put(DATA, "Recon1.zip")
         self.run_quietly(self.made._grant_file, notice(), None)
@@ -228,6 +251,8 @@ class DeckReceivesTests(unittest.TestCase):
         made = CotBridge.__new__(CotBridge)
         made.bind_host = "192.168.240.1"
         made.received = 0
+        made.registry = Mock()
+        made.registry.describe.return_value = {"callsign": "LEXUS"}
         made.files = tak_files.FileStore(self.folder.name)
         made.rns = Mock()
         made.rns.Identity.recall.side_effect = lambda member: member
@@ -282,6 +307,30 @@ class DeckReceivesTests(unittest.TestCase):
         self.offered()
         self.made.lxmf.send_request.assert_not_called()
         self.assertEqual(len(self.made.drawn), 1)
+
+    def test_a_deferred_file_is_announced_once_from_columba(self):
+        self.rtt = 4.9
+        self.made.uid = "urtn-" + "aa" * 16
+        self.made.registry = Mock()
+        self.made.registry.describe.return_value = {"callsign": "LEXUS"}
+        with unittest.mock.patch("threading.Timer"):
+            self.offered()
+            entry = self.made._pending_files()[HASH]
+            self.made._attempt_file(HASH, entry)
+        self.assertEqual(len(self.made.drawn), 1, "one line, not one per retry")
+        line = self.made.drawn[0].decode()
+        self.assertIn("from LEXUS is waiting", line)
+        self.assertIn(tak_files.STATUS_UID, line)
+
+    def test_files_waiting_on_one_sender_share_one_probe(self):
+        self.rtt = 4.9
+        probes = []
+        self.made._measure_path = lambda member, done: probes.append(member) or done(self.rtt)
+        other = hashlib.sha256(b"another").hexdigest()
+        with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
+            self.made._file_offered_here(notice(dest="DECK"), ALPHA)
+            self.made._file_offered_here(notice(file_hash=other, dest="DECK"), ALPHA)
+        self.assertEqual(len(probes), 1)
 
     def test_anything_else_passes_through(self):
         with redirect_stdout(io.StringIO()):

@@ -166,6 +166,38 @@ def rewrite_notice(xml, url, now=None, stale_seconds=NOTICE_STALE_SECONDS):
     return text
 
 
+# Who a status line comes from in ATAK's chat: this node, not a teammate.
+STATUS_UID = "COLUMBA-FILES"
+STATUS_CALLSIGN = "Columba files"
+
+
+def status_line(our_uid, text, now=None):
+    """A chat line to this node's own ATAK about a file, from the bridge.
+
+    Local only -- nothing goes on the air. ATAK cannot show "queued, waiting
+    for a fast path": a receiver sees nothing and a sender sees its send time
+    out as a failure, while the file is simply waiting. From its own contact
+    rather than the teammate's, so nothing is put in a teammate's mouth.
+    """
+    import uuid
+    import cot_chat
+    now = now or datetime.now(timezone.utc)
+    decoded = {"kind": cot_chat.KIND_MESSAGE, "sender_id": 0,
+               "sent_unix": int(now.timestamp()), "message_id": str(uuid.uuid4()),
+               "room": STATUS_CALLSIGN, "recipient": our_uid, "text": text}
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (now.microsecond // 1000)
+    return cot_chat.build_chat_cot(decoded, STATUS_UID, STATUS_CALLSIGN, stamp)
+
+
+def size_text(size):
+    """A size an operator reads at a glance."""
+    if size >= 1_000_000:
+        return "%.1f MB" % (size / 1_000_000)
+    if size >= 1_000:
+        return "%d KB" % (size // 1_000)
+    return "%d B" % size
+
+
 def url_host(url):
     try:
         return urlsplit(url).hostname

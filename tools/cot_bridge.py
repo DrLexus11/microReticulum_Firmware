@@ -987,6 +987,13 @@ class CotBridge:
                   "receiver will not be able to fetch it" % notice["filename"], flush=True)
             return
         self.files.grant(notice["hash"], recipients)
+        offers = self.__dict__.setdefault("_file_offers", {})
+        for member in recipients or []:
+            key = (notice["hash"], member)
+            offers[key] = notice
+            timer = threading.Timer(self.UNFETCHED_SECONDS, self._offer_unfetched, args=(key,))
+            timer.daemon = True
+            timer.start()
         print("[files] %s (%d bytes) offered to %s"
               % (notice["filename"], notice["size"],
                  "the team" if recipients is None else "%d member(s)" % len(recipients)),
@@ -1005,6 +1012,17 @@ class CotBridge:
     MAX_RETRY_SECONDS = 15 * 60
     HOLD_SECONDS = 24 * 60 * 60
     PROBE_TIMEOUT_SECONDS = 10
+    # One measurement per sender serves every file waiting on them this long:
+    # each probe is a link handshake, over LoRa when the path is slow.
+    PROBE_REUSE_SECONDS = 30
+    # How long an offered file may go unfetched before the sender is told.
+    UNFETCHED_SECONDS = 60
+
+    def _file_status(self, text):
+        """Tell Waydroid's ATAK, from Columba's own contact; nothing on air."""
+        our_uid = getattr(self, "uid", None)
+        if our_uid:
+            self._to_clients(tak_files.status_line(our_uid, text).encode("utf-8"), keep=True)
 
     def _pending_files(self):
         pending = getattr(self, "_files_pending", None)
@@ -1046,8 +1064,17 @@ class CotBridge:
                   % entry["notice"]["filename"], flush=True)
             return
         entry["probing"] = True
-        self._measure_path(entry["sender"],
-                           lambda rtt: self._path_measured(file_hash, entry, rtt))
+        cache = self.__dict__.setdefault("_probe_cache", {})
+        cached = cache.get(entry["sender"])
+        if cached is not None and time.time() - cached[0] < self.PROBE_REUSE_SECONDS:
+            self._path_measured(file_hash, entry, cached[1])
+            return
+
+        def measured(rtt):
+            cache[entry["sender"]] = (time.time(), rtt)
+            self._path_measured(file_hash, entry, rtt)
+
+        self._measure_path(entry["sender"], measured)
 
     def _measure_path(self, member, done):
         """The round trip of a link handshake to a member's inbox, or None.
@@ -1094,6 +1121,12 @@ class CotBridge:
         delay = entry["backoff"]
         entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
         print("[files] slow or no path; %s waits, next try in %d s" % (name, delay), flush=True)
+        if not entry.get("told"):
+            entry["told"] = True
+            sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "a teammate")
+            self._file_status("%s (%s) from %s is waiting: the path is too slow to bring it now. "
+                              "It arrives when a fast path appears."
+                              % (name, tak_files.size_text(entry["notice"]["size"]), sender))
         timer = threading.Timer(delay, self._attempt_file, args=(file_hash, entry))
         timer.daemon = True
         timer.start()
@@ -1123,6 +1156,15 @@ class CotBridge:
         self.received += 1
         print("[files] %s offered to ATAK from %s" % (notice["filename"], url), flush=True)
 
+    def _offer_unfetched(self, key):
+        notice = self.__dict__.get("_file_offers", {}).pop(key, None)
+        if notice is None:
+            return
+        who = (self.registry.describe(key[1]) or {}).get("callsign", "a teammate")
+        self._file_status("%s (%s) not fetched yet by %s. Over a slow path a file waits for a "
+                          "fast one; ATAK may report this send as failed while it waits."
+                          % (notice["filename"], tak_files.size_text(notice["size"]), who))
+
     def _file_requested(self, raw, member):
         """A member asked for a file: send it if they were offered it.
 
@@ -1151,6 +1193,7 @@ class CotBridge:
             return
         data = self.files.read(file_hash)
         name = self.files.meta(file_hash).get("filename", "")
+        self.__dict__.get("_file_offers", {}).pop((file_hash, member), None)
         self.lxmf.send_file(identity, tak_files.encode_file(file_hash, name, data))
         print("[files] sending %s (%d bytes) to %s" % (name, len(data), who), flush=True)
 
