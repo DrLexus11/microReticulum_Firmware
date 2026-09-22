@@ -44,7 +44,7 @@ import position_codec
 import tak_membership as membership
 import tak_payload
 from cot_endpoint import (CotClient, CotOutbound, CotStream, _parse,
-                          ping_reply)
+                          learn_atak_uid, ping_reply)
 
 # Not 8087.
 #
@@ -990,7 +990,12 @@ class CotBridge:
         if known is None and self.pipeline.atak_uid:
             print("[bridge] this ATAK calls itself %s; peers will see %s"
                   % (self.pipeline.atak_uid, self.uid), flush=True)
-        if cot_position.is_position(xml) and self._position_from_atak(xml):
+        # Only ATAK's own report is this node's position. A friendly unit
+        # marker has a position-shaped type too, and taking it here put the
+        # operator's track wherever they dropped the marker; it goes on to the
+        # marker codec instead.
+        if (cot_position.is_position(xml) and learn_atak_uid(xml) is not None
+                and self._position_from_atak(xml)):
             return
         if self._chat_from_atak(xml):
             return
