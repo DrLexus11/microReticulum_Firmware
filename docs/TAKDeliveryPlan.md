@@ -1160,6 +1160,31 @@ Android's own WebP encoder, the one part the unit tests could not exercise.
 The compact offer (FILE_OFFER_V1) replaced ATAK's ~390-byte notice: a data
 package's offer is 53 bytes, one frame.
 
+**Interface completeness, 2026-09-23.** Every carrier the fleet has or is
+building, against what D2 does on it:
+
+| Carrier | Offer + thumbnail | Fast-path gate (rtt < 0.5 s) | Full file (LXMF Resource) | Status |
+| --- | --- | --- | --- | --- |
+| LoRa, via boards | 640 B, 3 frames, 7 s to the map | 1.3-5 s: defers. Right | never sent | **proven** |
+| Wi-Fi / TCP via the deck | fine | 8-220 ms: fetches. Right | 3 MB in 33 s | **proven** |
+| BLE phone to board, then LoRa | fine | LoRa dominates: defers. Right | never sent | **proven** (the LEXUS runs) |
+| BLE phone to phone, direct | should be fine | **likely under 0.5 s, so it fetches** | **3 MB over BLE: minutes, competing with chat and positions** | **untested, and probably wrong** |
+| BLE as a last hop (deck, UDP, board, BLE, phone) | fine | **same risk: low latency, low throughput** | same | **untested** |
+| HaLow (Vox; Reticulum over IP) | fine | tens of ms: fetches | right at 1-30 Mbit/s; at range, low MCS on a mesh may be ~100s of kbit/s | **reasoned, untested** |
+
+**The flaw the matrix exposes: round-trip time is a proxy for "not LoRa", not a
+measure of whether a file will arrive in reasonable time.** It is right for the
+two carriers tested and wrong for a short, slow one -- BLE -- because latency
+and throughput are different things. Declared bitrates cannot stand in either:
+BLE claims 700 kbit/s, TCP/UDP/Auto 10 Mbit/s, all guesses.
+
+The fix is to gate on **estimated transfer time, measured**: fetch a small
+first part, time it, and continue only if the rest would arrive within a
+budget; otherwise defer, and say so. Cutting the file into parts also makes a
+transfer resumable after a dropped link, which BLE and a HaLow mesh at range
+both need. Not built; it needs a budget decided and bench runs on BLE
+phone-to-phone and on a rate-limited IP link standing in for HaLow.
+
 **Thumbnail budget: the descriptor and thumbnail together fit three fragments.**
 Chosen from what the radios have already shown rather than from an estimate. A
 drawing is three fragments, and three fragments have crossed LoRa both ways,
