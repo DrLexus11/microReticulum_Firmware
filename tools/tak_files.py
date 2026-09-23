@@ -298,3 +298,196 @@ class FileStore:
         if member.hex() in record.get("granted", []):
             return True
         return bool(record.get("team")) and is_team_member(member)
+
+
+# ---- the offer: what crosses the mesh in place of ATAK's notice ------------
+#
+# ATAK's b-f-t-r notice is about 390 bytes compressed -- two fragments before a
+# thumbnail. The offer carries what a receiver needs to rebuild that notice,
+# plus, for a QuickPic, where the picture is and a thumbnail of it, in at most
+# three fragments: the drawing's cost, proven on the radios.
+#
+#     FILE_OFFER_V1   kind(1) sender_id(4) sha256(32) size(4) flags(1)
+#                     name_len(1) filename(utf-8)
+#       FLAG_POINT    lat_e7(4) lon_e7(4) marker_uuid(16)
+#       FLAG_THUMB    thumb_len(2) thumbnail(webp)
+
+FLAG_POINT = 0x01
+FLAG_THUMB = 0x02
+MAX_OFFER_NAME_BYTES = 60
+
+# Three fragments: 747 bytes. See cot_fragment.MAX_FRAGMENT_BYTES.
+MAX_OFFER_BYTES = 3 * 249
+
+_OFFER_HEAD = struct.Struct(">BI32sIBB")
+_POINT = struct.Struct(">ii16s")
+
+
+def encode_offer(sender_id, file_hash, size, filename, point=None, thumbnail=None):
+    """An offer frame. `point` is (lat_e7, lon_e7, marker_uuid_bytes)."""
+    name = (filename or "").encode("utf-8")[:MAX_OFFER_NAME_BYTES]
+    flags = (FLAG_POINT if point else 0) | (FLAG_THUMB if thumbnail else 0)
+    out = _OFFER_HEAD.pack(tak_payload.FILE_OFFER_V1, sender_id & 0xFFFFFFFF,
+                           bytes.fromhex(file_hash), size & 0xFFFFFFFF, flags, len(name)) + name
+    if point:
+        out += _POINT.pack(point[0], point[1], point[2])
+    if thumbnail:
+        out += struct.pack(">H", len(thumbnail)) + bytes(thumbnail)
+    return out
+
+
+def decode_offer(frame):
+    """A dict, or None for anything that is not a well-formed offer."""
+    if (not isinstance(frame, (bytes, bytearray)) or len(frame) < _OFFER_HEAD.size
+            or frame[0] != tak_payload.FILE_OFFER_V1):
+        return None
+    frame = bytes(frame)
+    _, sender_id, raw_hash, size, flags, name_len = _OFFER_HEAD.unpack(frame[:_OFFER_HEAD.size])
+    at = _OFFER_HEAD.size + name_len
+    if at > len(frame):
+        return None
+    offer = {"sender_id": sender_id, "hash": raw_hash.hex(), "size": size,
+             "filename": frame[_OFFER_HEAD.size:at].decode("utf-8", "replace"),
+             "point": None, "thumbnail": None}
+    if flags & FLAG_POINT:
+        if at + _POINT.size > len(frame):
+            return None
+        offer["point"] = _POINT.unpack(frame[at:at + _POINT.size])
+        at += _POINT.size
+    if flags & FLAG_THUMB:
+        if at + 2 > len(frame):
+            return None
+        length = struct.unpack(">H", frame[at:at + 2])[0]
+        at += 2
+        if at + length != len(frame):
+            return None
+        offer["thumbnail"] = frame[at:at + length]
+    elif at != len(frame):
+        return None
+    return offer
+
+
+def _package_parts(data):
+    """(image entry, image bytes, marker xml) from a data package, or Nones."""
+    import io
+    import zipfile
+    try:
+        package = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, ValueError):
+        return None, None, None
+    image = marker = None
+    for entry in package.namelist():
+        lower = entry.lower()
+        if image is None and lower.endswith((".jpg", ".jpeg", ".png", ".webp")):
+            image = entry
+        elif marker is None and lower.endswith(".cot"):
+            text = package.read(entry).decode("utf-8", "replace")
+            if "b-i-x-i" in text:
+                marker = text
+    return image, (package.read(image) if image else None), marker
+
+
+def quickpic_point(marker_xml):
+    """(lat_e7, lon_e7, uuid bytes) of a QuickPic marker, or None."""
+    import uuid
+    m_uid = re.search(r"""\buid=['"]([0-9a-fA-F-]{36})['"]""", marker_xml or "")
+    m_pt = re.search(r"""<point[^>]*\blat=['"]([-0-9.]+)['"][^>]*\blon=['"]([-0-9.]+)['"]""",
+                     marker_xml or "")
+    if not m_uid or not m_pt:
+        return None
+    try:
+        return (int(round(float(m_pt.group(1)) * 1e7)), int(round(float(m_pt.group(2)) * 1e7)),
+                uuid.UUID(m_uid.group(1)).bytes)
+    except ValueError:
+        return None
+
+
+# Tried in order, best first; the first that fits the budget wins. Measured on
+# a real 4032x3024 QuickPic: 96x72 at quality 15 is 614 B, 80x60 at 25 is 620 B.
+THUMB_STEPS = ((112, 20), (96, 20), (96, 12), (80, 20), (64, 20), (64, 10), (48, 10))
+
+
+def make_thumbnail(image_bytes, budget):
+    """A WebP thumbnail of at most `budget` bytes, or None if none fits."""
+    try:
+        import io
+        from PIL import Image
+        source = Image.open(io.BytesIO(image_bytes))
+        source.draft("RGB", (256, 256))
+        source = source.convert("RGB")
+    except Exception:          # no Pillow, or not an image: no thumbnail
+        return None
+    for side, quality in THUMB_STEPS:
+        small = source.copy()
+        small.thumbnail((side, side))
+        out = io.BytesIO()
+        small.save(out, "WEBP", quality=quality, method=6)
+        if len(out.getvalue()) <= budget:
+            return out.getvalue()
+    return None
+
+
+def offer_for(sender_id, file_hash, filename, data):
+    """The offer for a stored file: with a point and thumbnail if it is a
+    QuickPic, and never over MAX_OFFER_BYTES."""
+    _, image, marker = _package_parts(data)
+    point = quickpic_point(marker)
+    bare = encode_offer(sender_id, file_hash, len(data), filename, point)
+    thumbnail = None
+    if image is not None:
+        thumbnail = make_thumbnail(image, MAX_OFFER_BYTES - len(bare) - 2)
+    return encode_offer(sender_id, file_hash, len(data), filename, point, thumbnail)
+
+
+def notice_from_offer(offer, sender_uid, sender_callsign, now=None):
+    """ATAK's b-f-t-r, rebuilt on the receiving side. The URL is filled in by
+    rewrite_notice when the file is here."""
+    import uuid
+    now = now or datetime.now(timezone.utc)
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (now.microsecond // 1000)
+    lat, lon = (offer["point"][0] / 1e7, offer["point"][1] / 1e7) if offer["point"] else (0.0, 0.0)
+    name = offer["filename"][:-4] if offer["filename"].lower().endswith(".zip") else offer["filename"]
+    esc = lambda text: (text.replace("&", "&amp;").replace('"', "&quot;")
+                        .replace("<", "&lt;").replace(">", "&gt;"))
+    return ('<event version="2.0" uid="%s" type="%s" how="h-e" time="%s" start="%s" stale="%s">'
+            '<point lat="%.7f" lon="%.7f" hae="9999999.0" ce="9999999.0" le="9999999.0"/><detail>'
+            '<fileshare filename="%s" senderUrl="" sizeInBytes="%d" sha256="%s" senderUid="%s" '
+            'senderCallsign="%s" name="%s"/></detail></event>'
+            % (uuid.uuid5(uuid.NAMESPACE_URL, offer["hash"]), FILESHARE_TYPE, stamp, stamp, stamp,
+               lat, lon, esc(offer["filename"]), offer["size"], offer["hash"], esc(sender_uid),
+               esc(sender_callsign), esc(name)))
+
+
+def preview_package(offer, sender_callsign):
+    """A data package ATAK imports as the QuickPic's marker with the thumbnail
+    attached, under the marker's own uid so the full package replaces it."""
+    import io
+    import uuid
+    import zipfile
+    marker_uid = str(uuid.UUID(bytes=offer["point"][2]))
+    name = offer["filename"][:-4] if offer["filename"].lower().endswith(".zip") else offer["filename"]
+    image_entry = "%s/%s_preview.webp" % (offer["hash"][:32], name.rsplit(".", 1)[0])
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    marker = ("<?xml version='1.0' encoding='UTF-8' standalone='yes'?>"
+              "<event version='2.0' uid='%s' type='b-i-x-i' time='%s' start='%s' "
+              "stale='2099-01-01T00:00:00.000Z' how='h-g-i-g-o'>"
+              "<point lat='%.7f' lon='%.7f' hae='9999999.0' ce='9999999.0' le='9999999.0'/>"
+              "<detail><contact callsign='%s preview'/><remarks>Preview over LoRa; the full "
+              "picture follows on a fast path.</remarks></detail></event>"
+              % (marker_uid, stamp, stamp, offer["point"][0] / 1e7, offer["point"][1] / 1e7,
+                 sender_callsign.replace("'", "")))
+    manifest = ('<?xml version="1.0" encoding="UTF-8"?><MissionPackageManifest version="2">'
+                '<Configuration><Parameter name="uid" value="%s"/>'
+                '<Parameter name="name" value="%s (preview)"/>'
+                '<Parameter name="onReceiveImport" value="true"/>'
+                '<Parameter name="onReceiveDelete" value="true"/></Configuration><Contents>'
+                '<Content ignore="false" zipEntry="%s/%s.cot"><Parameter name="uid" value="%s"/></Content>'
+                '<Content ignore="false" zipEntry="%s"><Parameter name="uid" value="%s"/></Content>'
+                '</Contents></MissionPackageManifest>'
+                % (marker_uid, name, marker_uid, marker_uid, marker_uid, image_entry, marker_uid))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("MANIFEST/manifest.xml", manifest)
+        package.writestr("%s/%s.cot" % (marker_uid, marker_uid), marker)
+        package.writestr(image_entry, offer["thumbnail"])
+    return out.getvalue(), "%s_preview.zip" % name.rsplit(".", 1)[0]

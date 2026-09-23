@@ -728,6 +728,10 @@ class CotBridge:
         it. A bare packet carries no such proof and honestly passes None.
         """
         kind = tak_payload.kind_of(raw)
+        if kind == tak_payload.FILE_OFFER_V1:
+            # Reassembled from fragments, which only LXMF carries.
+            self._offer_from_mesh(raw, signed_by)
+            return
         if kind == tak_payload.POSITION_V2:
             if self._position_from_mesh(raw):
                 return
@@ -990,6 +994,7 @@ class CotBridge:
                   "receiver will not be able to fetch it" % notice["filename"], flush=True)
             return
         self.files.grant(notice["hash"], recipients)
+        self._send_offer(notice, recipients)
         offers = self.__dict__.setdefault("_file_offers", {})
         for member in recipients or []:
             key = (notice["hash"], member)
@@ -1001,6 +1006,7 @@ class CotBridge:
               % (notice["filename"], notice["size"],
                  "the team" if recipients is None else "%d member(s)" % len(recipients)),
               flush=True)
+        return True
 
     # ---- files offered to this node ----
     #
@@ -1036,7 +1042,7 @@ class CotBridge:
     def _files_base(self):
         return "http://%s:8080" % self.bind_host
 
-    def _file_offered_here(self, xml, signed_by):
+    def _file_offered_here(self, xml, signed_by, offer=None):
         """Take a file notice addressed here. True when it was one."""
         if self.files is None:
             return False
@@ -1054,7 +1060,7 @@ class CotBridge:
               % (notice["filename"], notice["size"]), flush=True)
         entry = self._pending_files().setdefault(notice["hash"], {
             "notice": notice, "xml": xml, "sender": signed_by, "since": time.time(),
-            "backoff": self.FIRST_RETRY_SECONDS, "probing": False})
+            "backoff": self.FIRST_RETRY_SECONDS, "probing": False, "offer": offer})
         self._attempt_file(notice["hash"], entry)
         return True
 
@@ -1124,12 +1130,14 @@ class CotBridge:
         delay = entry["backoff"]
         entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
         print("[files] slow or no path; %s waits, next try in %d s" % (name, delay), flush=True)
+        previewed = self._show_preview(entry)
         if not entry.get("told"):
             entry["told"] = True
             sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "a teammate")
             self._file_status("%s (%s) from %s is waiting: the path is too slow to bring it now. "
-                              "It arrives when a fast path appears."
-                              % (name, tak_files.size_text(entry["notice"]["size"]), sender))
+                              "It arrives when a fast path appears.%s"
+                              % (name, tak_files.size_text(entry["notice"]["size"]), sender,
+                                 " A preview is on the map." if previewed else ""))
         timer = threading.Timer(delay, self._attempt_file, args=(file_hash, entry))
         timer.daemon = True
         timer.start()
@@ -1158,6 +1166,59 @@ class CotBridge:
         self._to_clients(tak_files.rewrite_notice(xml, url).encode("utf-8"), keep=True)
         self.received += 1
         print("[files] %s offered to ATAK from %s" % (notice["filename"], url), flush=True)
+
+    def _send_offer(self, notice, recipients):
+        """Put the offer on the air in place of ATAK's notice.
+
+        ATAK's notice is ~390 bytes compressed, two fragments; the offer is
+        about 55 for a data package, or up to three fragments for a QuickPic
+        with its position and a thumbnail. Always over LXMF: the receiver has
+        to know who to fetch from.
+        """
+        data = self.files.read(notice["hash"])
+        offer = tak_files.offer_for(self.sender_id, notice["hash"], notice["filename"], data)
+        frames = ([offer] if len(offer) <= cot_fragment.MAX_FRAGMENT_FRAME_BYTES
+                  else cot_fragment.fragments(offer))
+        if self.lxmf is None:
+            print("[files] not offered: offers need LXMF, which --no-lxmf turned off", flush=True)
+            return
+        for frame in frames:
+            self.sent += self._fan_out_reliably(frame, None, recipients)
+        thumb = tak_files.decode_offer(offer)["thumbnail"]
+        print("[files] offer is %d bytes in %d frame(s)%s"
+              % (len(offer), len(frames), ", with a %d-byte thumbnail" % len(thumb) if thumb else ""),
+              flush=True)
+
+    def _offer_from_mesh(self, raw, signed_by):
+        """An offer arrived: rebuild ATAK's notice and fetch, preview or wait."""
+        offer = tak_files.decode_offer(raw)
+        if offer is None or signed_by is None or signed_by not in self.registry.members():
+            self.unreadable += 1
+            return
+        # The sender id in the frame is a claim; the carrier's proof is not.
+        if self.registry.sender_id_for(signed_by) != offer["sender_id"]:
+            self.unreadable += 1
+            print("[files] an offer whose claimed sender is not the one proved; refused", flush=True)
+            return
+        callsign = (self.registry.describe(signed_by) or {}).get("callsign", "UNKNOWN")
+        xml = tak_files.notice_from_offer(offer, tak_identity.uid_for(signed_by), callsign)
+        self._file_offered_here(xml, signed_by, offer=offer)
+
+    def _show_preview(self, entry):
+        """Over a slow path, a QuickPic's thumbnail at its position, once."""
+        offer = entry.get("offer")
+        if not offer or not offer["thumbnail"] or not offer["point"] or entry.get("previewed"):
+            return False
+        entry["previewed"] = True
+        sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "UNKNOWN")
+        package, filename = tak_files.preview_package(offer, sender)
+        preview_hash = self.files.put(package, filename)
+        if preview_hash is None:
+            return False
+        preview = dict(offer, hash=preview_hash, size=len(package), filename=filename)
+        self._offer_to_atak(preview, tak_files.notice_from_offer(
+            preview, tak_identity.uid_for(entry["sender"]), sender))
+        return True
 
     def _offer_unfetched(self, key):
         notice = self.__dict__.get("_file_offers", {}).pop(key, None)
@@ -1275,7 +1336,8 @@ class CotBridge:
                   "broadcast instead", flush=True)
             return
         recipients = recipients if addressed else None
-        self._grant_file(xml, recipients)
+        if self._grant_file(xml, recipients):
+            return
         key = self._version_key(self._uid_of(xml), recipients)
         if key is None:
             self._send_version(None, frames, recipients)
@@ -1421,6 +1483,9 @@ class CotBridge:
             return
         if tak_payload.kind_of(raw) == tak_payload.FILE_V1:
             self._file_arrived(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_OFFER_V1:
+            self._offer_from_mesh(raw, signed_by)
             return
         if tak_payload.kind_of(raw) == tak_payload.COT_TIER2:
             # An event addressed to this node that fitted in one frame. It

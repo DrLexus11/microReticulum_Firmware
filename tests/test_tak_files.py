@@ -185,6 +185,11 @@ class BridgeTests(unittest.TestCase):
         made.rns = Mock()
         made.rns.Identity.recall.side_effect = lambda member: member
         made.lxmf = Mock()
+        made.sender_id = 0x01020304
+        made.sent = 0
+        made.offers_out = []
+        made._fan_out_reliably = lambda frame, messages=None, recipients=None: \
+            made.offers_out.append((frame, recipients)) or 1
         self.made = made
 
     def tearDown(self):
@@ -203,6 +208,23 @@ class BridgeTests(unittest.TestCase):
         identity, frame = self.made.lxmf.send_file.call_args[0]
         self.assertEqual(identity, ALPHA)
         self.assertEqual(tak_files.decode_file(frame), (HASH, "Recon1.zip", DATA))
+
+    def test_the_offer_goes_in_place_of_atak_s_notice(self):
+        """ATAK's notice is ~390 bytes, two fragments; the offer for a data
+        package is one frame of about fifty, to the addressee only."""
+        self.made.files.put(DATA, "Recon1.zip")
+        with unittest.mock.patch("threading.Timer"):
+            self.assertTrue(self.run_quietly_value(self.made._grant_file, notice(), [ALPHA]))
+        self.assertEqual(len(self.made.offers_out), 1)
+        frame, recipients = self.made.offers_out[0]
+        self.assertEqual(recipients, [ALPHA])
+        self.assertLess(len(frame), 80)
+        offer = tak_files.decode_offer(frame)
+        self.assertEqual((offer["hash"], offer["size"], offer["filename"]), (HASH, len(DATA), "Recon1.zip"))
+
+    def run_quietly_value(self, action, *args):
+        with redirect_stdout(io.StringIO()):
+            return action(*args)
 
     def test_a_member_who_was_not_offered_it_is_refused(self):
         self.made.files.put(DATA, "Recon1.zip")
@@ -332,9 +354,136 @@ class DeckReceivesTests(unittest.TestCase):
             self.made._file_offered_here(notice(file_hash=other, dest="DECK"), ALPHA)
         self.assertEqual(len(probes), 1)
 
+    def offer_arrives(self, sender_id=0x11111111):
+        package = quickpic_package()
+        self.package_hash = hashlib.sha256(package).hexdigest()
+        self.made.unreadable = 0
+        self.made.registry.members.return_value = [ALPHA]
+        self.made.registry.sender_id_for.side_effect = lambda member: 0x11111111
+        frame = tak_files.offer_for(sender_id, self.package_hash, "20260922_182231.jpg.zip", package)
+        with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
+            self.made._offer_from_mesh(frame, ALPHA)
+
+    def test_over_a_slow_path_a_quickpic_is_previewed_on_the_map(self):
+        import zipfile
+        self.rtt = 4.9
+        self.made.uid = "urtn-" + "aa" * 16
+        self.offer_arrives()
+        offered = [x.decode() for x in self.made.drawn if b"b-f-t-r" in x]
+        self.assertEqual(len(offered), 1, "the preview, and not the full file")
+        preview = tak_files.parse_notice(offered[0])
+        self.assertTrue(preview["filename"].endswith("_preview.zip"))
+        package = zipfile.ZipFile(io.BytesIO(self.made.files.read(preview["hash"])))
+        self.assertTrue(any(n.endswith(".webp") for n in package.namelist()))
+        status = [x.decode() for x in self.made.drawn if b"A preview is on the map" in x]
+        self.assertEqual(len(status), 1)
+
+    def test_over_a_fast_path_the_full_file_is_asked_for_and_no_preview(self):
+        self.offer_arrives()
+        self.made.lxmf.send_request.assert_called_once_with(ALPHA, tak_files.encode_request(self.package_hash))
+        self.assertEqual(self.made.drawn, [])
+
+    def test_an_offer_claiming_someone_else_is_refused(self):
+        self.offer_arrives(sender_id=0x22222222)
+        self.made.lxmf.send_request.assert_not_called()
+        self.assertEqual(self.made.unreadable, 1)
+
     def test_anything_else_passes_through(self):
         with redirect_stdout(io.StringIO()):
             self.assertFalse(self.made._file_offered_here(notice().replace("b-f-t-r", "u-d-f"), ALPHA))
+
+
+
+def quickpic_package():
+    """A QuickPic-shaped data package: manifest, b-i-x-i marker, an image."""
+    import zipfile
+    from PIL import Image
+    image = io.BytesIO()
+    Image.new("RGB", (800, 600), (40, 120, 60)).save(image, "JPEG", quality=90)
+    marker = ("<event version='2.0' uid='28b63bd7-7802-4802-a724-1adfef6e94e1' type='b-i-x-i' "
+              "time='2026-09-22T15:47:24.237Z'><point lat='40.9547417' lon='29.0934833' "
+              "hae='95' ce='9999999.0' le='9999999.0'/><detail/></event>")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as package:
+        package.writestr("MANIFEST/manifest.xml", "<MissionPackageManifest version='2'/>")
+        package.writestr("28b63bd7/28b63bd7.cot", marker)
+        package.writestr("7e5a/20260922_182231.jpg", image.getvalue())
+    return out.getvalue()
+
+
+class OfferTests(unittest.TestCase):
+    """The offer that crosses the mesh in place of ATAK's notice."""
+
+    def test_a_plain_offer_round_trips(self):
+        frame = tak_files.encode_offer(0x01020304, HASH, len(DATA), "Recon1.zip")
+        self.assertEqual(tak_payload.name_of(frame), "file-offer-v1")
+        offer = tak_files.decode_offer(frame)
+        self.assertEqual((offer["sender_id"], offer["hash"], offer["size"], offer["filename"],
+                          offer["point"], offer["thumbnail"]),
+                         (0x01020304, HASH, len(DATA), "Recon1.zip", None, None))
+
+    def test_a_quickpic_offer_carries_its_point_and_a_thumbnail_within_three_fragments(self):
+        package = quickpic_package()
+        file_hash = hashlib.sha256(package).hexdigest()
+        frame = tak_files.offer_for(7, file_hash, "20260922_182231.jpg.zip", package)
+        self.assertLessEqual(len(frame), tak_files.MAX_OFFER_BYTES)
+        offer = tak_files.decode_offer(frame)
+        self.assertEqual(offer["point"][:2], (409547417, 290934833))
+        self.assertTrue(offer["thumbnail"].startswith(b"RIFF"), "a WebP")
+
+    def test_malformed_offers_are_refused(self):
+        frame = tak_files.encode_offer(1, HASH, 10, "a.zip", thumbnail=b"xyz")
+        self.assertIsNone(tak_files.decode_offer(frame[:-1]))
+        self.assertIsNone(tak_files.decode_offer(frame + b"!"))
+        self.assertIsNone(tak_files.decode_offer(b"\x05" + frame[1:]))
+
+    def test_the_notice_is_rebuilt_for_atak(self):
+        offer = tak_files.decode_offer(tak_files.encode_offer(1, HASH, len(DATA), "Recon1.zip"))
+        found = tak_files.parse_notice(tak_files.notice_from_offer(offer, "urtn-" + "11" * 16, "LEXUS"))
+        self.assertEqual((found["hash"], found["size"], found["filename"], found["sender_callsign"]),
+                         (HASH, len(DATA), "Recon1.zip", "LEXUS"))
+
+    def test_a_preview_is_the_marker_with_the_thumbnail(self):
+        import zipfile
+        package = quickpic_package()
+        offer = tak_files.decode_offer(
+            tak_files.offer_for(7, hashlib.sha256(package).hexdigest(), "20260922_182231.jpg.zip", package))
+        preview, name = tak_files.preview_package(offer, "NEXUS")
+        self.assertEqual(name, "20260922_182231_preview.zip")
+        entries = zipfile.ZipFile(io.BytesIO(preview)).namelist()
+        marker = [e for e in entries if e.endswith(".cot")][0]
+        self.assertIn("28b63bd7-7802-4802-a724-1adfef6e94e1", marker, "the full package replaces it")
+        self.assertTrue(any(e.endswith("_preview.webp") for e in entries))
+
+
+
+class SharedFixtureTests(unittest.TestCase):
+    """The vectors Columba asserts against too, from tak_native_v1.json."""
+
+    def setUp(self):
+        import json
+        path = Path(__file__).resolve().parent / "fixtures" / "tak_native_v1.json"
+        self.v = json.loads(path.read_text())["file"]
+
+    def test_the_kinds_and_budget(self):
+        self.assertEqual((self.v["request_kind"], self.v["file_kind"], self.v["offer_kind"]),
+                         (tak_payload.FILE_REQUEST_V1, tak_payload.FILE_V1, tak_payload.FILE_OFFER_V1))
+        self.assertEqual(self.v["max_offer_bytes"], tak_files.MAX_OFFER_BYTES)
+
+    def test_request_and_file_frames(self):
+        self.assertEqual(tak_files.encode_request(self.v["hash"]).hex(), self.v["request"])
+        self.assertEqual(tak_files.encode_file(self.v["hash"], self.v["file_name"],
+                                               bytes.fromhex(self.v["file_data"])).hex(), self.v["file"])
+
+    def test_offer_frames(self):
+        import uuid
+        plain, quick = self.v["offer_plain"], self.v["offer_quickpic"]
+        self.assertEqual(tak_files.encode_offer(plain["sender_id"], self.v["hash"], plain["size"],
+                                                plain["filename"]).hex(), plain["frame"])
+        point = (quick["lat_e7"], quick["lon_e7"], uuid.UUID(quick["marker_uid"]).bytes)
+        self.assertEqual(tak_files.encode_offer(quick["sender_id"], self.v["hash"], quick["size"],
+                                                quick["filename"], point,
+                                                bytes.fromhex(quick["thumbnail"])).hex(), quick["frame"])
 
 
 if __name__ == "__main__":
