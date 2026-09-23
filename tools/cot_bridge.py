@@ -1121,26 +1121,124 @@ class CotBridge:
         entry["probing"] = False
         name = entry["notice"]["filename"]
         print("[files] path to the sender of %s: rtt=%s s" % (name, rtt), flush=True)
-        if rtt is not None and rtt < self.FAST_RTT_SECONDS:
-            identity = self.rns.Identity.recall(entry["sender"])
-            if identity is not None and self.lxmf is not None:
-                self.lxmf.send_request(identity, tak_files.encode_request(file_hash))
-                print("[files] fast path; asked for %s" % name, flush=True)
-                return
+        if rtt is not None and rtt < self.FAST_RTT_SECONDS and self._request_part(file_hash, entry):
+            return
+        self._wait_for_fast_path(file_hash, entry)
+
+    def _wait_for_fast_path(self, file_hash, entry, reason=None):
+        """Hold the file, show a preview if there is one, try again later."""
+        name = entry["notice"]["filename"]
         delay = entry["backoff"]
         entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
-        print("[files] slow or no path; %s waits, next try in %d s" % (name, delay), flush=True)
+        print("[files] %s; %s waits, next try in %d s"
+              % (reason or "slow or no path", name, delay), flush=True)
         previewed = self._show_preview(entry)
         if not entry.get("told"):
             entry["told"] = True
             sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "a teammate")
-            self._file_status("%s (%s) from %s is waiting: the path is too slow to bring it now. "
-                              "It arrives when a fast path appears.%s"
+            self._file_status("%s (%s) from %s is waiting: %s. It arrives when a fast path "
+                              "appears.%s"
                               % (name, tak_files.size_text(entry["notice"]["size"]), sender,
+                                 reason or "the path is too slow to bring it now",
                                  " A preview is on the map." if previewed else ""))
         timer = threading.Timer(delay, self._attempt_file, args=(file_hash, entry))
         timer.daemon = True
         timer.start()
+
+    def _request_part(self, file_hash, entry):
+        """Ask the sender for the next part. False if it cannot be asked now."""
+        identity = self.rns.Identity.recall(entry["sender"])
+        if identity is None or self.lxmf is None:
+            return False
+        offset = self.files.partial_size(file_hash)
+        length = tak_files.next_part_length(offset, entry["notice"]["size"])
+        entry["asked"] = (offset, length, time.time())
+        self.lxmf.send_request(identity, tak_files.encode_part_request(file_hash, offset, length))
+        print("[files] asked for %s, bytes %d-%d of %d"
+              % (entry["notice"]["filename"], offset, offset + length, entry["notice"]["size"]),
+              flush=True)
+        # A part that never comes -- a link that dropped -- must not leave the
+        # file stuck: after the budget, wait and try again from where it got to.
+        timer = threading.Timer(tak_files.FETCH_BUDGET_SECONDS, self._part_stalled,
+                                args=(file_hash, entry, entry["asked"]))
+        timer.daemon = True
+        timer.start()
+        return True
+
+    def _part_stalled(self, file_hash, entry, asked):
+        if entry.get("asked") is asked and self._pending_files().get(file_hash) is entry:
+            entry["asked"] = None
+            self._wait_for_fast_path(file_hash, entry, "a part did not arrive in time")
+
+    def _part_arrived(self, raw, member):
+        """One part of a file being fetched: kept, timed, and the next asked
+        for only if the rest would arrive within the budget."""
+        decoded = tak_files.decode_part(raw)
+        entry = self._pending_files().get(decoded[0]) if decoded else None
+        if decoded is None or entry is None or member is None or member != entry["sender"]:
+            print("[files] a part arrived that was not asked for, or not from its sender; "
+                  "discarded", flush=True)
+            return
+        file_hash, offset, total, data = decoded
+        asked = entry.get("asked")
+        if not self.files.append_partial(file_hash, offset, data):
+            return
+        entry["asked"] = None
+        have = self.files.partial_size(file_hash)
+        if have >= total:
+            whole = self.files.take_partial(file_hash)
+            self._file_complete(file_hash, entry["notice"]["filename"], whole, entry)
+            return
+        took = time.time() - asked[2] if asked else float("inf")
+        left = tak_files.seconds_left(total - have, len(data), took)
+        print("[files] %s: %d of %d bytes, the last part in %.1f s; the rest ~%.0f s"
+              % (entry["notice"]["filename"], have, total, took, left), flush=True)
+        if left <= tak_files.FETCH_BUDGET_SECONDS:
+            self._request_part(file_hash, entry)
+        else:
+            self._wait_for_fast_path(
+                file_hash, entry,
+                "at the rate this path is giving, the rest would take about %d min"
+                % max(1, round(left / 60)))
+
+    def _file_complete(self, file_hash, name, data, entry):
+        if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:
+            print("[files] %s was fetched but is not the file its hash names; discarded"
+                  % entry["notice"]["filename"], flush=True)
+            self._pending_files().pop(file_hash, None)
+            return
+        self._pending_files().pop(file_hash, None)
+        # The full package replaces the preview in ATAK; here too, so the store
+        # does not keep a copy nobody needs.
+        if entry.get("preview_hash"):
+            self.files.delete(entry["preview_hash"])
+        print("[files] %s arrived, %d bytes, in %.0f s"
+              % (entry["notice"]["filename"], len(data), time.time() - entry["since"]), flush=True)
+        self._offer_to_atak(entry["notice"], entry["xml"])
+
+    def _part_requested(self, raw, member):
+        """A member asked for part of a file: sent if they were offered it."""
+        decoded = tak_files.decode_part_request(raw)
+        if decoded is None or member is None:
+            self.unreadable += 1
+            return
+        file_hash, offset, length = decoded
+        who = (self.registry.describe(member) or {}).get("callsign", member.hex()[:8])
+        if self.files is None or not self.files.has(file_hash) or not self.files.may_fetch(
+                file_hash, member, lambda peer: peer in self.registry.members()):
+            print("[files] %s asked for part of %s, which is not theirs to fetch; refused"
+                  % (who, file_hash[:16]), flush=True)
+            return
+        identity = self.rns.Identity.recall(member)
+        data = self.files.read(file_hash)
+        if identity is None or self.lxmf is None or offset > len(data):
+            return
+        self.__dict__.get("_file_offers", {}).pop((file_hash, member), None)
+        part = data[offset:offset + min(length, tak_files.PART_BYTES)]
+        self.lxmf.send_file(identity, tak_files.encode_part(file_hash, offset, len(data), part))
+        print("[files] sending %s bytes %d-%d to %s"
+              % (self.files.meta(file_hash).get("filename", ""), offset, offset + len(part), who),
+              flush=True)
 
     def _file_arrived(self, raw, member):
         """A file arrived: kept only if asked for, from whom it was asked."""
@@ -1154,16 +1252,7 @@ class CotBridge:
             print("[files] a file arrived that was not asked for, or not from its "
                   "sender; discarded", flush=True)
             return
-        if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:
-            return
-        self._pending_files().pop(file_hash, None)
-        # The full package replaces the preview in ATAK; here too, so the store
-        # does not keep a copy nobody needs.
-        if entry.get("preview_hash"):
-            self.files.delete(entry["preview_hash"])
-        print("[files] %s arrived, %d bytes, in %.0f s"
-              % (entry["notice"]["filename"], len(data), time.time() - entry["since"]), flush=True)
-        self._offer_to_atak(entry["notice"], entry["xml"])
+        self._file_complete(file_hash, name, data, entry)
 
     def _offer_to_atak(self, notice, xml):
         url = tak_files.content_url(self._files_base(), notice["hash"])
@@ -1491,6 +1580,12 @@ class CotBridge:
             return
         if tak_payload.kind_of(raw) == tak_payload.FILE_OFFER_V1:
             self._offer_from_mesh(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_PART_REQUEST_V1:
+            self._part_requested(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_PART_V1:
+            self._part_arrived(raw, signed_by)
             return
         if tak_payload.kind_of(raw) == tak_payload.COT_TIER2:
             # An event addressed to this node that fitted in one frame. It

@@ -281,11 +281,40 @@ class FileStore:
     def delete(self, file_hash):
         """Forget a file and what is kept beside it."""
         with self._lock:
-            for suffix in ("", ".json", ".part", ".json.part"):
+            for suffix in ("", ".json", ".part", ".json.part", ".partial"):
                 try:
                     os.unlink(self._path(file_hash) + suffix)
                 except (OSError, ValueError):
                     pass
+
+    def partial_size(self, file_hash):
+        """How much of a file being fetched is here already."""
+        try:
+            return os.path.getsize(self._path(file_hash) + ".partial")
+        except (OSError, ValueError):
+            return 0
+
+    def append_partial(self, file_hash, offset, data):
+        """Add a part where it belongs. False if it is not the next part."""
+        with self._lock:
+            if offset != self.partial_size(file_hash):
+                return False
+            fd = os.open(self._path(file_hash) + ".partial",
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "ab") as out:
+                out.write(data)
+            return True
+
+    def take_partial(self, file_hash):
+        """The whole of a fetched file, removed from the partial store."""
+        path = self._path(file_hash) + ".partial"
+        try:
+            with open(path, "rb") as source:
+                data = source.read()
+            os.unlink(path)
+            return data
+        except OSError:
+            return None
 
     def grant(self, file_hash, members):
         """Record who a notice for this file went to: member hashes, or None
@@ -307,6 +336,66 @@ class FileStore:
         if member.hex() in record.get("granted", []):
             return True
         return bool(record.get("team")) and is_team_member(member)
+
+
+# ---- parts: a file fetched a piece at a time, each piece timed -------------
+#
+# Round-trip time says whether LoRa is in the path; it does not say whether a
+# file will arrive in reasonable time. BLE is short and slow: a fast round trip
+# and tens of kbit/s. So the receiver fetches in parts, times each, and goes on
+# only while what is left would arrive within FETCH_BUDGET_SECONDS. A paused or
+# broken transfer keeps what it has and resumes from there.
+#
+#     FILE_PART_REQUEST_V1   kind(1) sha256(32) offset(4) length(4)
+#     FILE_PART_V1           kind(1) sha256(32) offset(4) total(4) data
+
+FETCH_BUDGET_SECONDS = 120
+FIRST_PART_BYTES = 64 * 1024
+PART_BYTES = 512 * 1024
+
+_PART_REQUEST = struct.Struct(">B32sII")
+_PART_HEAD = struct.Struct(">B32sII")
+
+
+def encode_part_request(file_hash, offset, length):
+    return _PART_REQUEST.pack(tak_payload.FILE_PART_REQUEST_V1, bytes.fromhex(file_hash), offset, length)
+
+
+def decode_part_request(frame):
+    """(hex hash, offset, length), or None."""
+    if (not isinstance(frame, (bytes, bytearray)) or len(frame) != _PART_REQUEST.size
+            or frame[0] != tak_payload.FILE_PART_REQUEST_V1):
+        return None
+    _, raw, offset, length = _PART_REQUEST.unpack(bytes(frame))
+    return raw.hex(), offset, length
+
+
+def encode_part(file_hash, offset, total, data):
+    return _PART_HEAD.pack(tak_payload.FILE_PART_V1, bytes.fromhex(file_hash), offset, total) + bytes(data)
+
+
+def decode_part(frame):
+    """(hex hash, offset, total, data), or None."""
+    if (not isinstance(frame, (bytes, bytearray)) or len(frame) < _PART_HEAD.size
+            or frame[0] != tak_payload.FILE_PART_V1):
+        return None
+    _, raw, offset, total = _PART_HEAD.unpack(bytes(frame[:_PART_HEAD.size]))
+    data = bytes(frame[_PART_HEAD.size:])
+    if offset + len(data) > total:
+        return None
+    return raw.hex(), offset, total, data
+
+
+def next_part_length(offset, total):
+    """The first part is small, a sample; the rest are larger."""
+    return min(FIRST_PART_BYTES if offset == 0 else PART_BYTES, total - offset)
+
+
+def seconds_left(remaining_bytes, part_bytes, part_seconds):
+    """How long the rest would take at the rate the last part arrived."""
+    if part_bytes <= 0:
+        return float("inf")
+    return remaining_bytes * max(part_seconds, 0.001) / part_bytes
 
 
 # ---- the offer: what crosses the mesh in place of ATAK's notice ------------

@@ -294,11 +294,15 @@ class DeckReceivesTests(unittest.TestCase):
 
     def arrives(self, sender=ALPHA, frame=None):
         with redirect_stdout(io.StringIO()):
-            self.made._file_arrived(frame or tak_files.encode_file(HASH, "Recon1.zip", DATA), sender)
+            if frame is not None:
+                self.made._file_arrived(frame, sender)
+            else:
+                self.made._part_arrived(tak_files.encode_part(HASH, 0, len(DATA), DATA), sender)
 
     def test_over_a_fast_path_it_is_fetched_then_offered(self):
         self.assertTrue(self.offered())
-        self.made.lxmf.send_request.assert_called_once_with(ALPHA, tak_files.encode_request(HASH))
+        self.made.lxmf.send_request.assert_called_once_with(
+            ALPHA, tak_files.encode_part_request(HASH, 0, len(DATA)))
         self.assertEqual(self.made.drawn, [], "ATAK is not offered what it cannot fetch yet")
 
         self.arrives()
@@ -392,7 +396,8 @@ class DeckReceivesTests(unittest.TestCase):
 
     def test_over_a_fast_path_the_full_file_is_asked_for_and_no_preview(self):
         self.offer_arrives()
-        self.made.lxmf.send_request.assert_called_once_with(ALPHA, tak_files.encode_request(self.package_hash))
+        self.made.lxmf.send_request.assert_called_once_with(
+            ALPHA, tak_files.encode_part_request(self.package_hash, 0, len(quickpic_package())))
         self.assertEqual(self.made.drawn, [])
 
     def test_an_offer_claiming_someone_else_is_refused(self):
@@ -469,6 +474,115 @@ class OfferTests(unittest.TestCase):
 
 
 
+class PartsTests(unittest.TestCase):
+    """A file fetched a part at a time, each timed; the next is asked for only
+    while the rest would arrive within the budget. Round-trip time says LoRa is
+    not in the path; it does not say a file will arrive in reasonable time --
+    BLE is short and slow."""
+
+    BIG = bytes(range(256)) * 4096          # 1 MiB
+    BIG_HASH = hashlib.sha256(BIG).hexdigest()
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        made = CotBridge.__new__(CotBridge)
+        made.bind_host = "192.168.240.1"
+        made.received = made.unreadable = 0
+        made.uid = "urtn-" + "aa" * 16
+        made.registry = Mock()
+        made.registry.members.return_value = [ALPHA]
+        made.registry.describe.return_value = {"callsign": "LEXUS"}
+        made.files = tak_files.FileStore(self.folder.name)
+        made.rns = Mock()
+        made.rns.Identity.recall.side_effect = lambda member: member
+        made.lxmf = Mock()
+        made.drawn = []
+        made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)
+        made._measure_path = lambda member, done: done(0.02)
+        self.made = made
+        self.clock = [1000.0]
+        patcher = unittest.mock.patch("cot_bridge.time.time", lambda: self.clock[0])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        timer = unittest.mock.patch("threading.Timer")
+        timer.start()
+        self.addCleanup(timer.stop)
+        with redirect_stdout(io.StringIO()):
+            made._file_offered_here(notice(file_hash=self.BIG_HASH, dest="DECK").replace(
+                'sizeInBytes="%d"' % len(DATA), 'sizeInBytes="%d"' % len(self.BIG)), ALPHA)
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def part(self, seconds):
+        """The part last asked for arrives after `seconds`."""
+        request = tak_files.decode_part_request(self.made.lxmf.send_request.call_args[0][1])
+        _, offset, length = request
+        self.clock[0] += seconds
+        with redirect_stdout(io.StringIO()):
+            self.made._part_arrived(
+                tak_files.encode_part(self.BIG_HASH, offset, len(self.BIG), self.BIG[offset:offset + length]), ALPHA)
+        return offset, length
+
+    def test_a_fast_path_fetches_every_part_and_the_file_is_whole(self):
+        self.assertEqual(self.part(0.1), (0, tak_files.FIRST_PART_BYTES))
+        while self.made._pending_files():
+            self.part(0.5)
+        self.assertEqual(self.made.files.read(self.BIG_HASH), self.BIG)
+        self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
+
+    def test_a_short_slow_path_pauses_after_the_sample(self):
+        """64 KB in 20 s is ~26 kbit/s, BLE-like: the rest of a megabyte would
+        take about five minutes, over the two-minute budget."""
+        self.part(20.0)
+        self.assertEqual(self.made.lxmf.send_request.call_count, 1, "no second part asked for")
+        self.assertEqual(self.made.files.partial_size(self.BIG_HASH), tak_files.FIRST_PART_BYTES)
+        waiting = [x.decode() for x in self.made.drawn if b"would take about" in x]
+        self.assertEqual(len(waiting), 1)
+
+    def test_a_paused_transfer_resumes_where_it_stopped(self):
+        self.part(20.0)
+        entry = self.made._pending_files()[self.BIG_HASH]
+        with redirect_stdout(io.StringIO()):
+            self.made._attempt_file(self.BIG_HASH, entry)
+        offset, _ = tak_files.decode_part_request(self.made.lxmf.send_request.call_args[0][1])[1:]
+        self.assertEqual(offset, tak_files.FIRST_PART_BYTES)
+
+    def test_a_part_out_of_order_is_not_kept(self):
+        with redirect_stdout(io.StringIO()):
+            self.made._part_arrived(tak_files.encode_part(self.BIG_HASH, 4096, len(self.BIG), b"x" * 10), ALPHA)
+        self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
+
+    def test_a_part_from_someone_else_is_not_kept(self):
+        with redirect_stdout(io.StringIO()):
+            self.made._part_arrived(tak_files.encode_part(self.BIG_HASH, 0, len(self.BIG), self.BIG[:100]), BRAVO)
+        self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
+
+
+class PartSenderTests(unittest.TestCase):
+    def test_only_an_addressee_is_sent_a_part(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        made = CotBridge.__new__(CotBridge)
+        made.unreadable = 0
+        made.files = tak_files.FileStore(folder.name)
+        made.files.put(DATA, "Recon1.zip")
+        made.files.grant(HASH, [ALPHA])
+        made.registry = Mock()
+        made.registry.members.return_value = [ALPHA, BRAVO]
+        made.registry.describe.return_value = {"callsign": "PEER"}
+        made.rns = Mock()
+        made.rns.Identity.recall.side_effect = lambda member: member
+        made.lxmf = Mock()
+        with redirect_stdout(io.StringIO()):
+            made._part_requested(tak_files.encode_part_request(HASH, 100, 50), BRAVO)
+            made._part_requested(tak_files.encode_part_request(HASH, 100, 50), ALPHA)
+        made.lxmf.send_file.assert_called_once()
+        identity, frame = made.lxmf.send_file.call_args[0]
+        self.assertEqual(identity, ALPHA)
+        self.assertEqual(tak_files.decode_part(frame), (HASH, 100, len(DATA), DATA[100:150]))
+
+
 class SharedFixtureTests(unittest.TestCase):
     """The vectors Columba asserts against too, from tak_native_v1.json."""
 
@@ -486,6 +600,17 @@ class SharedFixtureTests(unittest.TestCase):
         self.assertEqual(tak_files.encode_request(self.v["hash"]).hex(), self.v["request"])
         self.assertEqual(tak_files.encode_file(self.v["hash"], self.v["file_name"],
                                                bytes.fromhex(self.v["file_data"])).hex(), self.v["file"])
+
+    def test_part_frames(self):
+        self.assertEqual((self.v["part_request_kind"], self.v["part_kind"]),
+                         (tak_payload.FILE_PART_REQUEST_V1, tak_payload.FILE_PART_V1))
+        self.assertEqual((self.v["fetch_budget_seconds"], self.v["first_part_bytes"], self.v["part_bytes"]),
+                         (tak_files.FETCH_BUDGET_SECONDS, tak_files.FIRST_PART_BYTES, tak_files.PART_BYTES))
+        req, part = self.v["part_request"], self.v["part"]
+        self.assertEqual(tak_files.encode_part_request(self.v["hash"], req["offset"], req["length"]).hex(),
+                         req["frame"])
+        self.assertEqual(tak_files.encode_part(self.v["hash"], part["offset"], part["total"],
+                                               bytes.fromhex(part["data"])).hex(), part["frame"])
 
     def test_offer_frames(self):
         import uuid
