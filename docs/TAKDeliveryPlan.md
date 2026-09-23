@@ -1128,6 +1128,23 @@ Found on the way, each fixed and tested on both sides:
   are three link handshakes over LoRa; one probe per sender will do.
 - **The thumbnail**, so a QuickPic over LoRa shows as something.
 
+**A QuickPic preview crossed LoRa, 2026-09-23.** NEXUS to LEXUS, the phones'
+only link BLE and LoRa through Rev 1, original-size picture:
+
+```
+18:33:22  NEXUS  ATAK uploads the QuickPic to Columba        3,008,209 B
+18:33:23  NEXUS  offer: marker position + WebP thumbnail      640 B, 3 frames
+18:33:25  LEXUS  3 fragments reassembled, 886 ms first to last
+18:33:29  LEXUS  path measured 2.9 s rtt, 4 hops -> slow; full file waits
+18:33:29  LEXUS  preview package (marker + thumbnail, 1,761 B) offered to ATAK
+```
+
+Three seconds from ATAK's send to the preview on the other phone's map, for
+640 bytes on the air instead of three megabytes. The thumbnail came from
+Android's own WebP encoder, the one part the unit tests could not exercise.
+The compact offer (FILE_OFFER_V1) replaced ATAK's ~390-byte notice: a data
+package's offer is 53 bytes, one frame.
+
 **Thumbnail budget: the descriptor and thumbnail together fit three fragments.**
 Chosen from what the radios have already shown rather than from an estimate. A
 drawing is three fragments, and three fragments have crossed LoRa both ways,
