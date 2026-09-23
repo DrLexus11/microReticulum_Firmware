@@ -1157,6 +1157,10 @@ class CotBridge:
         if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:
             return
         self._pending_files().pop(file_hash, None)
+        # The full package replaces the preview in ATAK; here too, so the store
+        # does not keep a copy nobody needs.
+        if entry.get("preview_hash"):
+            self.files.delete(entry["preview_hash"])
         print("[files] %s arrived, %d bytes, in %.0f s"
               % (entry["notice"]["filename"], len(data), time.time() - entry["since"]), flush=True)
         self._offer_to_atak(entry["notice"], entry["xml"])
@@ -1215,6 +1219,7 @@ class CotBridge:
         preview_hash = self.files.put(package, filename)
         if preview_hash is None:
             return False
+        entry["preview_hash"] = preview_hash
         preview = dict(offer, hash=preview_hash, size=len(package), filename=filename)
         self._offer_to_atak(preview, tak_files.notice_from_offer(
             preview, tak_identity.uid_for(entry["sender"]), sender))

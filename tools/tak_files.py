@@ -278,6 +278,15 @@ class FileStore:
             json.dump(record, out)
         os.replace(temp, path)
 
+    def delete(self, file_hash):
+        """Forget a file and what is kept beside it."""
+        with self._lock:
+            for suffix in ("", ".json", ".part", ".json.part"):
+                try:
+                    os.unlink(self._path(file_hash) + suffix)
+                except (OSError, ValueError):
+                    pass
+
     def grant(self, file_hash, members):
         """Record who a notice for this file went to: member hashes, or None
         for the whole team. Grants accumulate -- the same file shared with A

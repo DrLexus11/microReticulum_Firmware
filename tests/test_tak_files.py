@@ -378,6 +378,18 @@ class DeckReceivesTests(unittest.TestCase):
         status = [x.decode() for x in self.made.drawn if b"A preview is on the map" in x]
         self.assertEqual(len(status), 1)
 
+    def test_the_preview_is_deleted_when_the_full_file_arrives(self):
+        self.rtt = 4.9
+        self.made.uid = "urtn-" + "aa" * 16
+        self.offer_arrives()
+        preview = tak_files.parse_notice([x.decode() for x in self.made.drawn if b"b-f-t-r" in x][0])
+        self.assertTrue(self.made.files.has(preview["hash"]))
+        package = quickpic_package()
+        with redirect_stdout(io.StringIO()):
+            self.made._file_arrived(tak_files.encode_file(self.package_hash, "20260922_182231.jpg.zip", package), ALPHA)
+        self.assertTrue(self.made.files.has(self.package_hash))
+        self.assertFalse(self.made.files.has(preview["hash"]))
+
     def test_over_a_fast_path_the_full_file_is_asked_for_and_no_preview(self):
         self.offer_arrives()
         self.made.lxmf.send_request.assert_called_once_with(ALPHA, tak_files.encode_request(self.package_hash))
