@@ -1139,7 +1139,22 @@ only link BLE and LoRa through Rev 1, original-size picture:
 18:33:29  LEXUS  preview package (marker + thumbnail, 1,761 B) offered to ATAK
 ```
 
-Three seconds from ATAK's send to the preview on the other phone's map, for
+Then the full picture, once LEXUS was given a fast route (a TCP interface to
+the deck, alongside BLE):
+
+```
+18:40:05  LEXUS  TCP to the deck up; the queued file's next retry follows
+18:40:35  LEXUS  path measured 0.22 s rtt, 2 hops -> fast; asked NEXUS
+18:41:07  LEXUS  3,008,209 B arrived, hash checked; 33 s over Wi-Fi via the deck
+18:41:07  LEXUS  ATAK downloaded it: ONE marker, preview replaced, full picture
+```
+
+Nobody pressed anything between the preview and the full picture: the queue
+noticed the path had changed and fetched. The preview package's use of the
+QuickPic marker's own uid did what it was for -- the full package replaced
+it in ATAK rather than adding a second marker.
+
+Seven seconds from ATAK's send to the preview on the other phone's map, for
 640 bytes on the air instead of three megabytes. The thumbnail came from
 Android's own WebP encoder, the one part the unit tests could not exercise.
 The compact offer (FILE_OFFER_V1) replaced ATAK's ~390-byte notice: a data
