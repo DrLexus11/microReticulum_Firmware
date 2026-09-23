@@ -610,6 +610,8 @@ class CotBridge:
     def _member_heard(self, destination_hash, outcome):
         """Say who we are back, whoever just spoke.
 
+        Hearing a member also resets its path-request backoff: it is here.
+
         A node that starts late hears everyone who announces after it and
         nobody who announced before. A node that *restarts* is worse: it is
         still remembered by its peers, so greeting only new members leaves it
@@ -622,6 +624,7 @@ class CotBridge:
         """
         self._heard_mesh()
         self._save_members()
+        self.__dict__.get("_path_asked", {}).pop(destination_hash, None)
         if self.registry.should_greet():
             try:
                 # greeting=True: whoever just spoke may have only now arrived,
@@ -1623,6 +1626,27 @@ class CotBridge:
             cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
         self.receipts_synthesised += 1
 
+    # Path requests for a member with no path back off from this to the cap.
+    # A request is a broadcast that crosses LoRa, and an absent member drew one
+    # with every outgoing position -- every three minutes for the six hours a
+    # member is kept. Measured overnight 2026-09-22: 105 requests to a test
+    # peer that had left. Heard from again, a member starts at the floor.
+    PATH_REQUEST_FLOOR_SECONDS = 60
+    PATH_REQUEST_CAP_SECONDS = 30 * 60
+
+    def _ask_for_path(self, destination_hash, now=None):
+        """Request a path unless one was asked for recently. True if asked."""
+        now = time.time() if now is None else now
+        asked = self.__dict__.setdefault("_path_asked", {})
+        last, interval = asked.get(destination_hash, (None, self.PATH_REQUEST_FLOOR_SECONDS))
+        if last is not None and now - last < interval:
+            return False
+        self.rns.Transport.request_path(destination_hash)
+        next_interval = (interval if last is None
+                         else min(interval * 2, self.PATH_REQUEST_CAP_SECONDS))
+        asked[destination_hash] = (now, next_interval)
+        return True
+
     def _send_to(self, destination_hash, frame):
         """Send one frame to one node. Returns 1 if it went, 0 if it did not.
 
@@ -1647,10 +1671,10 @@ class CotBridge:
         # while every marker and chat line sent the other way vanished, with
         # "could not reach" printed zero times.
         if not self.rns.Transport.has_path(destination_hash):
-            self.rns.Transport.request_path(destination_hash)
             self.unreachable += 1
-            print("[bridge] no path to %s yet; asked for one"
-                  % destination_hash.hex()[:16], flush=True)
+            if self._ask_for_path(destination_hash):
+                print("[bridge] no path to %s yet; asked for one"
+                      % destination_hash.hex()[:16], flush=True)
             return 0
         try:
             destination = tak_identity.node_destination(identity,
