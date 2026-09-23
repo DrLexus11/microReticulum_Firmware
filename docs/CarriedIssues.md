@@ -536,3 +536,28 @@ time it was looked for. A host-side capture of the handset's radio-stack log now
 runs during bench sessions, so a recurrence will be readable. The next thing to
 check on a recurrence is whether Rev 1 logs anything received over BLE from the
 phone at all.
+
+## 10. TAK files over HaLow: reasoned, not measured -- pick up in the HaLow phase
+
+Carried from PR D2, 2026-09-23, under the interface-completeness rule in
+`CLAUDE.md`. File transfer was proven on LoRa (preview only, by design) and on
+Wi-Fi/TCP (3 MB in 33 s), and is being measured on BLE. HaLow has not been
+tried at all, because no Vox hardware is on the bench yet.
+
+What is expected, and why it still needs a run:
+
+- **Reticulum over HaLow is IP** (UDP, Auto or TCP interfaces), so D2 sees it
+  as it sees Wi-Fi: short round trips, and the measured-rate gate should fetch.
+- **At range a HaLow mesh drops to low rates** -- 1 MHz channels at BPSK can
+  be a few hundred kbit/s, shared across hops. The rate gate should then
+  defer a large file rather than tie up the mesh; that is the case to watch.
+- **The round-trip pre-filter (under 0.5 s means "not LoRa")** has not been
+  checked against a congested multi-hop HaLow path. If HaLow at range
+  routinely exceeds it, files will wait that could have gone.
+- **Declared bitrates are guesses** (UDP/Auto claim 10 Mbit/s) and must not be
+  trusted over the measurement.
+
+To do in the HaLow phase: send a data package and a full-size QuickPic across
+one Vox hop and across two at range, and record the rate measured, whether it
+fetched or deferred, and how long the transfer took. Until then a
+rate-limited IP link on the deck is only a stand-in, not a proof.
