@@ -23,8 +23,9 @@ from them.
     +1         course       uint8      2-degree units      FLAG_COURSE
     +1         speed        uint8      half-metre/s units  FLAG_SPEED
     +1         sats         uint8                          FLAG_SATS
+    +1         interval     uint8      minutes to the next FLAG_INTERVAL
 
-Nineteen bytes minimum, twenty-four full, against roughly seven hundred for the
+Nineteen bytes minimum, twenty-five full, against roughly seven hundred for the
 CoT XML that comes out of the gateway.
 
 Version 2 added sender_id, and version 1 is refused rather than accepted without
@@ -32,18 +33,29 @@ one. A Reticulum packet to a SINGLE destination carries no sender, so a v1
 report cannot be attributed to anybody, and a gateway that accepted it would
 give every report its own track -- which is what two live reports from one phone
 did on 2026-09-06.
+
+FLAG_INTERVAL is the sender saying how long until it reports again, so a
+receiver can keep the track current that long. Absent, a receiver assumes the
+one-minute floor ATAK's own reports go out at. It exists for a handset reporting
+on its own while ATAK is closed -- every few minutes, deliberately -- whose
+track would otherwise go stale between every pair of reports. Decoders that
+predate it ignore the bit and the trailing byte, which is why it is last.
 """
 
 import struct
 
 WIRE_VERSION = 2
 WIRE_BASE_LEN = 19
-WIRE_MAX_LEN = 24
+WIRE_MAX_LEN = 25
 
 FLAG_ALT = 0x01
 FLAG_COURSE = 0x02
 FLAG_SPEED = 0x04
 FLAG_SATS = 0x08
+FLAG_INTERVAL = 0x10
+
+# The largest interval the byte can state, in minutes.
+MAX_INTERVAL_MIN = 255
 
 
 class PositionFix:
@@ -51,11 +63,11 @@ class PositionFix:
 
     __slots__ = ("sender_id", "lat_e7", "lon_e7", "fix_unix_s", "accuracy_m",
                  "alt_known", "alt_m", "course_known", "course_ddeg",
-                 "speed_cms", "sats")
+                 "speed_cms", "sats", "interval_min")
 
     def __init__(self, lat_e7=0, lon_e7=0, fix_unix_s=0, accuracy_m=0,
                  alt_known=False, alt_m=0, course_known=False, course_ddeg=0,
-                 speed_cms=0, sats=0, sender_id=0):
+                 speed_cms=0, sats=0, sender_id=0, interval_min=0):
         self.sender_id = sender_id
         self.lat_e7 = lat_e7
         self.lon_e7 = lon_e7
@@ -67,6 +79,8 @@ class PositionFix:
         self.course_ddeg = course_ddeg
         self.speed_cms = speed_cms
         self.sats = sats
+        # 0 = not stated.
+        self.interval_min = interval_min
 
     @property
     def lat(self):
@@ -95,6 +109,8 @@ def encode(fix):
         flags |= FLAG_SPEED
     if fix.sats > 0:
         flags |= FLAG_SATS
+    if fix.interval_min > 0:
+        flags |= FLAG_INTERVAL
 
     # Saturate rather than wrap, matching the firmware: 400 m of error
     # arriving as 144 is a marker an operator trusts far more than it deserves.
@@ -114,6 +130,8 @@ def encode(fix):
         out += struct.pack(">B", min(fix.speed_cms // 50, 255))
     if flags & FLAG_SATS:
         out += struct.pack(">B", fix.sats)
+    if flags & FLAG_INTERVAL:
+        out += struct.pack(">B", min(fix.interval_min, MAX_INTERVAL_MIN))
     return out
 
 
@@ -152,6 +170,11 @@ def decode(data):
         if at + 1 > len(data):
             return None
         fix.sats = data[at]
+        at += 1
+    if flags & FLAG_INTERVAL:
+        if at + 1 > len(data):
+            return None
+        fix.interval_min = data[at]
         at += 1
     return fix
 

@@ -42,9 +42,10 @@ import cot_marker
 import cot_position
 import position_codec
 import tak_membership as membership
+import tak_files
 import tak_payload
 from cot_endpoint import (CotClient, CotOutbound, CotStream, _parse,
-                          ping_reply)
+                          learn_atak_uid, ping_reply)
 
 # Not 8087.
 #
@@ -156,6 +157,19 @@ ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 # worth an operator noticing. A stale track that never expires is the failure
 # that matters here -- a marker where somebody used to be, still being trusted.
 POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
+
+
+def position_stale_seconds(fix):
+    """How long to draw this fix as current: twice its sender's cadence.
+
+    A handset reporting while ATAK is closed states its interval, and it is
+    minutes on purpose. Held to the one-minute default, its track would go
+    grey between every pair of reports -- the one feature built to keep a
+    locked phone on the map would show it as lost most of the time.
+    """
+    if fix.interval_min > 0:
+        return max(POSITION_STALE_SECONDS, 2 * 60 * fix.interval_min)
+    return POSITION_STALE_SECONDS
 # Loopback by default. This endpoint applies no authentication at all, so what
 # it assumes is that only this device can reach it.
 BIND_HOST = "127.0.0.1"
@@ -436,6 +450,7 @@ class CotBridge:
         self._latest = cot_coalesce.LatestWins()
         self._unattributed = cot_pending.PendingAttribution()
         self.markers_undeliverable = 0
+        self.unaddressable = 0
         self._freshness = cot_coalesce.Freshness()
         self._in_flight = {}
         self._fragment_elapsed = 0.0
@@ -522,7 +537,7 @@ class CotBridge:
         self.unreadable += 1
         self._unattributed.hold(raw, signed_by)
         if signed_by is not None:
-            self.rns.Transport.request_path(signed_by)
+            self._ask_for_path(signed_by)
         print("[bridge] held a frame from a sender not yet known%s"
               % ("; asked for its announce" if signed_by is not None else ""),
               flush=True)
@@ -595,6 +610,8 @@ class CotBridge:
     def _member_heard(self, destination_hash, outcome):
         """Say who we are back, whoever just spoke.
 
+        Hearing a member also resets its path-request backoff: it is here.
+
         A node that starts late hears everyone who announces after it and
         nobody who announced before. A node that *restarts* is worse: it is
         still remembered by its peers, so greeting only new members leaves it
@@ -607,6 +624,7 @@ class CotBridge:
         """
         self._heard_mesh()
         self._save_members()
+        self.__dict__.get("_path_asked", {}).pop(destination_hash, None)
         if self.registry.should_greet():
             try:
                 # greeting=True: whoever just spoke may have only now arrived,
@@ -710,6 +728,10 @@ class CotBridge:
         it. A bare packet carries no such proof and honestly passes None.
         """
         kind = tak_payload.kind_of(raw)
+        if kind == tak_payload.FILE_OFFER_V1:
+            # Reassembled from fragments, which only LXMF carries.
+            self._offer_from_mesh(raw, signed_by)
+            return
         if kind == tak_payload.POSITION_V2:
             if self._position_from_mesh(raw):
                 return
@@ -731,6 +753,8 @@ class CotBridge:
             self.unreadable += 1
             return
         if not self._is_fresh(xml):
+            return
+        if self._file_offered_here(xml, signed_by):
             return
         self._to_clients(xml.encode("utf-8"), keep=True)
         self.received += 1
@@ -859,7 +883,7 @@ class CotBridge:
         claims = self.registry.describe(sender) or {}
         self._to_clients(cot_gateway.build_cot(
             fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
-            POSITION_STALE_SECONDS, team=self.team))
+            position_stale_seconds(fix), team=self.team))
         self.positions_received += 1
         return True
 
@@ -933,7 +957,436 @@ class CotBridge:
                 pass
 
     # ---- ATAK -> mesh ----
+    # Where every event from ATAK is appended, verbatim, or None. Class level so
+    # a bridge built without __init__ in a test has it.
+    capture_path = None
+
+    # Files ATAK uploaded and the service it uploads them to; None until
+    # enable_files. Class level for the same reason as capture_path.
+    files = None
+    file_service = None
+
+    def enable_files(self, root, port=None):
+        """Hold ATAK's files and serve its upload API. See tools/tak_files.py."""
+        import tak_file_service
+        self.files = tak_files.FileStore(root)
+        self.file_service = tak_file_service.FileService(
+            self.files, "https://%s:8443" % self.bind_host,
+            port=port or tak_file_service.DEFAULT_PORT)
+        self.file_service.start()
+        print("[files] holding files in %s; ATAK uploads through %s:8443 -> 127.0.0.1:%d"
+              % (root, self.bind_host, self.file_service.port), flush=True)
+
+    def _grant_file(self, xml, recipients):
+        """Remember who a file notice went to, so only they may fetch the file.
+
+        ATAK uploads first and then sends one notice per recipient; the notice
+        is what says who the file is for. A file nobody was sent a notice for is
+        served to nobody.
+        """
+        if self.files is None:
+            return
+        notice = tak_files.parse_notice(xml)
+        if notice is None:
+            return
+        if not self.files.has(notice["hash"]):
+            print("[files] ATAK offered %s, which was never uploaded here; the "
+                  "receiver will not be able to fetch it" % notice["filename"], flush=True)
+            return
+        self.files.grant(notice["hash"], recipients)
+        self._send_offer(notice, recipients)
+        offers = self.__dict__.setdefault("_file_offers", {})
+        for member in recipients or []:
+            key = (notice["hash"], member)
+            offers[key] = notice
+            timer = threading.Timer(self.UNFETCHED_SECONDS, self._offer_unfetched, args=(key,))
+            timer.daemon = True
+            timer.start()
+        print("[files] %s (%d bytes) offered to %s"
+              % (notice["filename"], notice["size"],
+                 "the team" if recipients is None else "%d member(s)" % len(recipients)),
+              flush=True)
+        return True
+
+    # ---- files offered to this node ----
+    #
+    # The deck's half of what Columba's TakFileTransfers does for a handset: a
+    # notice is held until its file is here, the path to its sender measured
+    # first, and Waydroid's ATAK only ever sees an offer it can complete.
+
+    # A link handshake faster than this is a fast path. Measured 2026-09-22:
+    # Nexus over TCP 0.008 s; A54 over BLE and LoRa 4.9 s.
+    FAST_RTT_SECONDS = 0.5
+    FIRST_RETRY_SECONDS = 60
+    MAX_RETRY_SECONDS = 15 * 60
+    HOLD_SECONDS = 24 * 60 * 60
+    PROBE_TIMEOUT_SECONDS = 10
+    # One measurement per sender serves every file waiting on them this long:
+    # each probe is a link handshake, over LoRa when the path is slow.
+    PROBE_REUSE_SECONDS = 30
+    # How long an offered file may go unfetched before the sender is told.
+    UNFETCHED_SECONDS = 60
+
+    def _file_status(self, text):
+        """Tell Waydroid's ATAK, from Columba's own contact; nothing on air."""
+        our_uid = getattr(self, "uid", None)
+        if our_uid:
+            self._to_clients(tak_files.status_line(our_uid, text).encode("utf-8"), keep=True)
+
+    def _pending_files(self):
+        pending = getattr(self, "_files_pending", None)
+        if pending is None:
+            pending = self._files_pending = {}
+        return pending
+
+    def _files_base(self):
+        return "http://%s:8080" % self.bind_host
+
+    def _file_offered_here(self, xml, signed_by, offer=None):
+        """Take a file notice addressed here. True when it was one."""
+        if self.files is None:
+            return False
+        notice = tak_files.parse_notice(xml)
+        if notice is None:
+            return False
+        if self.files.has(notice["hash"]):
+            self._offer_to_atak(notice, xml)
+            return True
+        if signed_by is None:
+            print("[files] %s offered by a sender this node cannot name; not fetched"
+                  % notice["filename"], flush=True)
+            return True
+        print("[files] %s (%d bytes) offered; measuring the path to its sender"
+              % (notice["filename"], notice["size"]), flush=True)
+        entry = self._pending_files().setdefault(notice["hash"], {
+            "notice": notice, "xml": xml, "sender": signed_by, "since": time.time(),
+            "backoff": self.FIRST_RETRY_SECONDS, "probing": False, "offer": offer})
+        self._attempt_file(notice["hash"], entry)
+        return True
+
+    def _attempt_file(self, file_hash, entry):
+        if entry["probing"]:
+            return
+        if time.time() - entry["since"] > self.HOLD_SECONDS:
+            self._pending_files().pop(file_hash, None)
+            print("[files] %s never found a fast path; given up after a day"
+                  % entry["notice"]["filename"], flush=True)
+            return
+        entry["probing"] = True
+        cache = self.__dict__.setdefault("_probe_cache", {})
+        cached = cache.get(entry["sender"])
+        if cached is not None and time.time() - cached[0] < self.PROBE_REUSE_SECONDS:
+            self._path_measured(file_hash, entry, cached[1])
+            return
+
+        def measured(rtt):
+            cache[entry["sender"]] = (time.time(), rtt)
+            self._path_measured(file_hash, entry, rtt)
+
+        self._measure_path(entry["sender"], measured)
+
+    def _measure_path(self, member, done):
+        """The round trip of a link handshake to a member's inbox, or None.
+
+        A link, not the path table's first hop: from the deck the first hop is
+        TCP to rrcd even when LoRa lies beyond it.
+        """
+        identity = self.rns.Identity.recall(member)
+        if identity is None:
+            self._ask_for_path(member)
+            done(None)
+            return
+        answered = threading.Event()
+
+        def established(link):
+            if not answered.is_set():
+                answered.set()
+                rtt = getattr(link, "rtt", None)
+                link.teardown()
+                done(rtt)
+
+        def timed_out():
+            if not answered.is_set():
+                answered.set()
+                done(None)
+
+        destination = self.rns.Destination(identity, self.rns.Destination.OUT,
+                                           self.rns.Destination.SINGLE, "lxmf", "delivery")
+        self.rns.Link(destination, established_callback=established)
+        timer = threading.Timer(self.PROBE_TIMEOUT_SECONDS, timed_out)
+        timer.daemon = True
+        timer.start()
+
+    def _path_measured(self, file_hash, entry, rtt):
+        entry["probing"] = False
+        name = entry["notice"]["filename"]
+        print("[files] path to the sender of %s: rtt=%s s" % (name, rtt), flush=True)
+        if rtt is not None and rtt < self.FAST_RTT_SECONDS and self._request_part(file_hash, entry):
+            return
+        self._wait_for_fast_path(file_hash, entry)
+
+    def _wait_for_fast_path(self, file_hash, entry, reason=None):
+        """Hold the file, show a preview if there is one, try again later."""
+        name = entry["notice"]["filename"]
+        delay = entry["backoff"]
+        entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
+        print("[files] %s; %s waits, next try in %d s"
+              % (reason or "slow or no path", name, delay), flush=True)
+        previewed = self._show_preview(entry)
+        if not entry.get("told"):
+            entry["told"] = True
+            sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "a teammate")
+            self._file_status("%s (%s) from %s is waiting: %s. It arrives when a fast path "
+                              "appears.%s"
+                              % (name, tak_files.size_text(entry["notice"]["size"]), sender,
+                                 reason or "the path is too slow to bring it now",
+                                 " A preview is on the map." if previewed else ""))
+        timer = threading.Timer(delay, self._attempt_file, args=(file_hash, entry))
+        timer.daemon = True
+        timer.start()
+
+    def _request_part(self, file_hash, entry):
+        """Ask the sender for the next part. False if it cannot be asked now."""
+        identity = self.rns.Identity.recall(entry["sender"])
+        if identity is None or self.lxmf is None:
+            return False
+        offset = self.files.partial_size(file_hash)
+        length = tak_files.next_part_length(offset, entry["notice"]["size"])
+        entry["asked"] = (offset, length, time.time())
+        self.lxmf.send_request(identity, tak_files.encode_part_request(file_hash, offset, length))
+        print("[files] asked for %s, bytes %d-%d of %d"
+              % (entry["notice"]["filename"], offset, offset + length, entry["notice"]["size"]),
+              flush=True)
+        # A part that never comes -- a link that dropped -- must not leave the
+        # file stuck: after the budget, wait and try again from where it got to.
+        timer = threading.Timer(tak_files.FETCH_BUDGET_SECONDS, self._part_stalled,
+                                args=(file_hash, entry, entry["asked"]))
+        timer.daemon = True
+        timer.start()
+        return True
+
+    def _part_stalled(self, file_hash, entry, asked):
+        if entry.get("asked") is asked and self._pending_files().get(file_hash) is entry:
+            entry["asked"] = None
+            self._wait_for_fast_path(file_hash, entry, "a part did not arrive in time")
+
+    def _part_arrived(self, raw, member):
+        """One part of a file being fetched: kept, timed, and the next asked
+        for only if the rest would arrive within the budget."""
+        decoded = tak_files.decode_part(raw)
+        entry = self._pending_files().get(decoded[0]) if decoded else None
+        if decoded is None or entry is None or member is None or member != entry["sender"]:
+            print("[files] a part arrived that was not asked for, or not from its sender; "
+                  "discarded", flush=True)
+            return
+        file_hash, offset, total, data = decoded
+        asked = entry.get("asked")
+        # Only the part asked for, while it is still being waited for: a late
+        # answer after a stall, a part at another offset or length, or one
+        # claiming a different size from the offer would each drive the gate
+        # on something it did not measure.
+        if (asked is None or offset != asked[0] or len(data) != asked[1]
+                or total != entry["notice"]["size"]):
+            print("[files] a part of %s that was not the one outstanding; discarded"
+                  % entry["notice"]["filename"], flush=True)
+            return
+        if not self.files.append_partial(file_hash, offset, data):
+            return
+        entry["asked"] = None
+        have = self.files.partial_size(file_hash)
+        if have >= total:
+            whole = self.files.take_partial(file_hash)
+            self._file_complete(file_hash, entry["notice"]["filename"], whole, entry)
+            return
+        took = time.time() - asked[2] if asked else float("inf")
+        left = tak_files.seconds_left(total - have, len(data), took)
+        print("[files] %s: %d of %d bytes, the last part in %.1f s; the rest ~%.0f s"
+              % (entry["notice"]["filename"], have, total, took, left), flush=True)
+        if left <= tak_files.FETCH_BUDGET_SECONDS:
+            self._request_part(file_hash, entry)
+        else:
+            self._wait_for_fast_path(
+                file_hash, entry,
+                "at the rate this path is giving, the rest would take about %d min"
+                % max(1, round(left / 60)))
+
+    def _file_complete(self, file_hash, name, data, entry):
+        if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:
+            print("[files] %s was fetched but is not the file its hash names; discarded"
+                  % entry["notice"]["filename"], flush=True)
+            self._pending_files().pop(file_hash, None)
+            return
+        self._pending_files().pop(file_hash, None)
+        # The full package replaces the preview in ATAK; here too, so the store
+        # does not keep a copy nobody needs.
+        if entry.get("preview_hash"):
+            self.files.delete(entry["preview_hash"])
+        print("[files] %s arrived, %d bytes, in %.0f s"
+              % (entry["notice"]["filename"], len(data), time.time() - entry["since"]), flush=True)
+        self._offer_to_atak(entry["notice"], entry["xml"])
+
+    def _part_requested(self, raw, member):
+        """A member asked for part of a file: sent if they were offered it."""
+        decoded = tak_files.decode_part_request(raw)
+        if decoded is None or member is None:
+            self.unreadable += 1
+            return
+        file_hash, offset, length = decoded
+        who = (self.registry.describe(member) or {}).get("callsign", member.hex()[:8])
+        if self.files is None or not self.files.has(file_hash) or not self.files.may_fetch(
+                file_hash, member, lambda peer: peer in self.registry.members()):
+            print("[files] %s asked for part of %s, which is not theirs to fetch; refused"
+                  % (who, file_hash[:16]), flush=True)
+            return
+        identity = self.rns.Identity.recall(member)
+        data = self.files.read(file_hash)
+        if identity is None or self.lxmf is None or offset > len(data):
+            return
+        self.__dict__.get("_file_offers", {}).pop((file_hash, member), None)
+        part = data[offset:offset + min(length, tak_files.PART_BYTES)]
+        self.lxmf.send_file(identity, tak_files.encode_part(file_hash, offset, len(data), part))
+        print("[files] sending %s bytes %d-%d to %s"
+              % (self.files.meta(file_hash).get("filename", ""), offset, offset + len(part), who),
+              flush=True)
+
+    def _file_arrived(self, raw, member):
+        """A file arrived: kept only if asked for, from whom it was asked."""
+        decoded = tak_files.decode_file(raw)
+        if decoded is None:
+            print("[files] a file arrived that is not what its hash names; discarded", flush=True)
+            return
+        file_hash, name, data = decoded
+        entry = self._pending_files().get(file_hash)
+        if entry is None or member is None or member != entry["sender"]:
+            print("[files] a file arrived that was not asked for, or not from its "
+                  "sender; discarded", flush=True)
+            return
+        self._file_complete(file_hash, name, data, entry)
+
+    def _offer_to_atak(self, notice, xml):
+        url = tak_files.content_url(self._files_base(), notice["hash"])
+        self._to_clients(tak_files.rewrite_notice(xml, url).encode("utf-8"), keep=True)
+        self.received += 1
+        print("[files] %s offered to ATAK from %s" % (notice["filename"], url), flush=True)
+
+    def _send_offer(self, notice, recipients):
+        """Put the offer on the air in place of ATAK's notice.
+
+        ATAK's notice is ~390 bytes compressed, two fragments; the offer is
+        about 55 for a data package, or up to three fragments for a QuickPic
+        with its position and a thumbnail. Always over LXMF: the receiver has
+        to know who to fetch from.
+        """
+        data = self.files.read(notice["hash"])
+        offer = tak_files.offer_for(self.sender_id, notice["hash"], notice["filename"], data)
+        frames = ([offer] if len(offer) <= cot_fragment.MAX_FRAGMENT_FRAME_BYTES
+                  else cot_fragment.fragments(offer))
+        if self.lxmf is None:
+            print("[files] not offered: offers need LXMF, which --no-lxmf turned off", flush=True)
+            return
+        for frame in frames:
+            self.sent += self._fan_out_reliably(frame, None, recipients)
+        thumb = tak_files.decode_offer(offer)["thumbnail"]
+        print("[files] offer is %d bytes in %d frame(s)%s"
+              % (len(offer), len(frames), ", with a %d-byte thumbnail" % len(thumb) if thumb else ""),
+              flush=True)
+
+    def _offer_from_mesh(self, raw, signed_by):
+        """An offer arrived: rebuild ATAK's notice and fetch, preview or wait."""
+        offer = tak_files.decode_offer(raw)
+        if offer is None or signed_by is None or signed_by not in self.registry.members():
+            self.unreadable += 1
+            return
+        # The sender id in the frame is a claim; the carrier's proof is not.
+        if self.registry.sender_id_for(signed_by) != offer["sender_id"]:
+            self.unreadable += 1
+            print("[files] an offer whose claimed sender is not the one proved; refused", flush=True)
+            return
+        callsign = (self.registry.describe(signed_by) or {}).get("callsign", "UNKNOWN")
+        xml = tak_files.notice_from_offer(offer, tak_identity.uid_for(signed_by), callsign)
+        self._file_offered_here(xml, signed_by, offer=offer)
+
+    def _show_preview(self, entry):
+        """Over a slow path, a QuickPic's thumbnail at its position, once."""
+        offer = entry.get("offer")
+        if not offer or not offer["thumbnail"] or not offer["point"] or entry.get("previewed"):
+            return False
+        entry["previewed"] = True
+        sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "UNKNOWN")
+        package, filename = tak_files.preview_package(offer, sender)
+        preview_hash = self.files.put(package, filename)
+        if preview_hash is None:
+            return False
+        entry["preview_hash"] = preview_hash
+        preview = dict(offer, hash=preview_hash, size=len(package), filename=filename)
+        self._offer_to_atak(preview, tak_files.notice_from_offer(
+            preview, tak_identity.uid_for(entry["sender"]), sender))
+        return True
+
+    def _offer_unfetched(self, key):
+        notice = self.__dict__.get("_file_offers", {}).pop(key, None)
+        if notice is None:
+            return
+        who = (self.registry.describe(key[1]) or {}).get("callsign", "a teammate")
+        self._file_status("%s (%s) not fetched yet by %s. Over a slow path a file waits for a "
+                          "fast one; ATAK may report this send as failed while it waits."
+                          % (notice["filename"], tak_files.size_text(notice["size"]), who))
+
+    def _file_requested(self, raw, member):
+        """A member asked for a file: send it if they were offered it.
+
+        The member is the one LXMF proved, never a claim in the frame. A file
+        goes only to somebody its notice was addressed to -- the same rule that
+        keeps a pin sent to one person off everyone else's map.
+        """
+        file_hash = tak_files.decode_request(raw)
+        if file_hash is None or member is None:
+            self.unreadable += 1
+            return
+        who = (self.registry.describe(member) or {}).get("callsign", member.hex()[:8])
+        if self.files is None or not self.files.has(file_hash):
+            print("[files] %s asked for %s, which is not held here" % (who, file_hash[:16]),
+                  flush=True)
+            return
+        if not self.files.may_fetch(file_hash, member,
+                                    lambda peer: peer in self.registry.members()):
+            print("[files] %s asked for %s and was never offered it; refused"
+                  % (who, file_hash[:16]), flush=True)
+            return
+        identity = self.rns.Identity.recall(member)
+        if identity is None or self.lxmf is None:
+            self._ask_for_path(member)
+            print("[files] cannot reach %s to send %s yet" % (who, file_hash[:16]), flush=True)
+            return
+        data = self.files.read(file_hash)
+        name = self.files.meta(file_hash).get("filename", "")
+        self.__dict__.get("_file_offers", {}).pop((file_hash, member), None)
+        self.lxmf.send_file(identity, tak_files.encode_file(file_hash, name, data))
+        print("[files] sending %s (%d bytes) to %s" % (name, len(data), who), flush=True)
+
+    def _capture(self, xml):
+        """Keep ATAK's event as it arrived, for designing against.
+
+        D2 is gated on knowing what ATAK emits for a data package and a
+        QuickPic. Reading it off the wire here is the only view there is: the
+        codecs below reshape everything they handle. Owner-only, because the
+        file holds positions and callsigns.
+
+        Written as the bytes that arrived, and never allowed to raise: the
+        first version assumed text, and every event ATAK sent killed its
+        connection before reaching the mesh.
+        """
+        try:
+            raw = xml if isinstance(xml, (bytes, bytearray)) else str(xml).encode("utf-8")
+            fd = os.open(self.capture_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "ab") as out:
+                out.write(bytes(raw).rstrip() + b"\n")
+        except Exception as error:   # a diagnostic must not cost the traffic
+            print("[bridge] capture failed: %s" % error, flush=True)
+
     def _from_atak(self, xml):
+        if self.capture_path:
+            self._capture(xml)
         # The echo guard first, for everything, before anything is learned from
         # the event or spent on it. Our own self-report coming back is a
         # well-formed self-report, and learning from it would teach this
@@ -951,7 +1404,12 @@ class CotBridge:
         if known is None and self.pipeline.atak_uid:
             print("[bridge] this ATAK calls itself %s; peers will see %s"
                   % (self.pipeline.atak_uid, self.uid), flush=True)
-        if cot_position.is_position(xml) and self._position_from_atak(xml):
+        # Only ATAK's own report is this node's position. A friendly unit
+        # marker has a position-shaped type too, and taking it here put the
+        # operator's track wherever they dropped the marker; it goes on to the
+        # marker codec instead.
+        if (cot_position.is_position(xml) and learn_atak_uid(xml) is not None
+                and self._position_from_atak(xml)):
             return
         if self._chat_from_atak(xml):
             return
@@ -971,17 +1429,29 @@ class CotBridge:
         # event, and one version costs about 7.7 s of channel for a team of
         # seven. Latest wins: the first version goes now, and what follows
         # inside the window is coalesced into one. See tools/cot_coalesce.py.
-        uid = self._uid_of(xml)
-        if uid is None:
-            self._send_version(None, frames)
+        # Sent to the people ATAK named, not to the team. Nobody on the team
+        # by that name is refused rather than broadcast, as for markers: a
+        # broadcast would show everyone what was meant for one person.
+        addressed, recipients = self._addressees(xml)
+        if addressed and not recipients:
+            self.unaddressable += 1
+            print("[bridge] not sent: addressed to nobody on this team, and not "
+                  "broadcast instead", flush=True)
+            return
+        recipients = recipients if addressed else None
+        if self._grant_file(xml, recipients):
+            return
+        key = self._version_key(self._uid_of(xml), recipients)
+        if key is None:
+            self._send_version(None, frames, recipients)
             return
         decision, flush_at = self._latest.decide(
-            uid, frames, self._content_digest(frames), time.time())
+            key, frames, self._content_digest(frames), time.time())
         if decision == cot_coalesce.SEND:
-            self._send_version(uid, frames)
+            self._send_version(key, frames, recipients)
         elif decision == cot_coalesce.HOLD:
             timer = threading.Timer(max(0.0, flush_at - time.time()),
-                                    self._flush_version, args=(uid,))
+                                    self._flush_version, args=(key,))
             timer.daemon = True
             timer.start()
 
@@ -1111,6 +1581,30 @@ class CotBridge:
             # is proved -- and so the carrier can say who sent it.
             self._marker_from_mesh(raw, signed_by=signed_by)
             return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_REQUEST_V1:
+            self._file_requested(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_V1:
+            self._file_arrived(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_OFFER_V1:
+            self._offer_from_mesh(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_PART_REQUEST_V1:
+            self._part_requested(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.FILE_PART_V1:
+            self._part_arrived(raw, signed_by)
+            return
+        if tak_payload.kind_of(raw) == tak_payload.COT_TIER2:
+            # An event addressed to this node that fitted in one frame. It
+            # comes by LXMF so that it is proved; a member it is, or it is not
+            # drawn, the same gate a fragment passes.
+            if signed_by is None or signed_by not in self.registry.members():
+                self.unreadable += 1
+                return
+            self._dispatch_frame(raw, signed_by=signed_by)
+            return
         if self._chat_from_mesh(raw, signed_by=signed_by):
             self.received += 1
 
@@ -1148,7 +1642,7 @@ class CotBridge:
                 # Handled: suppressed rather than passed on to tier 2, which
                 # would spend more airtime than the codec just saved.
                 return True
-        addressed, recipients = self._marker_recipients(xml)
+        addressed, recipients = self._addressees(xml)
         if not addressed:
             self.markers_sent += self._fan_out(frame)
             return True
@@ -1165,8 +1659,12 @@ class CotBridge:
             self._dispatch_addressed_marker(member, frame)
         return True
 
-    def _marker_recipients(self, xml):
-        """Who a marker was sent to: (addressed, member hashes).
+    def _addressees(self, xml):
+        """Who an event was sent to: (addressed, member hashes).
+
+        Markers first used this; every event does now. A data package notice
+        addressed to one contact went to the whole team on the bench
+        (2026-09-22), and so would a drawing shared with one person.
 
         ATAK's "Send" to a contact puts the recipient in `detail/marti/dest`,
         the same mechanism it uses to route anything through a server. A
@@ -1191,8 +1689,8 @@ class CotBridge:
         recipients = []
         for dest in dests:
             uid, callsign = dest.get("uid") or "", dest.get("callsign") or ""
-            print("[bridge] marker addressed to uid=%r callsign=%r"
-                  % (uid, callsign), flush=True)
+            print("[bridge] %s addressed to uid=%r callsign=%r"
+                  % (event.get("type") or "event", uid, callsign), flush=True)
             exact = tak_identity.destination_for(uid) if uid else None
             if exact is not None and exact in members:
                 found = [exact]
@@ -1302,6 +1800,27 @@ class CotBridge:
             cot_gateway.cot_time(datetime.now(timezone.utc))).encode("utf-8"))
         self.receipts_synthesised += 1
 
+    # Path requests for a member with no path back off from this to the cap.
+    # A request is a broadcast that crosses LoRa, and an absent member drew one
+    # with every outgoing position -- every three minutes for the six hours a
+    # member is kept. Measured overnight 2026-09-22: 105 requests to a test
+    # peer that had left. Heard from again, a member starts at the floor.
+    PATH_REQUEST_FLOOR_SECONDS = 60
+    PATH_REQUEST_CAP_SECONDS = 30 * 60
+
+    def _ask_for_path(self, destination_hash, now=None):
+        """Request a path unless one was asked for recently. True if asked."""
+        now = time.time() if now is None else now
+        asked = self.__dict__.setdefault("_path_asked", {})
+        last, interval = asked.get(destination_hash, (None, self.PATH_REQUEST_FLOOR_SECONDS))
+        if last is not None and now - last < interval:
+            return False
+        self.rns.Transport.request_path(destination_hash)
+        next_interval = (interval if last is None
+                         else min(interval * 2, self.PATH_REQUEST_CAP_SECONDS))
+        asked[destination_hash] = (now, next_interval)
+        return True
+
     def _send_to(self, destination_hash, frame):
         """Send one frame to one node. Returns 1 if it went, 0 if it did not.
 
@@ -1313,7 +1832,7 @@ class CotBridge:
         if identity is None:
             # Heard the announce, lost the identity -- possible after a
             # restart. Ask for the path; the next event will find it.
-            self.rns.Transport.request_path(destination_hash)
+            self._ask_for_path(destination_hash)
             self.unreachable += 1
             return 0
         # Knowing who somebody is does not mean knowing how to reach them, and
@@ -1326,10 +1845,10 @@ class CotBridge:
         # while every marker and chat line sent the other way vanished, with
         # "could not reach" printed zero times.
         if not self.rns.Transport.has_path(destination_hash):
-            self.rns.Transport.request_path(destination_hash)
             self.unreachable += 1
-            print("[bridge] no path to %s yet; asked for one"
-                  % destination_hash.hex()[:16], flush=True)
+            if self._ask_for_path(destination_hash):
+                print("[bridge] no path to %s yet; asked for one"
+                      % destination_hash.hex()[:16], flush=True)
             return 0
         try:
             destination = tak_identity.node_destination(identity,
@@ -1346,7 +1865,7 @@ class CotBridge:
                   % (destination_hash.hex(), error), flush=True)
             return 0
 
-    def _fan_out_reliably(self, frame, messages=None):
+    def _fan_out_reliably(self, frame, messages=None, recipients=None):
         """Send one fragment to every member, over LXMF. Returns how many went.
 
         **This is the difference between tier 3 working and appearing to.** A
@@ -1372,10 +1891,11 @@ class CotBridge:
         unreachable; the next version will find them.
         """
         sent = 0
-        for member in self.registry.members():
+        members = self.registry.members() if recipients is None else recipients
+        for member in members:
             identity = self.rns.Identity.recall(member)
             if identity is None:
-                self.rns.Transport.request_path(member)
+                self._ask_for_path(member)
                 self.unreachable += 1
                 continue
             message = self.lxmf.send_frame(identity, frame)
@@ -1387,8 +1907,12 @@ class CotBridge:
                 self.unreachable += 1
         return sent
 
-    def _send_version(self, uid, frames):
-        """Put one version of an event on the air.
+    def _send_version(self, uid, frames, recipients=None):
+        """Put one version of an event on the air, to everyone or to recipients.
+
+        `uid` is the version key from _version_key, which names the addressees
+        as well as the event: one drawing shared with A and then with B is two
+        streams of versions, and must neither coalesce nor withdraw each other.
 
         A single frame takes the cheap fan-out. A fragmented one goes over
         LXMF, and first withdraws whatever is still retrying from the version
@@ -1406,7 +1930,14 @@ class CotBridge:
             print("[bridge] withdrew %d message(s) of a superseded version"
                   % len(superseded), flush=True)
         if len(frames) == 1:
-            self.sent += self._fan_out(frames[0])
+            if recipients is not None and self.lxmf is not None:
+                # Addressed: over LXMF, like an addressed marker, so it is
+                # proved and the receiver knows who sent it. A file notice
+                # that arrived as a bare packet named nobody to fetch from,
+                # and reached ATAK unfetched -- on the bench, 2026-09-22.
+                self.sent += self._fan_out_reliably(frames[0], None, recipients)
+            else:
+                self.sent += self._fan_out(frames[0], recipients)
             return
         if self.lxmf is None:
             # Tier 3 needs LXMF: a fragment is only worth sending proved and
@@ -1425,7 +1956,7 @@ class CotBridge:
         started = time.time()
         messages = []
         for frame in frames:
-            self.sent += self._fan_out_reliably(frame, messages)
+            self.sent += self._fan_out_reliably(frame, messages, recipients)
         print("[bridge] %d fragments handed off in %.1f s"
               % (len(frames), time.time() - started), flush=True)
         if uid:
@@ -1442,7 +1973,28 @@ class CotBridge:
             print("[bridge] sending the latest version of %s; %d superseded "
                   "version(s) coalesced so far" % (uid, self._latest.coalesced),
                   flush=True)
-            self._send_version(uid, frames)
+            self._send_version(uid, frames, self._recipients_in(uid))
+
+    # Separates an event's uid from its addressees inside a version key. Not a
+    # character a uid can contain in XML.
+    ADDRESSED_KEY_SEP = "\x00"
+
+    @classmethod
+    def _version_key(cls, uid, recipients):
+        """What latest-wins keys on: the event, and who it is for."""
+        if uid is None:
+            return None
+        if recipients is None:
+            return uid
+        return uid + cls.ADDRESSED_KEY_SEP + ",".join(sorted(r.hex() for r in recipients))
+
+    @classmethod
+    def _recipients_in(cls, key):
+        """The addressees a version key names, or None for a broadcast."""
+        if key is None or cls.ADDRESSED_KEY_SEP not in key:
+            return None
+        listed = key.split(cls.ADDRESSED_KEY_SEP, 1)[1]
+        return [bytes.fromhex(part) for part in listed.split(",") if part]
 
     @staticmethod
     def _uid_of(xml):
@@ -1467,15 +2019,16 @@ class CotBridge:
             body = b"".join(frame[cot_fragment.HEADER_BYTES:] for frame in frames)
         return hashlib.sha256(body).digest()
 
-    def _fan_out(self, frame):
-        """Send one frame to every member of the team. Returns how many went.
+    def _fan_out(self, frame, recipients=None):
+        """Send one frame to every member, or to recipients. Returns how many went.
 
         One routed unicast each, because that is the only thing that crosses a
         hop. The airtime is real and is the reason position does not come this
         way: a marker is an operator action and rare, a position report is a
         beacon. See pivot 5 for the costing.
         """
-        return sum(self._send_to(member, frame) for member in self.registry.members())
+        members = self.registry.members() if recipients is None else recipients
+        return sum(self._send_to(member, frame) for member in members)
 
     def _serve_client(self, connection):
         stream = CotStream()
@@ -1662,6 +2215,13 @@ def main():
                              "and cannot reach this machine's loopback. There "
                              "is no authentication on this endpoint, so name "
                              "the interface you mean." % BIND_HOST)
+    parser.add_argument("--no-files", action="store_true",
+                        help="do not hold ATAK's data packages or serve its upload API")
+    parser.add_argument("--files-port", type=int, default=18443,
+                        help="loopback port ATAK's uploads are proxied to (default 18443)")
+    parser.add_argument("--capture", default=None, metavar="PATH",
+                        help="append every event ATAK sends, verbatim, to PATH "
+                             "(owner-only; it holds positions and callsigns)")
     parser.add_argument("--propagation-node", default=None,
                         help="destination hash of an LXMF propagation node, "
                              "which is what holds a line for a peer who is out "
@@ -1736,6 +2296,12 @@ def main():
                        members_path=os.path.join(
                            os.path.expanduser(args.config or "~/.reticulum"),
                            "tak_members.json"))
+    if not args.no_files:
+        bridge.enable_files(os.path.join(os.path.expanduser(args.config or "~/.reticulum"),
+                                         "tak_files"), args.files_port)
+    if args.capture:
+        bridge.capture_path = os.path.expanduser(args.capture)
+        print("[bridge] capturing every event from ATAK to %s" % bridge.capture_path, flush=True)
     try:
         bridge.serve_forever()
     except KeyboardInterrupt:

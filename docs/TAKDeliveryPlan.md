@@ -59,7 +59,7 @@ where gain is the only constraint.
 | **B** | *Membership and typed codecs* | Shipped. Close as is. | — |
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
 | **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
-| **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail** small enough for LoRa); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and deferred or consented on LoRa. Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | a capture of what ATAK emits for a data package and a QuickPic over our endpoint |
+| **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail**, the descriptor and thumbnail together **no more than three fragments**); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and **deferred on LoRa**; a **retention page** in Columba for held files, promoted to the PR F plugin. Also carries **position while ATAK is closed** (built 2026-09-22, see *PR D2* below). Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | the bulk half: a capture of what ATAK emits for a data package and a QuickPic over our endpoint. The position half: nothing |
 | **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
@@ -1023,6 +1023,238 @@ The endpoint's structural risk stands in the code but did not show in practice.
 It is worth moving into the process that holds the foreground service when
 convenient, not as a condition of this PR.
 
+### PR D2 -- bulk, and position while ATAK is closed
+
+Started 2026-09-22 on `feature/tak-d2-bulk` in both repositories. The bulk half
+is still gated on the capture; the decisions it needed are made below, so the
+capture is the only thing between it and code.
+
+**The capture, 2026-09-22: what ATAK does with a data package.** Waydroid's
+ATAK, whose only connection is the bridge, sent `Recon1.zip` (33,503 B) to
+NEXUS. It treats the host its streaming connection names as a TAK server and
+uses that host's port 8443 for files -- and on the deck that port belonged to
+tak-lab's OTS, which took the upload. From OTS's nginx log:
+
+```
+GET  /Marti/sync/missionquery?hash=<sha256>                  404  have it?  no
+POST /Marti/sync/missionupload?hash=<sha256>&filename=Recon1.zip&creatorUid=ANDROID-...  200
+PUT  /Marti/api/sync/metadata/<sha256>/tool                  200
+     then, over the bridge, one b-f-t-r per recipient:
+     <fileshare filename senderUrl="https://192.168.240.1:8443/Marti/api/sync/metadata/<sha256>/tool"
+                sizeInBytes sha256 senderUid senderCallsign name/>
+     <ackrequest ... ackrequested="true"/>  <marti><dest callsign="NEXUS"/></marti>
+     stale 10 s after time
+GET  missionquery (second send)                              200  already there, no upload
+```
+
+So the shim is four calls, keyed on SHA-256, served on the endpoint's host at
+8443, over TLS. The notice already carries the name, size and hash the
+descriptor needs. The receiving side rewrites `senderUrl` to itself and restamps
+the ten-second stale, which would otherwise expire before a LoRa fetch ends.
+
+**Found alongside it, not yet fixed:** the notice went out as an ordinary tier-3
+event, to every member. `marti/dest` is honoured for chat and markers, not for
+the generic path, so anything large sent to one person -- this notice, a drawing
+shared with one contact -- reaches the whole team. Next on the list, both sides.
+
+**Port 8443 on the deck.** OTS's nginx listens on `*:8443`. A second server block
+listening on `192.168.240.1:8443` takes only waydroid0 -- nginx binds the
+wildcard once and routes on the address dialled -- and proxies to the bridge's
+file service on `127.0.0.1:18443`, terminating TLS with the certificate ATAK
+already accepted. LAN, Tailscale and loopback still reach OTS. The config is
+host-local (`~/.impr-tak/ots-nginx.conf`, previous version beside it as
+`.pre-d2`), so the block is recorded here:
+
+```nginx
+server {
+    listen 192.168.240.1:8443 ssl;
+    http2 on;
+    ssl_certificate     /certs/opentakserver.pem;
+    ssl_certificate_key /certs/opentakserver.nopass.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 64m;
+    location / {
+        proxy_pass http://127.0.0.1:18443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_request_buffering off;
+    }
+}
+```
+
+On a handset ATAK's host is `127.0.0.1`, so Columba serves 8443 itself; whether
+ATAK checks that certificate is still to be tested.
+
+**On the bench, 2026-09-22: files cross the mesh.** Built on both sides the
+same day -- the upload API ATAK uses (the bridge behind nginx, Columba on
+127.0.0.1:8080), the notice addressed like a marker, the fetch gate, and
+FILE_REQUEST/FILE over LXMF, sent only to a proved addressee:
+
+```
+Waydroid -> NEXUS   Recon1.zip 33,503 B     path 8 ms   fetched in 2 s    opened in ATAK
+Waydroid -> NEXUS   RECON2.zip  6,251 B                 fetched in 3 s
+NEXUS -> DECK       QuickPic   106,441 B    path 57 ms  fetched in 4 s    opened in Waydroid's ATAK
+DECK -> LEXUS       RECON2.zip              path 4.9 s, 336 bps   deferred, as designed
+NEXUS <-> LEXUS     QuickPics               path 1.3-2.5 s        deferred both ways
+```
+
+Found on the way, each fixed and tested on both sides:
+
+- **ATAK uploads over plain HTTP on 8080** when its connection is plain TCP,
+  whatever `senderUrl` it writes; the waydroid0 nginx block covers 8080 too.
+- **On a handset ATAK uploads to 127.0.0.1:8080 before sending the notice**,
+  and with nothing there the notice never left: the deck received nothing.
+- **A single-frame addressed event went as a bare packet**, which names no
+  sender, so the receiver had nobody to fetch from. Addressed now means LXMF.
+- **LXMF refuses an inbound transfer over 1,000 KB by default.** A full-size
+  QuickPic was 3,008,206 bytes; both routers take 17,000 KB, files are capped
+  at 16 MB.
+- **Two ATAKs on one Wi-Fi bypass the mesh.** ATAK's own multicast mesh found
+  the phones directly and moved files ATAK to ATAK ("local transfer ...
+  peerhosted"), so a working phone-to-phone send proved nothing about ours. Mesh
+  tests need ATAK's *Enable Mesh Network Mode* off, or the phones on separate
+  networks.
+
+**Open from the same run:**
+
+- **The leg to LEXUS lost heavily**: notice fragments exhausted six attempts
+  each and went to the propagation node, and one message needed all six --
+  about ten seconds of Rev 1 transmitting for a notice of ~370 B. Earlier the
+  same leg delivered first or fourth time. Cause not yet known.
+- **ATAK reports a deferred send as failed**: it asked for a download ack
+  that cannot come while the file waits. Until PR F, Columba should say
+  "queued for LEXUS, waiting for a fast path" as a chat line.
+- **Each waiting file probes its own path**, so three files from one sender
+  are three link handshakes over LoRa; one probe per sender will do.
+- **The thumbnail**, so a QuickPic over LoRa shows as something.
+
+**A QuickPic preview crossed LoRa, 2026-09-23.** NEXUS to LEXUS, the phones'
+only link BLE and LoRa through Rev 1, original-size picture:
+
+```
+18:33:22  NEXUS  ATAK uploads the QuickPic to Columba        3,008,209 B
+18:33:23  NEXUS  offer: marker position + WebP thumbnail      640 B, 3 frames
+18:33:25  LEXUS  3 fragments reassembled, 886 ms first to last
+18:33:29  LEXUS  path measured 2.9 s rtt, 4 hops -> slow; full file waits
+18:33:29  LEXUS  preview package (marker + thumbnail, 1,761 B) offered to ATAK
+```
+
+Then the full picture, once LEXUS was given a fast route (a TCP interface to
+the deck, alongside BLE):
+
+```
+18:40:05  LEXUS  TCP to the deck up; the queued file's next retry follows
+18:40:35  LEXUS  path measured 0.22 s rtt, 2 hops -> fast; asked NEXUS
+18:41:07  LEXUS  3,008,209 B arrived, hash checked; 33 s over Wi-Fi via the deck
+18:41:07  LEXUS  ATAK downloaded it: ONE marker, preview replaced, full picture
+```
+
+Nobody pressed anything between the preview and the full picture: the queue
+noticed the path had changed and fetched. The preview package's use of the
+QuickPic marker's own uid did what it was for -- the full package replaced
+it in ATAK rather than adding a second marker.
+
+Seven seconds from ATAK's send to the preview on the other phone's map, for
+640 bytes on the air instead of three megabytes. The thumbnail came from
+Android's own WebP encoder, the one part the unit tests could not exercise.
+The compact offer (FILE_OFFER_V1) replaced ATAK's ~390-byte notice: a data
+package's offer is 53 bytes, one frame.
+
+**D2 closes with one row owed, 2026-09-24.** LoRa and Wi-Fi/TCP are proven;
+BLE phone-to-phone is blocked by the BLE link itself and is **deferred to
+PR E** together with the D2 proof on it (see PR E below and CarriedIssues
+#11); HaLow is carried to its phase (CarriedIssues #10).
+
+**Interface completeness, 2026-09-23.** Every carrier the fleet has or is
+building, against what D2 does on it:
+
+| Carrier | Offer + thumbnail | Fast-path gate (rtt < 0.5 s) | Full file (LXMF Resource) | Status |
+| --- | --- | --- | --- | --- |
+| LoRa, via boards | 640 B, 3 frames, 7 s to the map | 1.3-5 s: defers. Right | never sent | **proven** |
+| Wi-Fi / TCP via the deck | fine | 8-220 ms: fetches. Right | 3 MB in 33 s | **proven** |
+| BLE phone to board, then LoRa | fine | LoRa dominates: defers. Right | never sent | **proven** (the LEXUS runs) |
+| BLE phone to phone, direct | **did not arrive** (2026-09-24) | never ran | never ran | **blocked: the BLE link itself churns** -- addresses rotate every few minutes, each a new peer interface, paths die with it. CarriedIssues #11, fix in PR E. The timed-parts gate built for this row is untested on it |
+| BLE as a last hop (deck, UDP, board, BLE, phone) | fine | **same risk: low latency, low throughput** | same | **untested** |
+| HaLow (Vox; Reticulum over IP) | fine | tens of ms: fetches | right at 1-30 Mbit/s; at range, low MCS on a mesh may be ~100s of kbit/s | **reasoned, untested** |
+
+**The flaw the matrix exposes: round-trip time is a proxy for "not LoRa", not a
+measure of whether a file will arrive in reasonable time.** It is right for the
+two carriers tested and wrong for a short, slow one -- BLE -- because latency
+and throughput are different things. Declared bitrates cannot stand in either:
+BLE claims 700 kbit/s, TCP/UDP/Auto 10 Mbit/s, all guesses.
+
+The fix is to gate on **estimated transfer time, measured**: fetch a small
+first part, time it, and continue only if the rest would arrive within a
+budget; otherwise defer, and say so. Cutting the file into parts also makes a
+transfer resumable after a dropped link, which BLE and a HaLow mesh at range
+both need. Not built; it needs a budget decided and bench runs on BLE
+phone-to-phone and on a rate-limited IP link standing in for HaLow.
+
+**Thumbnail budget: the descriptor and thumbnail together fit three fragments.**
+Chosen from what the radios have already shown rather than from an estimate. A
+drawing is three fragments, and three fragments have crossed LoRa both ways,
+including one that needed a retry, and arrived in 13.5 s at worst. The
+airtime, at SF7/BW250 from `tools/position_budget.py`, counting a full 363 B
+fragment packet and its proof:
+
+```
+fragments   one recipient   team of seven (six copies)
+    1          0.37 s              2.2 s
+    2          0.74 s              4.4 s
+    3          1.11 s              6.7 s     <- a drawing; measured 7.7 s a version
+    4          1.48 s              8.9 s
+    8          2.97 s             17.8 s
+```
+
+Three fragments is 747 B of payload. Once the descriptor's fields are counted,
+the image gets roughly 600 B. The descriptor is designed after the capture, so
+that figure is pinned then; the encoder steps size and quality down until the
+image fits, and sends no thumbnail rather than a fourth fragment. The open
+cost is a burst: five QuickPics in a row are over half a minute of channel for
+a team of seven. Pacing is decided after the capture, when it is known what
+ATAK sends per picture.
+
+**LoRa fetch: deferred, with no way to force it.** A full file moves only over a
+path measured to be fast. On LoRa the descriptor and thumbnail arrive, and the
+file waits until a fast path appears. A consent prompt belongs to PR F.
+
+**Retention: a page in Columba now, the plugin in PR F.** The page lists what
+this handset holds -- files it sent that others may still fetch, and files it
+received: size, age, and a delete. PR F's plugin takes the page over. Until
+then only the sender holds full files; no board or propagation node does.
+
+**Position while ATAK is closed -- built.** Columba's first ATAK feature
+reported the handset's position to a fixed gateway, alongside ATAK rather than
+instead of it. A teammate saw the operator twice, and the second copy was not
+even the same contact: the gateway built its uid from four bytes of identity,
+which is the pivot 1 problem. Now:
+
+- **ATAK connected: Columba sends nothing.** ATAK reports for itself.
+- **ATAK closed** (locked, pocketed, killed for memory): Columba reports through
+  the endpoint, as the same frame ATAK's own reports become, from the same node.
+  The receiver draws it on the same track under the same callsign, so the
+  operator is one EUD whether or not ATAK is open.
+- **The interval is the operator's choice** -- 1, 2, 5 or 10 minutes -- and each
+  report **states it**: a new optional byte, `FLAG_INTERVAL` 0x10, last in the
+  frame, in all three codecs. A receiver keeps the track current for twice
+  that, never less than the default. Without it a five-minute reporter went
+  grey between every pair of reports. Decoders that predate it stop at the
+  fields they know, so deployed boards are unaffected; tested on both sides.
+- **The callsign survives a restart.** It is learned from ATAK and now
+  remembered, so a handset restarted with ATAK closed announces its operator's
+  name, not the `COLUMBA` placeholder.
+- **The switch depends on the endpoint.** Without a running endpoint and a team
+  there is nobody to report to; the card disables the switch and says why, and
+  shows what it is doing now: standing by for ATAK, or reporting.
+- **A report counts only if a teammate's packet went out.** A cycle that sent
+  nothing -- no fix, no teammate reachable -- retries in 30 s rather than
+  waiting a whole interval.
+
+Background location while locked was already solved: the service claims the
+location foreground type, measured on the A54. **Still to see on hardware:**
+close ATAK on the handset, lock it, and watch the same contact keep moving on
+Waydroid's map, current for twice the interval.
+
 ### PR E — the node knows where it is and what it can reach
 
 - **GNSS.** `Position.h` already has the `GNSS` node-position kind; the NMEA
@@ -1034,6 +1266,17 @@ convenient, not as a condition of this PR.
 - **BLE as the endpoint's carrier.** The BLE peer protocol exists and is tested;
   it has not yet carried the CoT endpoint's traffic. The last bench run
   deliberately removed BLE to isolate the deck hop.
+- **BLE phone-to-phone, deferred here from D2 on 2026-09-24.** D2's BLE run
+  could not carry a 694-byte file offer between two phones: each saw the other
+  under a new random address every few minutes, Columba rebuilt the peer
+  interface each time, and Reticulum's paths died with it (CarriedIssues #11).
+  PR E owns the fix in Columba's BLE layer -- a peer identified by its
+  Reticulum identity, not its address; the peer interface and its paths kept
+  across an address change; the MTU raised before use -- **and the D2 proof
+  still owed on it**: a data package and a full-size QuickPic phone to phone,
+  exercising the timed-parts gate (64 KB first part, 512 KB after, two-minute
+  budget) on a real slow link for the first time. D2 closed with that row
+  marked blocked; this is where it is picked up.
 
 ---
 

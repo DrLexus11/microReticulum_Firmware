@@ -326,7 +326,7 @@ class AutoSendTests(unittest.TestCase):
             made._send_version("DRAW-1", [b"\x01small"])
 
         self.assertEqual(made.lxmf.cancel.call_count, len(first))
-        made._fan_out.assert_called_once_with(b"\x01small")
+        made._fan_out.assert_called_once_with(b"\x01small", None)
 
     def test_a_different_drawing_withdraws_nothing(self):
         made = self.bridge()
@@ -339,7 +339,7 @@ class AutoSendTests(unittest.TestCase):
         made = self.bridge()
         made._fan_out = Mock(return_value=1)
         made._send_version("SMALL", [b"\x01one"])
-        made._fan_out.assert_called_once_with(b"\x01one")
+        made._fan_out.assert_called_once_with(b"\x01one", None)
         made.lxmf.send_frame.assert_not_called()
 
 

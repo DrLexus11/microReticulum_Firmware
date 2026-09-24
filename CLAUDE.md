@@ -47,6 +47,13 @@ Design rationale and hardware acceptance records are in `docs/TAKNative.md` and
   Other projects' bugs are not ours to fix.
 - **Disaster-first.** Weigh re-meshing speed against airtime; never inherit
   protocol politeness by default.
+- **Interface completeness.** Every mesh feature is judged on every carrier the
+  fleet has or is building -- LoRa, BLE phone-to-board, BLE phone-to-phone,
+  Wi-Fi/TCP/UDP, and HaLow (IP, for Vox) -- not only the one it was tested on.
+  Name what was proven on each, what is only reasoned, and what is untested,
+  before calling a feature done. Nothing may key on an interface's declared
+  bitrate: they are guesses (BLE claims 700 kbit/s, TCP/UDP/Auto 10 Mbit/s).
+  Measure. The matrix for TAK files is in `docs/TAKDeliveryPlan.md`.
 
 ## Working notes
 

@@ -536,3 +536,62 @@ time it was looked for. A host-side capture of the handset's radio-stack log now
 runs during bench sessions, so a recurrence will be readable. The next thing to
 check on a recurrence is whether Rev 1 logs anything received over BLE from the
 phone at all.
+
+## 10. TAK files over HaLow: reasoned, not measured -- pick up in the HaLow phase
+
+Carried from PR D2, 2026-09-23, under the interface-completeness rule in
+`CLAUDE.md`. File transfer was proven on LoRa (preview only, by design) and on
+Wi-Fi/TCP (3 MB in 33 s), and is being measured on BLE. HaLow has not been
+tried at all, because no Vox hardware is on the bench yet.
+
+What is expected, and why it still needs a run:
+
+- **Reticulum over HaLow is IP** (UDP, Auto or TCP interfaces), so D2 sees it
+  as it sees Wi-Fi: short round trips, and the measured-rate gate should fetch.
+- **At range a HaLow mesh drops to low rates** -- 1 MHz channels at BPSK can
+  be a few hundred kbit/s, shared across hops. The rate gate should then
+  defer a large file rather than tie up the mesh; that is the case to watch.
+- **The round-trip pre-filter (under 0.5 s means "not LoRa")** has not been
+  checked against a congested multi-hop HaLow path. If HaLow at range
+  routinely exceeds it, files will wait that could have gone.
+- **Declared bitrates are guesses** (UDP/Auto claim 10 Mbit/s) and must not be
+  trusted over the measurement.
+
+To do in the HaLow phase: send a data package and a full-size QuickPic across
+one Vox hop and across two at range, and record the rate measured, whether it
+fetched or deferred, and how long the transfer took. Until then a
+rate-limited IP link on the deck is only a stand-in, not a proof.
+
+## 11. BLE phone-to-phone does not hold a link long enough to carry a file offer
+
+Found 2026-09-24 running D2's BLE row of the interface matrix: NEXUS (Nexus
+6P) sent LEXUS (A54) a QuickPic offer -- 694 bytes, three LXMF messages --
+over a direct phone-to-phone BLE link. Nothing arrived. Both phones' logs:
+
+- **Each phone sees the other under a new address every few minutes.** The
+  A54 saw the Nexus under at least four random private addresses in twenty
+  minutes; the Nexus saw the A54 under at least six. Each looks like a new
+  peer, so Columba tears one `BLEPeerInterface` down and builds another --
+  links lasted about one to three minutes (A8:54:C2 17:05-17:08, 86:0E:BE
+  17:08-17:10, E6:1B:6B 17:10-17:12, ...).
+- **Reticulum's paths die with the interface they were learned on.** The
+  Nexus had heard the A54's TAK node announce, but never held a path to its
+  LXMF inbox: every attempt was "pathless", its path requests went unanswered,
+  and the three messages exhausted their tries in 32 s.
+- **Links start at MTU 20** and only sometimes reach 512 before they drop.
+- **46 GATT 133 errors** on the Nexus in the same window.
+- Separately, **the Nexus's TCP interface to the deck was torn down at
+  17:04:05** when its interfaces were changed, and did not return -- so the
+  fallback to the propagation node had no path either. To confirm whether it
+  was switched off or failed to come back.
+
+The phone-to-board link does not show this: Rev 1 keeps a stable address,
+and the A54's link to RNode 1114 carried 51 packets through the same window.
+
+**D2 is not what failed.** The offer, the rate gate and the parts never ran:
+the link underneath could not carry three small messages. The fix belongs to
+Columba's BLE layer -- identify a peer by its Reticulum identity rather than
+its address, keep the peer interface (and so its paths) across an address
+change, raise the MTU before use -- which is PR E's "BLE proven as the
+endpoint's carrier". Until then, BLE phone-to-phone is marked **not usable**
+for TAK files in the D2 matrix, and the timed-parts gate stays untested there.

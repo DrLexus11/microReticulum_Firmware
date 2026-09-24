@@ -60,6 +60,10 @@ import LXMF
 # cannot reach. A flat pair crosses both of Columba's backends unchanged, and
 # CUSTOM_DATA is the semantically right field besides: this is an app's data,
 # not metadata about somebody's message.
+# Inbound transfer limit, in LXMF's unit of kilobytes: the largest file
+# tak_files sends, plus the frame header and LXMF's envelope.
+DELIVERY_LIMIT_KB = 17_000
+
 FIELD_CUSTOM_TYPE = 0xFB
 FIELD_CUSTOM_DATA = 0xFC
 
@@ -124,7 +128,11 @@ class Carrier:
         self.cancelled = 0
         self.propagated = 0
         self.collected = 0
-        self.router = LXMF.LXMRouter(identity=identity, storagepath=storage_path)
+        # A file is one LXMF message, and LXMF refuses an inbound transfer over
+        # 1,000 KB by default. A QuickPic measured 3,008,206 bytes on the bench
+        # (2026-09-22). Raised to hold the largest file tak_files will send.
+        self.router = LXMF.LXMRouter(identity=identity, storagepath=storage_path,
+                                     delivery_limit=DELIVERY_LIMIT_KB)
         self.destination = self.router.register_delivery_identity(
             identity, display_name=callsign)
         self.router.register_delivery_callback(self._inbound)
@@ -252,6 +260,35 @@ class Carrier:
         """
         return self._send(identity, frame, "", None, "event")
 
+    def send_file(self, identity, frame):
+        """Send one whole file to one peer: DIRECT, and never escalated.
+
+        LXMF moves a message this size as a Resource over a Link, which is
+        what a file wants. It is not handed to a propagation node on failure:
+        a node holding it would pass it on over whatever path the receiver
+        has, which is the LoRa leg the fetch gate exists to avoid. The
+        receiver asks again when it next has a fast path.
+        """
+        return self._send(identity, frame, "", None, "file",
+                          method=LXMF.LXMessage.DIRECT, escalate=False)
+
+    def send_request(self, identity, frame):
+        """Ask a peer for a file or a part of one.
+
+        Never left at a propagation node: answered later, it would bring the
+        file over whatever path exists then, which may be the LoRa leg the
+        fetch gate avoided.
+
+        Opportunistic, deliberately, not DIRECT. A request is 41 bytes: one
+        encrypted packet with LXMF's proof and retries, the same guarantees as
+        a chat line. DIRECT would first establish a Link -- three packets and a
+        round trip -- to deliver one, and the file coming back already rides a
+        Link of its own. It is the *response* that must be DIRECT, because it
+        is large; the request only has to arrive. (Review note 9, declined
+        2026-09-24 with this reasoning.)
+        """
+        return self._send(identity, frame, "", None, "file request", escalate=False)
+
     def cancel(self, message):
         """Withdraw a message that has been superseded before it landed.
 
@@ -266,7 +303,8 @@ class Carrier:
         self.cancelled += 1
         self.router.cancel_outbound(message.message_id)
 
-    def _send(self, identity, frame, text, proof_context, label):
+    def _send(self, identity, frame, text, proof_context, label, method=None,
+              escalate=True):
         """One frame, one LXMF message, one peer. The message, or None.
 
         Shared so a fragment and a chat line cannot take subtly different
@@ -279,9 +317,11 @@ class Carrier:
             # LXMF's encrypted packet delivery retains proofs and retries.
             # pack() promotes messages which exceed its limit to DIRECT, so
             # large chats still use Link/Resource without a second size rule.
-            message = self.build(destination, frame, text,
-                                 LXMF.LXMessage.DIRECT if self.direct_only
-                                 else LXMF.LXMessage.OPPORTUNISTIC)
+            if method is None:
+                method = (LXMF.LXMessage.DIRECT if self.direct_only
+                          else LXMF.LXMessage.OPPORTUNISTIC)
+            message = self.build(destination, frame, text, method)
+            message.tak_escalate = escalate
             message.tak_sent_at = time.monotonic()
             # What the sender needs to draw its own delivery tick when the
             # proof arrives. Carried on the message so it cannot outlive it.
@@ -394,7 +434,7 @@ class Carrier:
             return
         print("[lxmf] peer delivery did not land %s"
               % self._journey(message), flush=True)
-        if not self.propagation_node:
+        if not self.propagation_node or not getattr(message, "tak_escalate", True):
             self.failed += 1
             return
         try:
