@@ -1168,7 +1168,7 @@ building, against what D2 does on it:
 | LoRa, via boards | 640 B, 3 frames, 7 s to the map | 1.3-5 s: defers. Right | never sent | **proven** |
 | Wi-Fi / TCP via the deck | fine | 8-220 ms: fetches. Right | 3 MB in 33 s | **proven** |
 | BLE phone to board, then LoRa | fine | LoRa dominates: defers. Right | never sent | **proven** (the LEXUS runs) |
-| BLE phone to phone, direct | should be fine | **likely under 0.5 s, so it fetches** | **3 MB over BLE: minutes, competing with chat and positions** | **untested, and probably wrong** |
+| BLE phone to phone, direct | **did not arrive** (2026-09-24) | never ran | never ran | **blocked: the BLE link itself churns** -- addresses rotate every few minutes, each a new peer interface, paths die with it. CarriedIssues #11, fix in PR E. The timed-parts gate built for this row is untested on it |
 | BLE as a last hop (deck, UDP, board, BLE, phone) | fine | **same risk: low latency, low throughput** | same | **untested** |
 | HaLow (Vox; Reticulum over IP) | fine | tens of ms: fetches | right at 1-30 Mbit/s; at range, low MCS on a mesh may be ~100s of kbit/s | **reasoned, untested** |
 
