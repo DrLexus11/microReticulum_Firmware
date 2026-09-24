@@ -537,7 +537,7 @@ class CotBridge:
         self.unreadable += 1
         self._unattributed.hold(raw, signed_by)
         if signed_by is not None:
-            self.rns.Transport.request_path(signed_by)
+            self._ask_for_path(signed_by)
         print("[bridge] held a frame from a sender not yet known%s"
               % ("; asked for its announce" if signed_by is not None else ""),
               flush=True)
@@ -1093,7 +1093,7 @@ class CotBridge:
         """
         identity = self.rns.Identity.recall(member)
         if identity is None:
-            self.rns.Transport.request_path(member)
+            self._ask_for_path(member)
             done(None)
             return
         answered = threading.Event()
@@ -1181,6 +1181,15 @@ class CotBridge:
             return
         file_hash, offset, total, data = decoded
         asked = entry.get("asked")
+        # Only the part asked for, while it is still being waited for: a late
+        # answer after a stall, a part at another offset or length, or one
+        # claiming a different size from the offer would each drive the gate
+        # on something it did not measure.
+        if (asked is None or offset != asked[0] or len(data) != asked[1]
+                or total != entry["notice"]["size"]):
+            print("[files] a part of %s that was not the one outstanding; discarded"
+                  % entry["notice"]["filename"], flush=True)
+            return
         if not self.files.append_partial(file_hash, offset, data):
             return
         entry["asked"] = None
@@ -1346,7 +1355,7 @@ class CotBridge:
             return
         identity = self.rns.Identity.recall(member)
         if identity is None or self.lxmf is None:
-            self.rns.Transport.request_path(member)
+            self._ask_for_path(member)
             print("[files] cannot reach %s to send %s yet" % (who, file_hash[:16]), flush=True)
             return
         data = self.files.read(file_hash)
@@ -1823,7 +1832,7 @@ class CotBridge:
         if identity is None:
             # Heard the announce, lost the identity -- possible after a
             # restart. Ask for the path; the next event will find it.
-            self.rns.Transport.request_path(destination_hash)
+            self._ask_for_path(destination_hash)
             self.unreachable += 1
             return 0
         # Knowing who somebody is does not mean knowing how to reach them, and
@@ -1886,7 +1895,7 @@ class CotBridge:
         for member in members:
             identity = self.rns.Identity.recall(member)
             if identity is None:
-                self.rns.Transport.request_path(member)
+                self._ask_for_path(member)
                 self.unreachable += 1
                 continue
             message = self.lxmf.send_frame(identity, frame)

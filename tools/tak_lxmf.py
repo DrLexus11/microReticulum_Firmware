@@ -273,9 +273,20 @@ class Carrier:
                           method=LXMF.LXMessage.DIRECT, escalate=False)
 
     def send_request(self, identity, frame):
-        """Ask a peer for a file. Never left at a propagation node: answered
-        later, it would bring the file over whatever path exists then, which
-        may be the LoRa leg the fetch gate avoided."""
+        """Ask a peer for a file or a part of one.
+
+        Never left at a propagation node: answered later, it would bring the
+        file over whatever path exists then, which may be the LoRa leg the
+        fetch gate avoided.
+
+        Opportunistic, deliberately, not DIRECT. A request is 41 bytes: one
+        encrypted packet with LXMF's proof and retries, the same guarantees as
+        a chat line. DIRECT would first establish a Link -- three packets and a
+        round trip -- to deliver one, and the file coming back already rides a
+        Link of its own. It is the *response* that must be DIRECT, because it
+        is large; the request only has to arrive. (Review note 9, declined
+        2026-09-24 with this reasoning.)
+        """
         return self._send(identity, frame, "", None, "file request", escalate=False)
 
     def cancel(self, message):

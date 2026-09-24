@@ -43,6 +43,23 @@ def _upload_body(content_type, body):
     return body
 
 
+def content_disposition(name):
+    """An attachment header for `name` that cannot become another header.
+
+    The name is ATAK's, and came over the mesh in an offer: control
+    characters (a CR/LF would start a new header), quotes and backslashes go,
+    and a name with anything beyond ASCII is carried RFC 5987-encoded beside
+    a plain fallback.
+    """
+    from urllib.parse import quote
+    safe = "".join(c for c in str(name) if c.isprintable() and c not in '"\\') or "file"
+    plain = safe.encode("ascii", "replace").decode("ascii")
+    header = 'attachment; filename="%s"' % plain
+    if plain != safe:
+        header += "; filename*=UTF-8''%s" % quote(safe, safe="")
+    return header
+
+
 class FileService:
     """ATAK's upload and download, backed by a FileStore."""
 
@@ -89,8 +106,7 @@ class FileService:
                     name = service.store.meta(file_hash).get("filename") or file_hash
                     service.log("[files] served %s (%d bytes) to ATAK" % (name, len(data)))
                     return self._reply(200, data, "application/octet-stream",
-                                       {"Content-Disposition": 'attachment; filename="%s"'
-                                        % name.replace('"', "")})
+                                       {"Content-Disposition": content_disposition(name)})
                 service.log("[files] ATAK asked for %s; not something this serves" % path)
                 return self._reply(404, b"not found")
 

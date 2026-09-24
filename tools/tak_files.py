@@ -131,7 +131,11 @@ def parse_notice(xml):
     try:
         size = int(share.get("sizeInBytes") or 0)
     except ValueError:
-        size = 0
+        return None
+    # A size nothing here would store is not an offer: negative, empty, or
+    # over the cap would each drive the fetch on a number it cannot meet.
+    if not 0 < size <= MAX_FILE_BYTES:
+        return None
     return {
         "hash": file_hash,
         "filename": share.get("filename") or "",
@@ -156,14 +160,62 @@ def rewrite_notice(xml, url, now=None, stale_seconds=NOTICE_STALE_SECONDS):
     the notice ATAK's and not a reconstruction of it.
     """
     text = xml.decode("utf-8") if isinstance(xml, (bytes, bytearray)) else xml
-    text = re.sub(r'senderUrl="[^"]*"', 'senderUrl="%s"' % url, text, count=1)
+    # Only inside <fileshare>, the element parse_notice read -- an earlier
+    # senderUrl anywhere else in the event must not be the one rewritten --
+    # and the URL escaped for XML and passed as a function, so nothing in it
+    # is read as a regex replacement.
+    share = re.search(r"<fileshare\b[^>]*>", text)
+    if share is None:
+        raise ValueError("no fileshare element to rewrite")
+    text = text[:share.start()] + _set_attr(share.group(0), "senderUrl", url) + text[share.end():]
     now = now or datetime.now(timezone.utc)
     stamp = lambda moment: moment.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (moment.microsecond // 1000)
-    text = re.sub(r'\btime="[^"]*"', 'time="%s"' % stamp(now), text, count=1)
-    text = re.sub(r'\bstart="[^"]*"', 'start="%s"' % stamp(now), text, count=1)
-    text = re.sub(r'\bstale="[^"]*"', 'stale="%s"' % stamp(now + timedelta(seconds=stale_seconds)),
-                  text, count=1)
+    # The times belong to the <event> element itself, not to anything inside.
+    head = re.search(r"<event\b[^>]*>", text)
+    if head is not None:
+        element = head.group(0)
+        for name, value in (("time", stamp(now)), ("start", stamp(now)),
+                            ("stale", stamp(now + timedelta(seconds=stale_seconds)))):
+            element = _set_attr(element, name, value)
+        text = text[:head.start()] + element + text[head.end():]
     return text
+
+
+# One attribute of a start tag: a name, then a single- or double-quoted value.
+_ATTRIBUTE = re.compile(r"""\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"]*"|'[^']*')""")
+
+
+def _set_attr(tag, name, value):
+    """A start tag with attribute `name` set to `value`, escaped.
+
+    Walks the attributes in order rather than searching the tag's text, so an
+    attribute name appearing inside another attribute's value -- filename="x
+    senderUrl='y'" -- is never the one rewritten. The value goes in escaped,
+    through a function, so nothing in it is read as markup or as a regex
+    replacement. An attribute that is absent is added.
+    """
+    head = re.match(r"<[A-Za-z_][\w.:-]*", tag)
+    if head is None:
+        raise ValueError("not a start tag")
+    at, parts, found = head.end(), [head.group(0)], False
+    for attribute in _ATTRIBUTE.finditer(tag, head.end()):
+        if attribute.start() != at:
+            break
+        if attribute.group(1) == name and not found:
+            parts.append(' %s="%s"' % (name, _xml_attr(value)))
+            found = True
+        else:
+            parts.append(attribute.group(0))
+        at = attribute.end()
+    if not found:
+        parts.append(' %s="%s"' % (name, _xml_attr(value)))
+    return "".join(parts) + tag[at:]
+
+
+def _xml_attr(value):
+    """A value safe inside a double-quoted XML attribute."""
+    return (str(value).replace("&", "&amp;").replace('"', "&quot;")
+            .replace("<", "&lt;").replace(">", "&gt;").replace("'", "&apos;"))
 
 
 # Who a status line comes from in ATAK's chat: this node, not a teammate.
@@ -437,10 +489,14 @@ def encode_offer(sender_id, file_hash, size, filename, point=None, thumbnail=Non
 def decode_offer(frame):
     """A dict, or None for anything that is not a well-formed offer."""
     if (not isinstance(frame, (bytes, bytearray)) or len(frame) < _OFFER_HEAD.size
-            or frame[0] != tak_payload.FILE_OFFER_V1):
+            or len(frame) > MAX_OFFER_BYTES or frame[0] != tak_payload.FILE_OFFER_V1):
         return None
     frame = bytes(frame)
     _, sender_id, raw_hash, size, flags, name_len = _OFFER_HEAD.unpack(frame[:_OFFER_HEAD.size])
+    # A layout this decoder does not know is refused, not guessed at; so is a
+    # size nothing here would store.
+    if flags & ~(FLAG_POINT | FLAG_THUMB) or not 0 < size <= MAX_FILE_BYTES:
+        return None
     at = _OFFER_HEAD.size + name_len
     if at > len(frame):
         return None
@@ -573,7 +629,7 @@ def preview_package(offer, sender_callsign):
               "<detail><contact callsign='%s preview'/><remarks>Preview over LoRa; the full "
               "picture follows on a fast path.</remarks></detail></event>"
               % (marker_uid, stamp, stamp, offer["point"][0] / 1e7, offer["point"][1] / 1e7,
-                 sender_callsign.replace("'", "")))
+                 _xml_attr(sender_callsign)))
     manifest = ('<?xml version="1.0" encoding="UTF-8"?><MissionPackageManifest version="2">'
                 '<Configuration><Parameter name="uid" value="%s"/>'
                 '<Parameter name="name" value="%s (preview)"/>'
@@ -582,7 +638,8 @@ def preview_package(offer, sender_callsign):
                 '<Content ignore="false" zipEntry="%s/%s.cot"><Parameter name="uid" value="%s"/></Content>'
                 '<Content ignore="false" zipEntry="%s"><Parameter name="uid" value="%s"/></Content>'
                 '</Contents></MissionPackageManifest>'
-                % (marker_uid, name, marker_uid, marker_uid, marker_uid, image_entry, marker_uid))
+                % (marker_uid, _xml_attr(name), marker_uid, marker_uid, marker_uid,
+                   _xml_attr(image_entry), marker_uid))
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as package:
         package.writestr("MANIFEST/manifest.xml", manifest)
