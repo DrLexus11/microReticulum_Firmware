@@ -1160,6 +1160,11 @@ Android's own WebP encoder, the one part the unit tests could not exercise.
 The compact offer (FILE_OFFER_V1) replaced ATAK's ~390-byte notice: a data
 package's offer is 53 bytes, one frame.
 
+**D2 closes with one row owed, 2026-09-24.** LoRa and Wi-Fi/TCP are proven;
+BLE phone-to-phone is blocked by the BLE link itself and is **deferred to
+PR E** together with the D2 proof on it (see PR E below and CarriedIssues
+#11); HaLow is carried to its phase (CarriedIssues #10).
+
 **Interface completeness, 2026-09-23.** Every carrier the fleet has or is
 building, against what D2 does on it:
 
@@ -1261,6 +1266,17 @@ Waydroid's map, current for twice the interval.
 - **BLE as the endpoint's carrier.** The BLE peer protocol exists and is tested;
   it has not yet carried the CoT endpoint's traffic. The last bench run
   deliberately removed BLE to isolate the deck hop.
+- **BLE phone-to-phone, deferred here from D2 on 2026-09-24.** D2's BLE run
+  could not carry a 694-byte file offer between two phones: each saw the other
+  under a new random address every few minutes, Columba rebuilt the peer
+  interface each time, and Reticulum's paths died with it (CarriedIssues #11).
+  PR E owns the fix in Columba's BLE layer -- a peer identified by its
+  Reticulum identity, not its address; the peer interface and its paths kept
+  across an address change; the MTU raised before use -- **and the D2 proof
+  still owed on it**: a data package and a full-size QuickPic phone to phone,
+  exercising the timed-parts gate (64 KB first part, 512 KB after, two-minute
+  budget) on a real slow link for the first time. D2 closed with that row
+  marked blocked; this is where it is picked up.
 
 ---
 
