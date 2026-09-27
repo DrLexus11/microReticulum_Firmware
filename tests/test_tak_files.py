@@ -444,7 +444,15 @@ class DeckReceivesTests(unittest.TestCase):
         self.assertTrue(self.made.files.has(self.package_hash))
         self.assertFalse(self.made.files.has(preview["hash"]))
 
-    def test_over_a_fast_path_the_full_file_is_asked_for_and_no_preview(self):
+    def test_on_a_route_not_yet_measured_the_preview_goes_up_while_the_sample_is_asked_for(self):
+        """Over LoRa the sample took 86 s on 2026-09-27; the preview need not wait."""
+        self.made.uid = "urtn-" + "aa" * 16
+        self.offer_arrives()
+        self.made.lxmf.send_request.assert_called_once()
+        self.assertEqual(len([x for x in self.made.drawn if b"b-f-t-r" in x]), 1)
+
+    def test_over_a_route_measured_fast_the_full_file_is_asked_for_and_no_preview(self):
+        self.made._path_rates().record(ALPHA, self.route, 10_000_000, time.time())
         self.offer_arrives()
         self.made.lxmf.send_request.assert_called_once_with(
             ALPHA, tak_files.encode_part_request(

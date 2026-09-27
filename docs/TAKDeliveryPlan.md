@@ -1356,10 +1356,11 @@ without risk is taken here, not carried into F.
    and the server are two pictures*, below). Pointing WinTAK at the bridge
    directly is not the answer: the bridge speaks for one EUD -- every client on
    it would be DECK, their self-reports would fight as DECK's position, and file
-   uploads go through the Waydroid-only nginx blocks. **Decision owed:** the
-   one-way mesh-to-OTS feed (spectators, planned before Outdoor Test 1) in PR E,
-   and full participation -- chat, files, markers inward, each operator vouched
-   as their own `urtn-` UID -- designed in `MeshAndServerInterop.md` for PR F.
+   uploads go through the Waydroid-only nginx blocks. **Decided 2026-09-27:
+   deferred, whole.** The operator wants duplex -- Tailscale operators acting,
+   not watching -- so no one-way feed now; the full scope (chat, files, markers
+   both ways, each operator vouched as their own `urtn-` UID, per
+   `MeshAndServerInterop.md`) is taken up in one piece later, not in PR E.
 
 4. **Messages need both sides to re-announce.** Measured and read, not guessed:
    - Nothing announces when a BLE peer arrives -- not Columba (it replays only
@@ -1386,13 +1387,17 @@ without risk is taken here, not carried into F.
      N seconds and off again after M seconds of health -- hysteresis, so a
      flapping link does not flap the radio. A feature, not a fix: **designed in
      PR E, built in PR E only if the reliability items above are closed.**
-   - *Preferring the fat pipe when both hear the same node*: interface gravity
-     -- BLE, Wi-Fi, HaLow above LoRa -- is config, not code, and measurable. It
-     only moves the path for the *same* announce; recency still wins. **In PR E:**
-     read RNS's gravity semantics in full, set it on the deck and Columba if it
-     does what it says, and prove a path moving from LoRa to BLE when both are
-     up. Nothing keys on declared bitrate; gravity is an explicit operator
-     choice.
+   - *Preferring the fat pipe when both hear the same node*: interface
+     gravity. **Read in full 2026-09-27 and set aside.** In RNS 1.4.2 gravity
+     is consulted in one place: the *same* announce heard again, with equal or
+     fewer hops, on a higher-gravity interface moves the path there. A newer
+     announce still wins on recency, and fewer hops still wins outright -- so
+     gravity cannot make a node prefer a three-hop Wi-Fi or BLE path over a
+     one-hop LoRa one, which is exactly the case that loads LoRa. Columba's BLE
+     peer interfaces do not inherit it either. Reticulum routes by hops and
+     recency, not by cost; taking weight off LoRa is the fallback-interface
+     feature above -- LoRa as the fallback, off or quiet while a fatter primary
+     has peers -- not a routing setting.
 
 **Order of work for 2026-09-27** (the operator chose to keep today's layout --
 the A54 holding Rev 1 -- and fix the phones first, since moving the boards to
@@ -1457,7 +1462,9 @@ LE data length extension on its controller). At that rate a 3.5 MB QuickPic
 takes ~9 min: held under the two-minute budget, preview shown at once, fetched
 when a faster path appears. **Owed:** the same measurement between two current
 phones (Bluetooth 5, data length extension), which decides whether BLE phone to
-phone can carry a full picture within the budget at all.
+phone can carry a full picture within the budget at all. **Deferred 2026-09-27:** only
+LEXUS (A54) and NEXUS (Nexus 6P) are on hand; the measurement waits for a
+second current phone.
 
 ---
 

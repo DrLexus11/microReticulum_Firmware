@@ -1101,6 +1101,13 @@ class CotBridge:
                 # Measured slow on this very route: nothing spent on air.
                 self._wait_for_fast_path(file_hash, entry, tak_files.slow_reason(left))
                 return
+        if rate is None:
+            # Not measured on this route yet: the sample decides, and over
+            # LoRa it takes minutes (86 s for 12 KB, 2026-09-27). The preview
+            # is local and free, so it goes up now. A route already measured
+            # fast brings the whole file within the budget, and a preview then
+            # would only be a second notice a moment before the first.
+            self._show_preview(entry)
         entry["route"] = route
         entry["parts"] = 0
         entry["judged"] = False
