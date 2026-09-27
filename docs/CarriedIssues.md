@@ -141,6 +141,17 @@ internal 55 284 B free, largest block 23 540 B, ESP-NOW `strict ch=0 peers=0`
 -- no peer, so this run is the no-peer half of the A/B, now on the multi-peer
 BLE build with two phones attached. `--summary` gives the heap slope per hour.
 
+**First two hours (20:38-22:41), measured:** internal heap 55 276 -> 39 324 B,
+**-7.8 KB/h**, largest block 23 540 -> 20 468 B (low 16 372). No boots. Two
+phones attached over BLE the whole time. At that rate internal heap is gone by
+about 03:30-04:00 -- far sooner than the 25-28 h the old bootlog implies (about
+2 KB/h from ~55 KB), so either this build leaks faster (NimBLE multi-peer, two
+phones' traffic) or the rate is not linear. The host sleeps overnight and the
+serial log with it; the board keeps running, and **what happened at the heap's
+end is recoverable from its bootlog** (boot reason and previous uptime per
+boot) and the soak's reattach in the morning. Read both before anything else
+touches this board.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
