@@ -1664,7 +1664,13 @@ void setup() {
 printf("[init] hw_ready: %u\n", hw_ready);
 printf("[init] op_mode: %U\n", op_mode);
       if (op_mode != MODE_TNC) {
-        INFO("Not in TNC mode, transport will be disabled");
+        // Loud, because the consequence is silent: this board accepts peers,
+        // announces, is reachable -- and forwards nothing between its
+        // interfaces. The compiled default is MODE_HOST; provisioning sets
+        // TNC. The panel shows NO RELAY once two interfaces are up.
+        printf("\n[init] !!! NOT RELAYING: op_mode is not TNC (0x%02x). This board will not\n"
+               "[init] !!! forward between its interfaces. Provision it into TNC mode.\n\n",
+               (unsigned)op_mode);
         reticulum.transport_enabled(false);
       }
       // Transport reads the path, known-destination and hashlist stores into

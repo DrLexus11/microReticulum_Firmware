@@ -196,6 +196,12 @@ struct NodeStatusView {
   // Forwarding for others. A different question, and false on every
   // radio-less board by construction.
   bool relaying = false;
+  // Two or more interfaces up: this board sits between carriers, and a node
+  // there that does not forward is a dead end for everything behind it. A
+  // board flashed but not provisioned lands in MODE_HOST (the compiled
+  // default) and declines to relay with every other indicator healthy -- the
+  // OZD board showed two BLE peers while nothing crossed to the main mesh.
+  bool relay_expected = false;
 };
 
 NodeStatusView node_status();

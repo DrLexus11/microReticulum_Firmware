@@ -353,6 +353,9 @@ NodeStatusView node_status() {
   // report NO MESH for minutes.
   s.mesh_on = any_radio && (s.paths > 0);
   s.relaying = (op_mode == MODE_TNC) && RNS::Reticulum::transport_enabled();
+  const int up = (s.lora_active ? 1 : 0) + (s.ble_active ? 1 : 0) +
+                 (s.wifi_active ? 1 : 0) + (s.espnow_active ? 1 : 0);
+  s.relay_expected = up >= 2;
 
   return s;
 }
