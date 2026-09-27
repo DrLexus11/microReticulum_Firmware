@@ -1415,6 +1415,50 @@ multi-peer first would make today's conditions hard to rebuild):
 8. Decisions to take with the operator: item 3's split, item 5's fallback UI
    build or defer.
 
+**What 2026-09-27 closed**, each measured with `tools/ble_link_soak.py` or on a
+real transfer, A54 and Nexus 6P over direct BLE, Rev 1 on the A54:
+
+- *Status lines* (item 1): one line each, pinned in `tak_native_v1.json`.
+- *A soak harness* (step 3): Columba logs every kept BLE peer and whether it
+  is online every 30 s; the harness turns that into online shares, link events,
+  failures by status and negotiated intervals.
+- *The identity tag vanished after 60 s.* The advertiser's refresh built its
+  own scan response without it, so after the first minute each phone connected
+  out to the other's next address and the duplicate links tore down. Fixed:
+  phone-to-phone online share 70.6 / 55.6 % -> 100 / 100 %, disconnects 8 -> 0,
+  over ten minutes each.
+- *Announce on meeting* (item 4): a newly met BLE peer is sent a fresh announce
+  of each of our destinations, on its link alone. **The no-manual-announce test
+  passed**: both phones' Bluetooth off for three minutes, back on, a message
+  each way -- delivered in 73 ms and under 100 ms, nobody touching Announce.
+  The deck's path to the A54 (three hops through Rev 1) refreshed on its own.
+- *LXMF skipped the message behind a just-delivered one* (upstream, 1.1.0: a
+  list mutated while iterated), so every file part waited for the next four-
+  second job cycle. Columba now runs each outbound pass twice. The 12 KB sample
+  over one BLE hop: 20 -> 52 kbit/s.
+- *QuickPic thumbnails* from Samsung phones: the encoder writes a colour
+  profile into every WebP, ~480 B of the 655 B budget. Stripped after encoding;
+  the offer now carries its preview (640-648 B at 80 px), shown in ATAK at once.
+- *Two BLE connection faults that left a link half-dead*, each seen once and
+  each blocking its own repair: a status-133 retry's leftover 30 s timeout
+  closed the successful retry, and an identity read that timed out fell back to
+  "no identity", so one phone never built the peer while the other counted it
+  linked and refused to reconnect. Fixed: timeouts belong to their own attempt;
+  an unreadable identity is read once more, then the connection is abandoned
+  and made afresh.
+
+**The BLE throughput ceiling with this pair is the radio, not the software.**
+Writing without a response was tried and **reverted**: the A54's writes
+completed in 3 ms, but the Nexus still received one 488-byte packet per ~60 ms
+-- the same pace as with a response -- while the A54's stack buffered the rest,
+and the resulting delay made Reticulum re-request data. The sample fell from 52
+to 12 kbit/s. So ~50-65 kbit/s is what a Nexus 6P link carries (most likely no
+LE data length extension on its controller). At that rate a 3.5 MB QuickPic
+takes ~9 min: held under the two-minute budget, preview shown at once, fetched
+when a faster path appears. **Owed:** the same measurement between two current
+phones (Bluetooth 5, data length extension), which decides whether BLE phone to
+phone can carry a full picture within the budget at all.
+
 ---
 
 ### One board, one phone -- found with a third handset, 2026-09-21
