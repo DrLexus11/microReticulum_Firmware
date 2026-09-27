@@ -595,3 +595,33 @@ its address, keep the peer interface (and so its paths) across an address
 change, raise the MTU before use -- which is PR E's "BLE proven as the
 endpoint's carrier". Until then, BLE phone-to-phone is marked **not usable**
 for TAK files in the D2 matrix, and the timed-parts gate stays untested there.
+
+### Root causes, found and fixed 2026-09-26 (Columba)
+
+Measured with the A54 and the Nexus, both on the fixes as they landed:
+
+1. **The parent keeps a departed peer's interface two seconds.** A drop longer
+   than that destroyed the interface and every path learned on it. Now 120 s,
+   with the identity cache kept as long; the interface is marked offline
+   meanwhile, and announces sent in the gap are held for it.
+2. **Both phones connect to each other, and each kept a different link.** Each
+   refused the other's survivor as a duplicate; they reconnected every few
+   seconds and no TAK traffic crossed. Now both keep the link whose central is
+   the lower identity.
+3. **A second connection to a rotated address tore down the shared link** about
+   every 60 s, in step with advertising refresh. The local MAC is hidden on
+   Android, so ordering by MAC could not work. Each phone now advertises the
+   first 8 bytes of its identity in the scan response, and only the lower
+   identity connects.
+4. **Introduced by 1: a peer back inside the grace by a path the parent does not
+   revive stayed offline.** Rev 1 reconnected in under a second, packets kept
+   arriving, and Transport routed nothing to it for seven minutes. Now any kept
+   interface with a connected address and no detach pending is online.
+
+The MTU-20 observation above was only the pre-handshake value; links reach
+509-512 once negotiated. Messaging and markers crossed phone to phone after 1-3.
+
+**Still open:** throughput -- 15 kbit/s on a 12 KB sample, the fast connection
+interval refused as a collision and a re-request after the handshake reverted
+for churn -- and link stability after restarts. Both are measured next on a
+soak harness; see *PR E extended* in `TAKDeliveryPlan.md`.
