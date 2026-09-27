@@ -113,6 +113,34 @@ It must land **before** Outdoor Test 1: a board that resets mid-test invalidates
 every range and reconnection measurement taken, with no way afterwards to tell
 which readings were poisoned.
 
+### Rev 2-2's bootlog, read 2026-09-27, and an overnight soak
+
+Rev 2-2 was reflashed for PR E step 2 (multi-peer BLE) before its bootlog was
+read -- against the note above -- but its whole filesystem had been backed up
+first (`~/.impr-tak/backups/rev2-2-20260927-1842`), and the log came out of it
+with littlefs-python (PlatformIO's `mklittlefs` could not mount the image):
+
+    boot reason=SW (ESP.restart) prev=89063s
+    boot reason=SW (ESP.restart) prev=102034s
+    boot reason=SW (ESP.restart) prev=90147s
+    boot reason=POWERON prev=hw-reset          <- plugged into the deck, 18:38
+    boot reason=UNKNOWN prev=180s              <- esptool flash_id
+    boot reason=UNKNOWN prev=0s                <- esptool read_flash
+
+**No TASK_WDT, and ESP-NOW down throughout** -- consistent with the lead above.
+But **a software restart roughly every 25-28 hours.** The only ESP.restart in
+this firmware is `hard_reset()`, reached through RNS_LOW_MEMORY_REBOOT at
+<=2 % free heap, so this reads as a slow leak on the in-service Rev 2 build,
+not a watchdog. It matters as much for Outdoor Test 1: a board restarting once
+a day loses its paths each time.
+
+Now soaking overnight with `tools/serial_soak.py` (serial, attached without a
+reset, reattaching after each reboot): every boot and its reason, backtraces,
+`[mem]` internal heap and largest block each minute, ESP-NOW state. At start:
+internal 55 284 B free, largest block 23 540 B, ESP-NOW `strict ch=0 peers=0`
+-- no peer, so this run is the no-peer half of the A/B, now on the multi-peer
+BLE build with two phones attached. `--summary` gives the heap slope per hour.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
