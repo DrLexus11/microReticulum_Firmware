@@ -114,7 +114,8 @@
     "part_request_kind": 9,
     "part_kind": 10,
     "fetch_budget_seconds": 120,
-    "first_part_bytes": 65536,
+    "setup_part_bytes": 4096,
+    "sample_part_bytes": 12288,
     "part_bytes": 524288,
     "part_request": {
       "offset": 65536,

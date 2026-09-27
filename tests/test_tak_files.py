@@ -9,6 +9,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 import urllib.error
@@ -281,9 +282,13 @@ class DeckReceivesTests(unittest.TestCase):
         made.lxmf = Mock()
         made.drawn = []
         made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)
-        self.rtt = 0.008
-        made._measure_path = lambda member, done: done(self.rtt)
+        self.route = (1, "TCPInterface[Columba LAN]")
+        made._route_to = lambda member: self.route
         self.made = made
+
+    def slow(self):
+        """This route to the sender was measured at 8 bit/s a moment ago."""
+        self.made._path_rates().record(ALPHA, self.route, 1.0, time.time())
 
     def tearDown(self):
         self.folder.cleanup()
@@ -296,13 +301,19 @@ class DeckReceivesTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             if frame is not None:
                 self.made._file_arrived(frame, sender)
-            else:
-                self.made._part_arrived(tak_files.encode_part(HASH, 0, len(DATA), DATA), sender)
+                return
+            for _ in range(5):          # each part asked for, as it is asked for
+                call = self.made.lxmf.send_request.call_args
+                offset, length = tak_files.decode_part_request(call[0][1])[1:] if call else (0, len(DATA))
+                self.made._part_arrived(
+                    tak_files.encode_part(HASH, offset, len(DATA), DATA[offset:offset + length]), sender)
+                if HASH not in self.made._pending_files():
+                    return
 
     def test_over_a_fast_path_it_is_fetched_then_offered(self):
         self.assertTrue(self.offered())
         self.made.lxmf.send_request.assert_called_once_with(
-            ALPHA, tak_files.encode_part_request(HASH, 0, len(DATA)))
+            ALPHA, tak_files.encode_part_request(HASH, 0, min(tak_files.SETUP_PART_BYTES, len(DATA))))
         self.assertEqual(self.made.drawn, [], "ATAK is not offered what it cannot fetch yet")
 
         self.arrives()
@@ -311,8 +322,8 @@ class DeckReceivesTests(unittest.TestCase):
         self.assertIn(b"http://192.168.240.1:8080/Marti/sync/content?hash=" + HASH.encode(),
                       self.made.drawn[0])
 
-    def test_over_a_slow_path_it_waits(self):
-        self.rtt = 4.9
+    def test_over_a_route_measured_slow_it_waits(self):
+        self.slow()
         with unittest.mock.patch("threading.Timer"):
             self.offered()
         self.made.lxmf.send_request.assert_not_called()
@@ -335,7 +346,7 @@ class DeckReceivesTests(unittest.TestCase):
         self.assertEqual(len(self.made.drawn), 1)
 
     def test_a_deferred_file_is_announced_once_from_columba(self):
-        self.rtt = 4.9
+        self.slow()
         self.made.uid = "urtn-" + "aa" * 16
         self.made.registry = Mock()
         self.made.registry.describe.return_value = {"callsign": "LEXUS"}
@@ -348,15 +359,52 @@ class DeckReceivesTests(unittest.TestCase):
         self.assertIn("from LEXUS is waiting", line)
         self.assertIn(tak_files.STATUS_UID, line)
 
-    def test_files_waiting_on_one_sender_share_one_probe(self):
-        self.rtt = 4.9
-        probes = []
-        self.made._measure_path = lambda member, done: probes.append(member) or done(self.rtt)
+    def test_files_waiting_behind_a_slow_route_cost_nothing_on_air(self):
+        self.slow()
         other = hashlib.sha256(b"another").hexdigest()
         with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
             self.made._file_offered_here(notice(dest="DECK"), ALPHA)
             self.made._file_offered_here(notice(file_hash=other, dest="DECK"), ALPHA)
-        self.assertEqual(len(probes), 1)
+        self.made.lxmf.send_request.assert_not_called()
+
+    def test_with_no_path_yet_it_asks_for_nothing_and_tells_nobody(self):
+        self.route = None
+        self.made.uid = "urtn-" + "aa" * 16
+        with unittest.mock.patch("threading.Timer"):
+            self.offered()
+        self.made.lxmf.send_request.assert_not_called()
+        self.assertEqual(self.made.drawn, [], "a path is usually seconds away")
+
+    def test_a_path_that_appears_within_the_grace_brings_the_file(self):
+        self.route = None
+        with unittest.mock.patch("threading.Timer"):
+            self.offered()
+        self.route = (1, "BLEPeerInterface[LEXUS]")
+        with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
+            self.made._attempt_file(HASH, self.made._pending_files()[HASH])
+        self.made.lxmf.send_request.assert_called_once()
+
+    def test_no_path_past_the_grace_is_told(self):
+        self.route = None
+        self.made.uid = "urtn-" + "aa" * 16
+        with unittest.mock.patch("threading.Timer"):
+            self.offered()
+        entry = self.made._pending_files()[HASH]
+        entry["since"] -= CotBridge.PATH_GRACE_SECONDS + 1
+        with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
+            self.made._attempt_file(HASH, entry)
+        self.assertTrue(any(b"no path to its sender yet" in x for x in self.made.drawn))
+
+    def test_a_preview_shown_in_the_grace_is_mentioned_when_the_wait_is_told(self):
+        self.route = None
+        self.made.uid = "urtn-" + "aa" * 16
+        self.offer_arrives()
+        self.assertEqual(len([x for x in self.made.drawn if b"b-f-t-r" in x]), 1, "the preview, at once")
+        entry = self.made._pending_files()[self.package_hash]
+        entry["since"] -= CotBridge.PATH_GRACE_SECONDS + 1
+        with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
+            self.made._attempt_file(self.package_hash, entry)
+        self.assertTrue(any(b"A preview is on the map" in x for x in self.made.drawn))
 
     def offer_arrives(self, sender_id=0x11111111):
         package = quickpic_package()
@@ -370,7 +418,7 @@ class DeckReceivesTests(unittest.TestCase):
 
     def test_over_a_slow_path_a_quickpic_is_previewed_on_the_map(self):
         import zipfile
-        self.rtt = 4.9
+        self.slow()
         self.made.uid = "urtn-" + "aa" * 16
         self.offer_arrives()
         offered = [x.decode() for x in self.made.drawn if b"b-f-t-r" in x]
@@ -383,7 +431,7 @@ class DeckReceivesTests(unittest.TestCase):
         self.assertEqual(len(status), 1)
 
     def test_the_preview_is_deleted_when_the_full_file_arrives(self):
-        self.rtt = 4.9
+        self.slow()
         self.made.uid = "urtn-" + "aa" * 16
         self.offer_arrives()
         preview = tak_files.parse_notice([x.decode() for x in self.made.drawn if b"b-f-t-r" in x][0])
@@ -397,7 +445,8 @@ class DeckReceivesTests(unittest.TestCase):
     def test_over_a_fast_path_the_full_file_is_asked_for_and_no_preview(self):
         self.offer_arrives()
         self.made.lxmf.send_request.assert_called_once_with(
-            ALPHA, tak_files.encode_part_request(self.package_hash, 0, len(quickpic_package())))
+            ALPHA, tak_files.encode_part_request(
+                self.package_hash, 0, min(tak_files.SETUP_PART_BYTES, len(quickpic_package()))))
         self.assertEqual(self.made.drawn, [])
 
     def test_an_offer_claiming_someone_else_is_refused(self):
@@ -476,9 +525,8 @@ class OfferTests(unittest.TestCase):
 
 class PartsTests(unittest.TestCase):
     """A file fetched a part at a time, each timed; the next is asked for only
-    while the rest would arrive within the budget. Round-trip time says LoRa is
-    not in the path; it does not say a file will arrive in reasonable time --
-    BLE is short and slow."""
+    while the rest would arrive within the budget. A setup part, then a sample
+    that is judged -- nothing else measures a path fairly on every carrier."""
 
     BIG = bytes(range(256)) * 4096          # 1 MiB
     BIG_HASH = hashlib.sha256(BIG).hexdigest()
@@ -498,7 +546,8 @@ class PartsTests(unittest.TestCase):
         made.lxmf = Mock()
         made.drawn = []
         made._to_clients = lambda payload=None, keep=False: made.drawn.append(payload)
-        made._measure_path = lambda member, done: done(0.02)
+        self.route = (1, "BLEPeerInterface[NEXUS]")
+        made._route_to = lambda member: self.route
         self.made = made
         self.clock = [1000.0]
         patcher = unittest.mock.patch("cot_bridge.time.time", lambda: self.clock[0])
@@ -525,28 +574,56 @@ class PartsTests(unittest.TestCase):
         return offset, length
 
     def test_a_fast_path_fetches_every_part_and_the_file_is_whole(self):
-        self.assertEqual(self.part(0.1), (0, tak_files.FIRST_PART_BYTES))
+        self.assertEqual(self.part(0.1), (0, tak_files.SETUP_PART_BYTES))
+        self.assertEqual(self.part(0.1), (tak_files.SETUP_PART_BYTES, tak_files.SAMPLE_PART_BYTES))
         while self.made._pending_files():
             self.part(0.5)
         self.assertEqual(self.made.files.read(self.BIG_HASH), self.BIG)
         self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
 
-    def test_a_short_slow_path_pauses_after_the_sample(self):
-        """64 KB in 20 s is ~26 kbit/s, BLE-like: the rest of a megabyte would
-        take about five minutes, over the two-minute budget."""
-        self.part(20.0)
-        self.assertEqual(self.made.lxmf.send_request.call_count, 1, "no second part asked for")
-        self.assertEqual(self.made.files.partial_size(self.BIG_HASH), tak_files.FIRST_PART_BYTES)
+    def sampled(self, sample_seconds):
+        self.part(3.0)                  # setup: a link and a transfer being made
+        self.part(sample_seconds)
+
+    def test_the_setup_part_is_not_judged(self):
+        """Measured 2026-09-26: 64 KB in 16.4 s over one BLE hop, link setup
+        included, judged ~32 kbit/s and the file deferred."""
+        self.part(30.0)
+        self.assertEqual(self.made.lxmf.send_request.call_count, 2, "the sample is asked for regardless")
+
+    def test_a_slow_sample_pauses_and_says_why(self):
+        """12 KB in 20 s is ~5 kbit/s: the rest of a megabyte is half an hour."""
+        self.sampled(20.0)
+        self.assertEqual(self.made.lxmf.send_request.call_count, 2, "no part after the sample")
+        self.assertEqual(self.made.files.partial_size(self.BIG_HASH),
+                         tak_files.SETUP_PART_BYTES + tak_files.SAMPLE_PART_BYTES)
         waiting = [x.decode() for x in self.made.drawn if b"would take about" in x]
         self.assertEqual(len(waiting), 1)
 
-    def test_a_paused_transfer_resumes_where_it_stopped(self):
-        self.part(20.0)
+    def retry(self):
         entry = self.made._pending_files()[self.BIG_HASH]
         with redirect_stdout(io.StringIO()):
             self.made._attempt_file(self.BIG_HASH, entry)
-        offset, _ = tak_files.decode_part_request(self.made.lxmf.send_request.call_args[0][1])[1:]
-        self.assertEqual(offset, tak_files.FIRST_PART_BYTES)
+
+    def test_a_route_measured_slow_is_not_sampled_again(self):
+        self.sampled(20.0)
+        self.clock[0] += 15 * 60
+        self.retry()
+        self.assertEqual(self.made.lxmf.send_request.call_count, 2, "nothing spent on air")
+
+    def test_a_changed_route_is_sampled_and_resumes_where_it_stopped(self):
+        self.sampled(20.0)
+        self.route = (2, "TCPInterface[Columba LAN]")
+        self.retry()
+        _, offset, length = tak_files.decode_part_request(self.made.lxmf.send_request.call_args[0][1])
+        self.assertEqual((offset, length), (tak_files.SETUP_PART_BYTES + tak_files.SAMPLE_PART_BYTES,
+                                            tak_files.SETUP_PART_BYTES))
+
+    def test_the_same_route_is_sampled_again_after_a_while(self):
+        self.sampled(20.0)
+        self.clock[0] += tak_files.RESAMPLE_SECONDS + 1
+        self.retry()
+        self.assertEqual(self.made.lxmf.send_request.call_count, 3)
 
     def test_a_part_out_of_order_is_not_kept(self):
         with redirect_stdout(io.StringIO()):
@@ -604,8 +681,10 @@ class SharedFixtureTests(unittest.TestCase):
     def test_part_frames(self):
         self.assertEqual((self.v["part_request_kind"], self.v["part_kind"]),
                          (tak_payload.FILE_PART_REQUEST_V1, tak_payload.FILE_PART_V1))
-        self.assertEqual((self.v["fetch_budget_seconds"], self.v["first_part_bytes"], self.v["part_bytes"]),
-                         (tak_files.FETCH_BUDGET_SECONDS, tak_files.FIRST_PART_BYTES, tak_files.PART_BYTES))
+        self.assertEqual((self.v["fetch_budget_seconds"], self.v["setup_part_bytes"],
+                          self.v["sample_part_bytes"], self.v["part_bytes"]),
+                         (tak_files.FETCH_BUDGET_SECONDS, tak_files.SETUP_PART_BYTES,
+                          tak_files.SAMPLE_PART_BYTES, tak_files.PART_BYTES))
         req, part = self.v["part_request"], self.v["part"]
         self.assertEqual(tak_files.encode_part_request(self.v["hash"], req["offset"], req["length"]).hex(),
                          req["frame"])

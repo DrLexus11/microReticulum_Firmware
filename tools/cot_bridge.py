@@ -1012,18 +1012,17 @@ class CotBridge:
     #
     # The deck's half of what Columba's TakFileTransfers does for a handset: a
     # notice is held until its file is here, the path to its sender measured
-    # first, and Waydroid's ATAK only ever sees an offer it can complete.
+    # by timed parts, and Waydroid's ATAK only ever sees an offer it can
+    # complete. See the parts in tak_files for why nothing else is measured.
 
-    # A link handshake faster than this is a fast path. Measured 2026-09-22:
-    # Nexus over TCP 0.008 s; A54 over BLE and LoRa 4.9 s.
-    FAST_RTT_SECONDS = 0.5
     FIRST_RETRY_SECONDS = 60
     MAX_RETRY_SECONDS = 15 * 60
     HOLD_SECONDS = 24 * 60 * 60
-    PROBE_TIMEOUT_SECONDS = 10
-    # One measurement per sender serves every file waiting on them this long:
-    # each probe is a link handshake, over LoRa when the path is slow.
-    PROBE_REUSE_SECONDS = 30
+    # An offer usually arrives before its sender's inbox is known; the path
+    # request is answered in seconds. Look again soon, and tell nobody yet --
+    # though a QuickPic's preview, local and free, is shown at once.
+    PATH_GRACE_SECONDS = 60
+    PATH_LOOK_SECONDS = 10
     # How long an offered file may go unfetched before the sender is told.
     UNFETCHED_SECONDS = 60
 
@@ -1060,70 +1059,69 @@ class CotBridge:
               % (notice["filename"], notice["size"]), flush=True)
         entry = self._pending_files().setdefault(notice["hash"], {
             "notice": notice, "xml": xml, "sender": signed_by, "since": time.time(),
-            "backoff": self.FIRST_RETRY_SECONDS, "probing": False, "offer": offer})
+            "backoff": self.FIRST_RETRY_SECONDS, "offer": offer})
         self._attempt_file(notice["hash"], entry)
         return True
 
+    def _path_rates(self):
+        rates = self.__dict__.get("_rates")
+        if rates is None:
+            rates = self._rates = tak_files.PathRates()
+        return rates
+
     def _attempt_file(self, file_hash, entry):
-        if entry["probing"]:
-            return
+        if entry.get("asked") is not None:
+            return                      # a part is in flight; it decides what next
         if time.time() - entry["since"] > self.HOLD_SECONDS:
             self._pending_files().pop(file_hash, None)
             print("[files] %s never found a fast path; given up after a day"
                   % entry["notice"]["filename"], flush=True)
             return
-        entry["probing"] = True
-        cache = self.__dict__.setdefault("_probe_cache", {})
-        cached = cache.get(entry["sender"])
-        if cached is not None and time.time() - cached[0] < self.PROBE_REUSE_SECONDS:
-            self._path_measured(file_hash, entry, cached[1])
+        name = entry["notice"]["filename"]
+        route = self._route_to(entry["sender"])
+        if route is None and time.time() - entry["since"] < self.PATH_GRACE_SECONDS:
+            print("[files] no path to the sender of %s yet; asked, looking again shortly" % name, flush=True)
+            self._show_preview(entry)       # costs nothing on air
+            timer = threading.Timer(self.PATH_LOOK_SECONDS, self._attempt_file, args=(file_hash, entry))
+            timer.daemon = True
+            timer.start()
             return
+        if route is None:
+            self._wait_for_fast_path(file_hash, entry, "no path to its sender yet")
+            return
+        remaining = entry["notice"]["size"] - self.files.partial_size(file_hash)
+        rate = self._path_rates().known(entry["sender"], route, time.time())
+        print("[files] route to the sender of %s: %d hop(s) via %s; %s"
+              % (name, route[0], route[1],
+                 "not measured lately" if rate is None else "%.0f bit/s measured" % (rate * 8)),
+              flush=True)
+        if rate is not None:
+            left = tak_files.seconds_left(remaining, rate, 1.0)
+            if left > tak_files.FETCH_BUDGET_SECONDS:
+                # Measured slow on this very route: nothing spent on air.
+                self._wait_for_fast_path(file_hash, entry, self._too_slow(left))
+                return
+        entry["route"] = route
+        entry["parts"] = 0
+        entry["judged"] = False
+        if not self._request_part(file_hash, entry):
+            self._wait_for_fast_path(file_hash, entry)
 
-        def measured(rtt):
-            cache[entry["sender"]] = (time.time(), rtt)
-            self._path_measured(file_hash, entry, rtt)
-
-        self._measure_path(entry["sender"], measured)
-
-    def _measure_path(self, member, done):
-        """The round trip of a link handshake to a member's inbox, or None.
-
-        A link, not the path table's first hop: from the deck the first hop is
-        TCP to rrcd even when LoRa lies beyond it.
-        """
+    def _route_to(self, member):
+        """(hops, next-hop interface) to a member's inbox, or None without a path."""
         identity = self.rns.Identity.recall(member)
         if identity is None:
             self._ask_for_path(member)
-            done(None)
-            return
-        answered = threading.Event()
+            return None
+        inbox = self.rns.Destination.hash(identity, "lxmf", "delivery")
+        if not self.rns.Transport.has_path(inbox):
+            self._ask_for_path(inbox)
+            return None
+        return (self.rns.Transport.hops_to(inbox), str(self.rns.Transport.next_hop_interface(inbox)))
 
-        def established(link):
-            if not answered.is_set():
-                answered.set()
-                rtt = getattr(link, "rtt", None)
-                link.teardown()
-                done(rtt)
-
-        def timed_out():
-            if not answered.is_set():
-                answered.set()
-                done(None)
-
-        destination = self.rns.Destination(identity, self.rns.Destination.OUT,
-                                           self.rns.Destination.SINGLE, "lxmf", "delivery")
-        self.rns.Link(destination, established_callback=established)
-        timer = threading.Timer(self.PROBE_TIMEOUT_SECONDS, timed_out)
-        timer.daemon = True
-        timer.start()
-
-    def _path_measured(self, file_hash, entry, rtt):
-        entry["probing"] = False
-        name = entry["notice"]["filename"]
-        print("[files] path to the sender of %s: rtt=%s s" % (name, rtt), flush=True)
-        if rtt is not None and rtt < self.FAST_RTT_SECONDS and self._request_part(file_hash, entry):
-            return
-        self._wait_for_fast_path(file_hash, entry)
+    @staticmethod
+    def _too_slow(left):
+        return "at the rate this path is giving, the rest would take about %d min" % max(1, round(left / 60))
 
     def _wait_for_fast_path(self, file_hash, entry, reason=None):
         """Hold the file, show a preview if there is one, try again later."""
@@ -1132,7 +1130,7 @@ class CotBridge:
         entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
         print("[files] %s; %s waits, next try in %d s"
               % (reason or "slow or no path", name, delay), flush=True)
-        previewed = self._show_preview(entry)
+        previewed = self._show_preview(entry) or entry.get("preview_hash") is not None
         if not entry.get("told"):
             entry["told"] = True
             sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "a teammate")
@@ -1151,7 +1149,8 @@ class CotBridge:
         if identity is None or self.lxmf is None:
             return False
         offset = self.files.partial_size(file_hash)
-        length = tak_files.next_part_length(offset, entry["notice"]["size"])
+        length = tak_files.part_length(offset, entry["notice"]["size"],
+                                       entry.get("parts", 0), entry.get("judged", False))
         entry["asked"] = (offset, length, time.time())
         self.lxmf.send_request(identity, tak_files.encode_part_request(file_hash, offset, length))
         print("[files] asked for %s, bytes %d-%d of %d"
@@ -1198,17 +1197,25 @@ class CotBridge:
             whole = self.files.take_partial(file_hash)
             self._file_complete(file_hash, entry["notice"]["filename"], whole, entry)
             return
-        took = time.time() - asked[2] if asked else float("inf")
+        took = time.time() - asked[2]
+        entry["parts"] = entry.get("parts", 0) + 1
+        if entry["parts"] == 1:
+            # The first part of an attempt carries the link and transfer setup.
+            print("[files] %s: %d of %d bytes; setup part in %.1f s, not judged"
+                  % (entry["notice"]["filename"], have, total, took), flush=True)
+            self._request_part(file_hash, entry)
+            return
         left = tak_files.seconds_left(total - have, len(data), took)
-        print("[files] %s: %d of %d bytes, the last part in %.1f s; the rest ~%.0f s"
-              % (entry["notice"]["filename"], have, total, took, left), flush=True)
+        self._path_rates().record(entry["sender"], entry.get("route"), len(data) / max(took, 0.001),
+                                  time.time())
+        print("[files] %s: %d of %d bytes, the last part in %.1f s (%.0f bit/s); the rest ~%.0f s"
+              % (entry["notice"]["filename"], have, total, took, len(data) * 8 / max(took, 0.001), left),
+              flush=True)
         if left <= tak_files.FETCH_BUDGET_SECONDS:
+            entry["judged"] = True
             self._request_part(file_hash, entry)
         else:
-            self._wait_for_fast_path(
-                file_hash, entry,
-                "at the rate this path is giving, the rest would take about %d min"
-                % max(1, round(left / 60)))
+            self._wait_for_fast_path(file_hash, entry, self._too_slow(left))
 
     def _file_complete(self, file_hash, name, data, entry):
         if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:

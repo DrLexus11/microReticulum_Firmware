@@ -82,11 +82,11 @@ class PathRequestBackoffTests(unittest.TestCase):
         self.assertEqual(made.rns.Transport.request_path.call_count, 1)
         self.assertEqual(made.unreachable, 10)
 
-    def test_a_file_probe_to_an_unrecalled_sender_is_backed_off(self):
+    def test_a_route_to_an_unrecalled_sender_is_backed_off(self):
         made = self.bridge()
         results = []
         for _ in range(10):
-            made._measure_path(ALPHA, results.append)
+            results.append(made._route_to(ALPHA))
         self.assertEqual(results, [None] * 10)
         self.assertEqual(made.rns.Transport.request_path.call_count, 1)
 
@@ -103,7 +103,7 @@ class OutstandingPartTests(PartsTests):
         entry = self.made._pending_files()[self.BIG_HASH]
         with redirect_stdout(io.StringIO()):
             self.made._part_stalled(self.BIG_HASH, entry, entry["asked"])
-        self.arrive(0, self.BIG[:tak_files.FIRST_PART_BYTES])
+        self.arrive(0, self.BIG[:tak_files.SETUP_PART_BYTES])
         self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
 
     def test_a_part_of_another_length_is_discarded(self):
@@ -111,7 +111,7 @@ class OutstandingPartTests(PartsTests):
         self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
 
     def test_a_part_claiming_another_size_is_discarded(self):
-        self.arrive(0, self.BIG[:tak_files.FIRST_PART_BYTES], total=len(self.BIG) * 4)
+        self.arrive(0, self.BIG[:tak_files.SETUP_PART_BYTES], total=len(self.BIG) * 4)
         self.assertEqual(self.made.files.partial_size(self.BIG_HASH), 0)
 
 
