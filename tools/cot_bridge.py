@@ -1087,7 +1087,7 @@ class CotBridge:
             timer.start()
             return
         if route is None:
-            self._wait_for_fast_path(file_hash, entry, "no path to its sender yet")
+            self._wait_for_fast_path(file_hash, entry, tak_files.REASON_NO_PATH)
             return
         remaining = entry["notice"]["size"] - self.files.partial_size(file_hash)
         rate = self._path_rates().known(entry["sender"], route, time.time())
@@ -1099,7 +1099,7 @@ class CotBridge:
             left = tak_files.seconds_left(remaining, rate, 1.0)
             if left > tak_files.FETCH_BUDGET_SECONDS:
                 # Measured slow on this very route: nothing spent on air.
-                self._wait_for_fast_path(file_hash, entry, self._too_slow(left))
+                self._wait_for_fast_path(file_hash, entry, tak_files.slow_reason(left))
                 return
         entry["route"] = route
         entry["parts"] = 0
@@ -1119,26 +1119,19 @@ class CotBridge:
             return None
         return (self.rns.Transport.hops_to(inbox), str(self.rns.Transport.next_hop_interface(inbox)))
 
-    @staticmethod
-    def _too_slow(left):
-        return "at the rate this path is giving, the rest would take about %d min" % max(1, round(left / 60))
-
     def _wait_for_fast_path(self, file_hash, entry, reason=None):
         """Hold the file, show a preview if there is one, try again later."""
         name = entry["notice"]["filename"]
         delay = entry["backoff"]
         entry["backoff"] = min(delay * 2, self.MAX_RETRY_SECONDS)
         print("[files] %s; %s waits, next try in %d s"
-              % (reason or "slow or no path", name, delay), flush=True)
+              % (reason or tak_files.REASON_SLOW, name, delay), flush=True)
         previewed = self._show_preview(entry) or entry.get("preview_hash") is not None
         if not entry.get("told"):
             entry["told"] = True
-            sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "a teammate")
-            self._file_status("%s (%s) from %s is waiting: %s. It arrives when a fast path "
-                              "appears.%s"
-                              % (name, tak_files.size_text(entry["notice"]["size"]), sender,
-                                 reason or "the path is too slow to bring it now",
-                                 " A preview is on the map." if previewed else ""))
+            sender = (self.registry.describe(entry["sender"]) or {}).get("callsign", "?")
+            self._file_status(tak_files.held_line(name, entry["notice"]["size"], sender,
+                                                  reason or tak_files.REASON_SLOW, previewed))
         timer = threading.Timer(delay, self._attempt_file, args=(file_hash, entry))
         timer.daemon = True
         timer.start()
@@ -1167,7 +1160,7 @@ class CotBridge:
     def _part_stalled(self, file_hash, entry, asked):
         if entry.get("asked") is asked and self._pending_files().get(file_hash) is entry:
             entry["asked"] = None
-            self._wait_for_fast_path(file_hash, entry, "a part did not arrive in time")
+            self._wait_for_fast_path(file_hash, entry, tak_files.REASON_PART_TIMED_OUT)
 
     def _part_arrived(self, raw, member):
         """One part of a file being fetched: kept, timed, and the next asked
@@ -1215,7 +1208,7 @@ class CotBridge:
             entry["judged"] = True
             self._request_part(file_hash, entry)
         else:
-            self._wait_for_fast_path(file_hash, entry, self._too_slow(left))
+            self._wait_for_fast_path(file_hash, entry, tak_files.slow_reason(left))
 
     def _file_complete(self, file_hash, name, data, entry):
         if self.files.put(data, name or entry["notice"]["filename"], expected_hash=file_hash) is None:
@@ -1334,10 +1327,8 @@ class CotBridge:
         notice = self.__dict__.get("_file_offers", {}).pop(key, None)
         if notice is None:
             return
-        who = (self.registry.describe(key[1]) or {}).get("callsign", "a teammate")
-        self._file_status("%s (%s) not fetched yet by %s. Over a slow path a file waits for a "
-                          "fast one; ATAK may report this send as failed while it waits."
-                          % (notice["filename"], tak_files.size_text(notice["size"]), who))
+        who = (self.registry.describe(key[1]) or {}).get("callsign", key[1].hex()[:8])
+        self._file_status(tak_files.unfetched_line(notice["filename"], notice["size"], who))
 
     def _file_requested(self, raw, member):
         """A member asked for a file: send it if they were offered it.

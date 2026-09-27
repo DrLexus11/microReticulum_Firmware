@@ -243,7 +243,8 @@ class BridgeTests(unittest.TestCase):
         self.made._offer_unfetched((HASH, ALPHA))
         self.made._offer_unfetched((HASH, ALPHA))
         self.assertEqual(len(self.made.drawn), 1)
-        self.assertIn("not fetched yet by PEER", self.made.drawn[0].decode())
+        self.assertIn("NOT FETCHED Recon1.zip", self.made.drawn[0].decode())
+        self.assertIn("by PEER", self.made.drawn[0].decode())
 
     def test_a_fetched_offer_says_nothing(self):
         self.made.uid = "urtn-" + "aa" * 16
@@ -356,7 +357,8 @@ class DeckReceivesTests(unittest.TestCase):
             self.made._attempt_file(HASH, entry)
         self.assertEqual(len(self.made.drawn), 1, "one line, not one per retry")
         line = self.made.drawn[0].decode()
-        self.assertIn("from LEXUS is waiting", line)
+        self.assertIn("HELD Recon1.zip", line)
+        self.assertIn("fr LEXUS - slow path", line)
         self.assertIn(tak_files.STATUS_UID, line)
 
     def test_files_waiting_behind_a_slow_route_cost_nothing_on_air(self):
@@ -393,7 +395,7 @@ class DeckReceivesTests(unittest.TestCase):
         entry["since"] -= CotBridge.PATH_GRACE_SECONDS + 1
         with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
             self.made._attempt_file(HASH, entry)
-        self.assertTrue(any(b"no path to its sender yet" in x for x in self.made.drawn))
+        self.assertTrue(any(b"- no path" in x for x in self.made.drawn))
 
     def test_a_preview_shown_in_the_grace_is_mentioned_when_the_wait_is_told(self):
         self.route = None
@@ -404,7 +406,7 @@ class DeckReceivesTests(unittest.TestCase):
         entry["since"] -= CotBridge.PATH_GRACE_SECONDS + 1
         with unittest.mock.patch("threading.Timer"), redirect_stdout(io.StringIO()):
             self.made._attempt_file(self.package_hash, entry)
-        self.assertTrue(any(b"A preview is on the map" in x for x in self.made.drawn))
+        self.assertTrue(any(b"Preview on map" in x for x in self.made.drawn))
 
     def offer_arrives(self, sender_id=0x11111111):
         package = quickpic_package()
@@ -427,7 +429,7 @@ class DeckReceivesTests(unittest.TestCase):
         self.assertTrue(preview["filename"].endswith("_preview.zip"))
         package = zipfile.ZipFile(io.BytesIO(self.made.files.read(preview["hash"])))
         self.assertTrue(any(n.endswith(".webp") for n in package.namelist()))
-        status = [x.decode() for x in self.made.drawn if b"A preview is on the map" in x]
+        status = [x.decode() for x in self.made.drawn if b"Preview on map" in x]
         self.assertEqual(len(status), 1)
 
     def test_the_preview_is_deleted_when_the_full_file_arrives(self):
@@ -597,7 +599,7 @@ class PartsTests(unittest.TestCase):
         self.assertEqual(self.made.lxmf.send_request.call_count, 2, "no part after the sample")
         self.assertEqual(self.made.files.partial_size(self.BIG_HASH),
                          tak_files.SETUP_PART_BYTES + tak_files.SAMPLE_PART_BYTES)
-        waiting = [x.decode() for x in self.made.drawn if b"would take about" in x]
+        waiting = [x.decode() for x in self.made.drawn if b"slow path ~" in x]
         self.assertEqual(len(waiting), 1)
 
     def retry(self):
@@ -690,6 +692,17 @@ class SharedFixtureTests(unittest.TestCase):
                          req["frame"])
         self.assertEqual(tak_files.encode_part(self.v["hash"], part["offset"], part["total"],
                                                bytes.fromhex(part["data"])).hex(), part["frame"])
+
+    def test_status_lines(self):
+        for case in self.v["status_lines"]:
+            if case["kind"] == "held":
+                line = tak_files.held_line(case["filename"], case["size"], case["from"],
+                                           case["reason"], case["preview"])
+            elif case["kind"] == "slow_reason":
+                line = tak_files.slow_reason(case["seconds_left"])
+            else:
+                line = tak_files.unfetched_line(case["filename"], case["size"], case["by"])
+            self.assertEqual(line, case["line"])
 
     def test_offer_frames(self):
         import uuid

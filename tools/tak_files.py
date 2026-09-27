@@ -250,6 +250,33 @@ def size_text(size):
     return "%d B" % size
 
 
+# What the "Columba files" contact says in ATAK. One line each, state first:
+# they are read on a Nexus-sized screen, and a paragraph there is several
+# lines of scrolling (operator, 2026-09-26). Byte-identical with Columba's
+# TakFiles and pinned in tak_native_v1.json.
+
+REASON_SLOW = "slow path"
+REASON_NO_PATH = "no path"
+REASON_PART_TIMED_OUT = "part timed out"
+
+
+def slow_reason(seconds_left):
+    """The path is slow, and roughly how long the rest would take."""
+    return "%s ~%dmin" % (REASON_SLOW, max(1, int(seconds_left // 60)))
+
+
+def held_line(filename, size, sender, reason, previewed):
+    """A file offered to this node is held here until a fast path appears."""
+    line = "HELD %s %s fr %s - %s" % (filename, size_text(size).replace(" ", ""), sender, reason)
+    return line + (". Preview on map" if previewed else "")
+
+
+def unfetched_line(filename, size, member):
+    """A file this node offered has not been fetched by a member yet."""
+    return "NOT FETCHED %s %s by %s - slow path. Still held" % (
+        filename, size_text(size).replace(" ", ""), member)
+
+
 def url_host(url):
     try:
         return urlsplit(url).hostname
