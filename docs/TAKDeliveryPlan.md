@@ -1473,6 +1473,13 @@ connect was never retried; and a disconnect reported for "an unknown peer"
 left the attempt marked pending, refusing every later one. Much of the
 phone-to-phone variance seen earlier in the day was the first of these.
 
+*Positions from an ATAK with no fix went grey between reports.* ATAK reports
+every several minutes without GPS, and a report it made stated no interval, so
+receivers drew it current for two minutes -- NEXUS showed on the deck, greyed.
+Columba and the deck now state the gap their ATAK last left between reports
+(capped at ten minutes); confirmed on the deck's ATAK: LEXUS and NEXUS both
+live.
+
 **The BLE throughput ceiling with this pair is the radio, not the software.**
 Writing without a response was tried and **reverted**: the A54's writes
 completed in 3 ms, but the Nexus still received one 488-byte packet per ~60 ms
