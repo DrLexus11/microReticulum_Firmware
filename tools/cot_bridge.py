@@ -1472,8 +1472,16 @@ class CotBridge:
             # Shaped like a position and carrying none. Not ours to encode, so
             # it falls through to tier 2 rather than being dropped.
             return False
-        if not self.position_gate.allows(fix, time.time()):
+        # ATAK reporting at all is what the cadence measures, whether or not
+        # this report goes on the air.
+        now = time.time()
+        last = self.__dict__.get("_atak_last_report")
+        if last is not None:
+            self._atak_last_gap = now - last
+        self._atak_last_report = now
+        if not self.position_gate.allows(fix, now):
             return True
+        fix.interval_min = cot_position.stated_interval_minutes(self.__dict__.get("_atak_last_gap", 0))
         self.positions_sent += self._fan_out(position_codec.encode(fix))
         return True
 
