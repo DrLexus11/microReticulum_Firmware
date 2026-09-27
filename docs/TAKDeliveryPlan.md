@@ -1452,6 +1452,27 @@ real transfer, A54 and Nexus 6P over direct BLE, Rev 1 on the A54:
   an unreadable identity is read once more, then the connection is abandoned
   and made afresh.
 
+**Step 2 proven 2026-09-27: two phones on one board, into the main mesh.**
+The spare Rev 2 ("rev2-2", an ESP32-S3 N16R2: 16 MB flash, 2 MB PSRAM) was
+flashed with `impr-rad01-rev2-n16r2-ble-peers` -- NimBLE, up to seven peers --
+its identity and provisioning kept (same partition table; nvs and filesystem
+backed up first under `~/.impr-tak/backups`). It booted in TNC mode, relaying,
+LoRa receiving. Both the A54 and the Nexus then held it online at every
+heartbeat, and the deck reached each phone's inbox in four hops through the
+boards, neither through the other phone. The deck's bridge saw NEXUS for the
+first time that day: BLE now leads into the main mesh rather than a sub-mesh
+(operator item 2).
+
+Getting the Nexus there found three Columba faults that only Android 12 and
+older show, all fixed: the GATT client handled only the Android 13 forms of
+the read, notification and descriptor-read callbacks, so with the Nexus as the
+connecting side every read timed out and no notification ever arrived -- a
+link that could send and not receive, depending on which phone the identity
+tie-break made connect; a service discovery Android 8 refused right after
+connect was never retried; and a disconnect reported for "an unknown peer"
+left the attempt marked pending, refusing every later one. Much of the
+phone-to-phone variance seen earlier in the day was the first of these.
+
 **The BLE throughput ceiling with this pair is the radio, not the software.**
 Writing without a response was tried and **reverted**: the A54's writes
 completed in 3 ms, but the Nexus still received one 488-byte packet per ~60 ms

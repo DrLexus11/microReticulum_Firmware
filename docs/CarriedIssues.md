@@ -621,7 +621,13 @@ Measured with the A54 and the Nexus, both on the fixes as they landed:
 The MTU-20 observation above was only the pre-handshake value; links reach
 509-512 once negotiated. Messaging and markers crossed phone to phone after 1-3.
 
-**Still open:** throughput -- 15 kbit/s on a 12 KB sample, the fast connection
-interval refused as a collision and a re-request after the handshake reverted
-for churn -- and link stability after restarts. Both are measured next on a
-soak harness; see *PR E extended* in `TAKDeliveryPlan.md`.
+**Resolved 2026-09-27**, measured with `tools/ble_link_soak.py`: the identity
+tag dropped from the scan response after the first advertising refresh (fixed:
+100 % online both sides, no disconnects over ten minutes); a status-133 retry's
+leftover timeout and an unreadable identity each left a one-sided link; and
+the GATT client handled only Android 13 callbacks, so an Android 8 phone as the
+connecting side could send but never receive. Throughput between the A54 and
+the Nexus 6P is ~50 kbit/s and bounded by the Nexus's radio -- one 488-byte
+packet per ~60 ms, with or without a write response; see *PR E extended* in
+`TAKDeliveryPlan.md`. Still owed: the same measurement between two current
+phones.
