@@ -1288,7 +1288,7 @@ disregarded if ours already covers it; (d) sx126x RX-state refresh, read after
 (a)-(b) and taken only where it applies. **Backlog:** the ESP-IDF 5 / Arduino 3
 upgrade as its own PR, preceded by consolidating the unit tests so a platform
 change is caught by tests and not rediscovered on the bench -- BLE cost days.
-**Vox phase:** native Linux builds. RAK/SD work disregarded. Relaying on the RAD boards themselves was checked
+**Vox phase:** native Linux builds. RAK/SD work disregarded. Checked 2026-09-28: (b) and (c) are already in our tree -- see `UpstreamReview.md`; the sx126x `isResponding()` probe goes to the Vox phase. Relaying on the RAD boards themselves was checked
 the same day and works: the deck reaches the A54 in three hops, Rev 2 (UDP to
 LoRa) and Rev 1 (LoRa to BLE) both forwarding.
 - **The relaying boundary** and **the ESP-NOW reset trigger**, both below.

@@ -6,6 +6,18 @@ covers it; RX-state refresh -> as proposed; IDF 5 upgrade -> backlog, after the
 unit tests are consolidated to catch regressions; native builds -> Vox phase;
 RAK/SD -> disregarded. Scheduled in `TAKDeliveryPlan.md`.
 
+**Checked 2026-09-28:**
+- *ISR/SPI mutex fix* -- **already ours**, disregarded. All three drivers
+  (sx126x, sx127x, sx128x) defer the DIO0 work out of the interrupt with a
+  pending flag handled in the loop, the same pattern as 0124fd8.
+- *Radio reset at boot* -- **already ours**: `RNode_Firmware.ino` resets the
+  radio before `preInit()` (three paths). The "deaf after flash" symptom is not
+  the radio but the firmware signature (`fw_signature_validated` false leaves
+  `hw_ready` 0 and the loop stops the radio; cure: `pio run -t fixhash`, see
+  memory). What 127c698 adds for sx126x is `isResponding()`, a single-shot
+  health probe for the native daemon's runtime watchdog -- **moved to the Vox
+  phase** with the native builds.
+
 Sources: `attermann/microReticulum_Firmware` (fetched 2026-09-28) and
 `attermann/microReticulum`, the library.
 
