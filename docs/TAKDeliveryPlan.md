@@ -1267,7 +1267,16 @@ Waydroid's map, current for twice the interval.
 D2 file proof owed on it; (2) the RAD boards onto the multi-peer NimBLE backend,
 several phones on one board; (3) make "not relaying" loud on an unprovisioned
 board; (4) the ESP-NOW reset soak, run in the background; (5) the lone-field
-drill. Then Outdoor Test 1. Relaying on the RAD boards themselves was checked
+drill. Then Outdoor Test 1.
+
+**Status 2026-09-28.** (1)-(3) done and proven on hardware (see *PR E
+extended*). (5) **moved to the end of PR F** by the operator. Left in PR E:
+the heap leak and fragmentation found by the soak (every board restarting every
+10-28 h -- gates Outdoor Test 1; CarriedIssues #1); the ESP-NOW-peer half of
+(4), run after the leak fix so one does not mask the other; the multi-peer
+build onto the boards in service (Rev 1, the in-service Rev 2) once the leak is
+fixed; the fallback-interface design (operator item 5, design only); the PR
+texts. Relaying on the RAD boards themselves was checked
 the same day and works: the deck reaches the A54 in three hops, Rev 2 (UDP to
 LoRa) and Rev 1 (LoRa to BLE) both forwarding.
 - **The relaying boundary** and **the ESP-NOW reset trigger**, both below.
