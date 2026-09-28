@@ -34,6 +34,7 @@ KEEP = re.compile(
     r"Guru Meditation|panic|abort\(\)|Backtrace|Rebooting|TASK_WDT|task_wdt|brownout|"
     r"Low memory|LOW_MEMORY|heap_caps_malloc failed|out of memory")
 MEM = re.compile(r"\[mem\] internal=(\d+) largest=(\d+) psram=(\d+)")
+BLOCKS = re.compile(r"alloc_blocks=(\d+) free_blocks=(\d+)")
 ESPNOW = re.compile(r"\[espnow\] state=(\S+) ch=(\d+) peers=(\d+)")
 TABLES = re.compile(r"\[tables\] ((?:\w+=\d+ ?)+)")
 BOOT = re.compile(r"boot reason=([^\r\n]*?)(?: prev=(\S+))?$|\[boot\] reset reason: ([^,(]+)")
@@ -85,7 +86,7 @@ def stamp():
 
 
 def summarise(path, out=sys.stdout):
-    boots, mem, espnow, crashes, tables = [], [], [], [], []
+    boots, mem, espnow, crashes, tables, blocks = [], [], [], [], [], []
     first = last = None
     for line in open(path, errors="replace"):
         when = line[:19]
@@ -101,6 +102,9 @@ def summarise(path, out=sys.stdout):
         found = MEM.search(line)
         if found:
             mem.append((moment, int(found.group(1)), int(found.group(2))))
+        found = BLOCKS.search(line)
+        if found:
+            blocks.append((int(found.group(1)), int(found.group(2))))
         found = TABLES.search(line)
         if found:
             tables.append(dict((k, int(v)) for k, v in re.findall(r"(\w+)=(\d+)", found.group(1))))
@@ -128,6 +132,10 @@ def summarise(path, out=sys.stdout):
               % (internal[0], internal[-1], min(internal), slope, span), file=out)
         print("largest block: first %d, last %d, min %d, median %d"
               % (largest[0], largest[-1], min(largest), statistics.median(largest)), file=out)
+    if blocks:
+        print("blocks: allocated %d -> %d (max %d), free %d -> %d (max %d)"
+              % (blocks[0][0], blocks[-1][0], max(b[0] for b in blocks),
+                 blocks[0][1], blocks[-1][1], max(b[1] for b in blocks)), file=out)
     if tables:
         print("tables (first -> last, max):", file=out)
         for key in tables[0]:

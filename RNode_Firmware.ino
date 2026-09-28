@@ -1618,6 +1618,14 @@ void setup() {
       HEAD("Starting RNS...\r\n", RNS::LOG_VERBOSE);
 #if defined(RNS_MEM_LOG)
       RNS::loglevel(RNS::LOG_MEM);
+#elif defined(RNS_RUNTIME_LOG_LEVEL)
+      // A board in the field has nobody reading its console, and TRACE builds
+      // and prints a line for every packet and four neighbor scans a second,
+      // each ending in Serial.flush(). Rev 2-2's heap fragmented overnight
+      // until RNS_LOW_MEMORY_REBOOT (CarriedIssues #1); this is how a build
+      // tests, and then ships, a quieter level. printf diagnostics ([mem],
+      // [tables], [blepeer]) are not affected.
+      RNS::loglevel(RNS_RUNTIME_LOG_LEVEL);
 #else
       RNS::loglevel(RNS::LOG_TRACE);
 #endif
@@ -3947,12 +3955,19 @@ static void heap_watch() {
   //                         same file gives boards that have external flash.
   //                         If this number climbs with the curve, that is the
   //                         consumer and the cap is the fix.
-  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u\n",
+  // Block counts beside the sizes: allocated blocks climbing steadily is many
+  // small objects never freed; flat counts with a shrinking largest block is
+  // churn fragmenting the heap.
+  multi_heap_info_t internal_info;
+  heap_caps_get_info(&internal_info, MALLOC_CAP_INTERNAL);
+  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u alloc_blocks=%u free_blocks=%u\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
          (unsigned)RNS::Transport::path_table().size(),
-         (unsigned)RNS::Transport::path_table_maxsize());
+         (unsigned)RNS::Transport::path_table_maxsize(),
+         (unsigned)internal_info.allocated_blocks,
+         (unsigned)internal_info.free_blocks);
   // What holds the memory. Rev 2-2's internal heap fell in ~8 KB steps over a
   // night -- 55 KB to 21 KB, largest block 23 KB to 1.3 KB -- until
   // RNS_LOW_MEMORY_REBOOT restarted it after 10.5 h (2026-09-28), with its two
