@@ -1,5 +1,11 @@
 # What the original fork has that we do not -- reviewed 2026-09-28
 
+**Decided by the operator, 2026-09-28:** OCP and init order -> PR E; radio
+reset at boot -> PR E if it applies; ISR/SPI fix -> check, disregard if ours
+covers it; RX-state refresh -> as proposed; IDF 5 upgrade -> backlog, after the
+unit tests are consolidated to catch regressions; native builds -> Vox phase;
+RAK/SD -> disregarded. Scheduled in `TAKDeliveryPlan.md`.
+
 Sources: `attermann/microReticulum_Firmware` (fetched 2026-09-28) and
 `attermann/microReticulum`, the library.
 

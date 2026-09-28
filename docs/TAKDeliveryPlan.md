@@ -1276,7 +1276,18 @@ the heap leak and fragmentation found by the soak (every board restarting every
 (4), run after the leak fix so one does not mask the other; the multi-peer
 build onto the boards in service (Rev 1, the in-service Rev 2) once the leak is
 fixed; the fallback-interface design (operator item 5, design only); the PR
-texts. Relaying on the RAD boards themselves was checked
+texts.
+
+**Added 2026-09-28 from the upstream review** (`UpstreamReview.md`), by the
+operator: (a) the SX1262 over-current limit -- 140 mA where ours writes ~100 mA
+-- measured before and after (RSSI at a fixed receiver, supply current);
+(b) the radio reset at boot, checked against the "deaf after flash" symptom and
+taken if it applies; (c) the ISR/SPI mutex fix, checked against our drivers and
+disregarded if ours already covers it; (d) sx126x RX-state refresh, read after
+(a)-(b) and taken only where it applies. **Backlog:** the ESP-IDF 5 / Arduino 3
+upgrade as its own PR, preceded by consolidating the unit tests so a platform
+change is caught by tests and not rediscovered on the bench -- BLE cost days.
+**Vox phase:** native Linux builds. RAK/SD work disregarded. Relaying on the RAD boards themselves was checked
 the same day and works: the deck reaches the A54 in three hops, Rev 2 (UDP to
 LoRa) and Rev 1 (LoRa to BLE) both forwarding.
 - **The relaying boundary** and **the ESP-NOW reset trigger**, both below.
