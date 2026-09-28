@@ -1621,6 +1621,21 @@ afterwards to tell which readings were poisoned.
 
 ---
 
+## PR F starts with mesh telemetry -- decided 2026-09-28
+
+Before the ATAK plugin work, and needed for Outdoor Test 1: every board sends
+a compact telemetry report over Reticulum -- uptime and restarts, heap and
+largest block, interfaces up, relaying, peers, battery -- at a budgeted
+interval (`position_budget.py`; on LoRa it is shared airtime). Any node with
+an uplink (the deck, a Vox, a board on Wi-Fi) is a **gateway**: it announces a
+telemetry-uplink destination and publishes what it receives to MQTT; a board
+that cannot reach one has its reports stored and forwarded. MQTT stays off
+ordinary boards (heap; credentials only on gateways). A **new repository**
+holds the gateway, a Go backend, Prometheus and Grafana; this repository holds
+the board-side emitter and the codec, pinned by a shared fixture as
+`tak_native_v1.json` is. The plugin's reachability view reads the same data.
+It replaces the deck-only dashboard proposed in `UpstreamReview.md`.
+
 ## Open: the mesh and the server are two pictures
 
 Team members arrive over Tailscale and talk to OpenTAKServer on the deck; the
