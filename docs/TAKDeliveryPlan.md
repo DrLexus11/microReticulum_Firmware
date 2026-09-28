@@ -1647,6 +1647,32 @@ health and telemetry -- the telemetry feature is its first client). R4-R6
 platform track after PR F, R6 together with the Arduino-core / ESP-IDF 5
 upgrade. Linux compatibility is kept at every step for IMPR-Vox.
 
+## After PR F: the repositories go private -- decided 2026-09-28
+
+This firmware, its microReticulum library fork and Columba become private,
+renamed (working name **Tacticulum**; a name containing "reticulum" is avoided
+for anything seen outside, as it is Mark Qvist's project name). Scheduled
+after PR F, once no PR is mid-review.
+
+- **How:** leave the fork network, then set private and rename -- issues and
+  PR history stay in place. The original remains a fetch-only remote, and
+  `UpstreamReview.md` becomes a periodic review.
+- **One pass of references:** remotes, the library URLs in `platformio.ini`
+  (builds then need credentials), the sibling-repo notes and the push rule in
+  `CLAUDE.md`, fixture paths, memory.
+- **Licences shape what private means** (to confirm with counsel before
+  shipping): the firmware is GPL-3.0 -- a private repo is fine, but every board
+  handed to anyone carries the right to its complete source, including code
+  linked into it; microReticulum is Apache-2.0 (proprietary derivatives
+  allowed); Columba is MPL-2.0 (modified files source-available on
+  distribution, new files may be proprietary); Python Reticulum's licence bars
+  systems that can purposefully harm people, and AI training use.
+- **Open:** the final name; an Imperium Softworks organisation or the personal
+  account; and for Astropath, whether it replaces Reticulum's wire protocol --
+  losing ecosystem interoperability and most of the value of pulling upstream --
+  and so whether it is written clean-room outside the GPL firmware.
+- `urban-tak` stays public, as designed.
+
 ## Open: the mesh and the server are two pictures
 
 Team members arrive over Tailscale and talk to OpenTAKServer on the deck; the
