@@ -30,13 +30,13 @@ from datetime import datetime
 from pathlib import Path
 
 KEEP = re.compile(
-    r"boot reason=|\[boot\]|\[mem\]|\[tables\]|\[espnow\]|\[blepeer\]|\[init\] !!!|NOT RELAYING|"
+    r"boot reason=|\[boot\]|\[mem\]|\[tables\]|\[diag\]|\[espnow\]|\[blepeer\]|\[init\] !!!|NOT RELAYING|"
     r"Guru Meditation|panic|abort\(\)|Backtrace|Rebooting|TASK_WDT|task_wdt|brownout|"
     r"Low memory|LOW_MEMORY|heap_caps_malloc failed|out of memory")
 MEM = re.compile(r"\[mem\] internal=(\d+) largest=(\d+) psram=(\d+)")
 BLOCKS = re.compile(r"alloc_blocks=(\d+) free_blocks=(\d+)")
 ESPNOW = re.compile(r"\[espnow\] state=(\S+) ch=(\d+) peers=(\d+)")
-TABLES = re.compile(r"\[tables\] ((?:\w+=\d+ ?)+)")
+TABLES = re.compile(r"\[(?:tables|diag)\] ((?:\w+=\d+ ?)+)")
 BOOT = re.compile(r"boot reason=([^\r\n]*?)(?: prev=(\S+))?$|\[boot\] reset reason: ([^,(]+)")
 
 

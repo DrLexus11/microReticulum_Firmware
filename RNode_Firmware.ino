@@ -16,6 +16,9 @@
 // CBA Reticulum includes must come before local to avoid collision with local defines
 #ifdef HAS_RNS
 #include <microReticulum.h>
+#if __has_include(<microReticulum/Diagnostics.h>)
+#include <microReticulum/Diagnostics.h>
+#endif
 #include "Provisioning.h"
 #include "LoopPhase.h"
 #include "RadioPresets.h"
@@ -3985,6 +3988,15 @@ static void heap_watch() {
          (unsigned)RNS::Transport::reverse_table().size(),
          (unsigned)RNS::Transport::destinations().size(),
          (unsigned)RNS::Transport::packet_hashlist().size());
+  #if __has_include(<microReticulum/Diagnostics.h>)
+  // Live objects of a link's lifetime (a diagnostics build of the library):
+  // a count that rises by one per link and never falls is what a closed link
+  // leaves behind.
+  printf("[diag] links=%ld request_receipts=%ld resources=%ld packet_receipts=%ld packets=%ld\n",
+         (long)RNS::Diag::links.load(), (long)RNS::Diag::request_receipts.load(),
+         (long)RNS::Diag::resources.load(), (long)RNS::Diag::packet_receipts.load(),
+         (long)RNS::Diag::packets.load());
+  #endif
 #endif
 }
 #endif
