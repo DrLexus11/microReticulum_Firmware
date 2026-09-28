@@ -3953,6 +3953,23 @@ static void heap_watch() {
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
          (unsigned)RNS::Transport::path_table().size(),
          (unsigned)RNS::Transport::path_table_maxsize());
+  // What holds the memory. Rev 2-2's internal heap fell in ~8 KB steps over a
+  // night -- 55 KB to 21 KB, largest block 23 KB to 1.3 KB -- until
+  // RNS_LOW_MEMORY_REBOOT restarted it after 10.5 h (2026-09-28), with its two
+  // phones attached throughout and no reconnect churn. Every table Transport
+  // keeps, each minute beside the heap, so the one that grows in steps names
+  // itself. Read by tools/serial_soak.py --summary.
+  printf("[tables] newpaths=%u announces=%u rates=%u links=%u pending=%u active=%u "
+         "reverse=%u dests=%u hashlist=%u\n",
+         (unsigned)RNS::Transport::new_path_table().size(),
+         (unsigned)RNS::Transport::announce_table().size(),
+         (unsigned)RNS::Transport::announce_rate_table().size(),
+         (unsigned)RNS::Transport::link_table().size(),
+         (unsigned)RNS::Transport::pending_links().size(),
+         (unsigned)RNS::Transport::active_links().size(),
+         (unsigned)RNS::Transport::reverse_table().size(),
+         (unsigned)RNS::Transport::destinations().size(),
+         (unsigned)RNS::Transport::packet_hashlist().size());
 #endif
 }
 #endif

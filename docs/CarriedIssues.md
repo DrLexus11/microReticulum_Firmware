@@ -152,6 +152,31 @@ end is recoverable from its bootlog** (boot reason and previous uptime per
 boot) and the soak's reattach in the morning. Read both before anything else
 touches this board.
 
+**Overnight result, read 2026-09-28.** The host did not sleep; the log is
+complete, one `[mem]` sample a minute. The board **restarted at 05:29 by
+RNS_LOW_MEMORY_REBOOT** (`SW (ESP.restart)`, previous uptime 37 960 s, 10.5 h),
+not by the watchdog. The curve:
+
+    20:38  internal 55 276  largest 23 540
+    22:38           39 108          20 468
+    01:39           20 876           7 668
+    04:09           24 296           3 060
+    05:09           21 504           3 060     min largest block 1 268
+    05:39  (after restart) 63 124   45 044
+
+Free internal heap fell in ~8 KB steps (21:08-21:38, 22:08-22:38, 00:39-01:09,
+01:09-01:39), then held near 21-24 KB -- and the **largest free block
+collapsed** from 23 KB to about 1-3 KB. It restarted with ~21 KB free in
+total: fragmentation, not exhaustion, ended it. Both phones stayed attached
+from 20:38 to 05:22 with no reconnects, so BLE connection churn is not the
+step. The in-service Rev 2's older bootlog (restarts every 25-28 h) says the
+same thing more slowly.
+
+**Next:** the firmware now prints a `[tables]` line beside `[mem]` each minute
+-- every Transport table's size -- and `serial_soak.py --summary` reports each
+table's growth. Rev 2-2 is reflashed with it and soaking 24 h from 2026-09-28
+morning. The table that grows in steps names the leak.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
