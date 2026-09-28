@@ -177,6 +177,17 @@ same thing more slowly.
 table's growth. Rev 2-2 is reflashed with it and soaking 24 h from 2026-09-28
 morning. The table that grows in steps names the leak.
 
+**The tables are not it** (1.7 h, 2026-09-28 morning): every Transport table
+flat -- 27 new paths, 50 hashes, the rest near zero -- while the largest block
+fell 47 -> 33 KB. **Logging is half of it** (A/B, runtime level NOTICE vs
+TRACE, 1.5 h each): total free heap -5.8 -> -2.6 KB/h; the largest block still
+fell 45 -> 37 KB, and **allocated heap blocks climbed 1 859 -> 1 927** (~45/h,
+peak 1 996) -- small objects allocated and kept, scattered through the heap.
+NOTICE stays for field builds regardless. **Next A/B:** the same build without
+ESP-NOW (`impr-rad01-rev2-n16r2-ble-peers-noespnow`), whose send path fails
+all day on this board with no peer; then the BLE peers and the LXMF
+propagation node, one at a time.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
