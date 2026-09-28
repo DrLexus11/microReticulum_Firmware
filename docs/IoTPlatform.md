@@ -128,6 +128,10 @@ These are part of the service contract, not advice:
 3. **Logging is a service with a budget.** Formatting on the heap and
    `Serial.flush()` per line are not free; the runtime level defaults to
    NOTICE in field builds, and nothing is formatted below the active level.
+   Every persisted log has a bound and a rotation policy -- one policy, owned
+   by the platform layer -- and the log is shippable: a bounded spool the
+   telemetry service drains off the device when it has a connection, boot and
+   crash records first, rate-limited to the carrier's budget.
 4. **Health is measured.** No service reports healthy from a flag it set
    itself; health comes from traffic, peers, or a successful operation within
    a window. Declared bitrates never count (`CLAUDE.md`, interface

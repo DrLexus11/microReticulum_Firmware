@@ -1284,11 +1284,16 @@ operator: (a) the SX1262 over-current limit -- 140 mA where ours writes ~100 mA
 -- measured before and after (RSSI at a fixed receiver, supply current);
 (b) the radio reset at boot, checked against the "deaf after flash" symptom and
 taken if it applies; (c) the ISR/SPI mutex fix, checked against our drivers and
-disregarded if ours already covers it; (d) sx126x RX-state refresh, read after
+disregarded if ours already covers it; (e) `bootlog.txt` as a ring of its last lines --
+today it is deleted whole once past 4 KB, losing all boot history at once; (d) sx126x RX-state refresh, read after
 (a)-(b) and taken only where it applies. **Backlog:** the ESP-IDF 5 / Arduino 3
 upgrade as its own PR, preceded by consolidating the unit tests so a platform
 change is caught by tests and not rediscovered on the bench -- BLE cost days.
-**Vox phase:** native Linux builds. RAK/SD work disregarded. Checked 2026-09-28: (b) and (c) are already in our tree -- see `UpstreamReview.md`; the sx126x `isResponding()` probe goes to the Vox phase. Relaying on the RAD boards themselves was checked
+**Vox phase:** native Linux builds, with their packet traces
+(`tracefile.txt`, `tracedetails.txt`) off by default and size-capped with
+rotation when on -- today a Linux build appends every packet to both, forever.
+**Platform track (R4):** one logging service with one rotation policy for every
+log, on ESP32 and Linux alike. RAK/SD work disregarded. Checked 2026-09-28: (b) and (c) are already in our tree -- see `UpstreamReview.md`; the sx126x `isResponding()` probe goes to the Vox phase. Relaying on the RAD boards themselves was checked
 the same day and works: the deck reaches the A54 in three hops, Rev 2 (UDP to
 LoRa) and Rev 1 (LoRa to BLE) both forwarding.
 - **The relaying boundary** and **the ESP-NOW reset trigger**, both below.
@@ -1636,6 +1641,19 @@ holds the gateway, a Go backend, Prometheus and Grafana; this repository holds
 the board-side emitter and the codec, pinned by a shared fixture as
 `tak_native_v1.json` is. The plugin's reachability view reads the same data.
 It replaces the deck-only dashboard proposed in `UpstreamReview.md`.
+
+**Device logs travel with it** (operator, 2026-09-28): each device's log is
+persisted off the device whenever it has a connection. On the device, log lines
+at NOTICE and above go into a bounded spool in flash (a ring, oldest dropped
+first); the telemetry service drains it toward a gateway when a path exists and
+keeps it when none does -- the same store-and-forward as the reports. Priority
+order: boot records and crash backtraces first, warnings next, notices last.
+**Airtime is the budget:** over LoRa only boot/crash records and warnings go,
+rate-limited per device; the full spool drains over a fat link (BLE to a phone
+or board with a gateway, Wi-Fi, HaLow). Lines are compact (binary header, level,
+timestamp, text) and de-duplicated with a repeat count. The gateway publishes
+them per device to MQTT; the backend repository persists them beside the
+metrics (Grafana Loki, or equivalent), so a board's history outlives its flash.
 
 **The layered architecture arrives with it** (`IoTPlatform.md`, agreed
 2026-09-28), one step per PR and none as a refactor-only cycle: PR F begins
