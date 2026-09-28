@@ -598,6 +598,14 @@
       // module's TX/RX switch is never actuated, so the radio comes up, reports
       // a plausible noise floor, and hears nothing.
       #define DIO2_AS_RF_SWITCH true
+      // Over-current limit for the SX1262's PA, in 2.5 mA steps. setTxPower()
+      // writes OCP_TUNED after configuring the high-power PA, replacing the
+      // chip's own 140 mA default for that PA with the board default 0x28
+      // (100 mA). Near 21-22 dBm the SX1262 draws ~110-140 mA, so the PA may
+      // be current-limited below its set power. 0x38 is 140 mA, the value
+      // attermann's 06511a2 uses. It lets the PA reach its setting; it does
+      // not raise it. PR E: measured before merge (UpstreamReview.md).
+      #define OCP_TUNED 0x38
       // No external RX/TX switch pins on this module; DIO2 does it internally.
       #define HAS_RF_SWITCH_RX_TX false
 
