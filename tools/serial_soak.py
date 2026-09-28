@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 KEEP = re.compile(
-    r"boot reason=|\[boot\]|\[mem\]|\[tables\]|\[diag\]|\[espnow\]|\[blepeer\]|\[init\] !!!|NOT RELAYING|"
+    r"boot reason=|\[boot\]|\[mem\]|\[tables\]|\[diag\]|\[espnow\]|\[blepeer\]|\[lxmf-peer\]|\[lxmf\]|\[init\] !!!|NOT RELAYING|"
     r"Guru Meditation|panic|abort\(\)|Backtrace|Rebooting|TASK_WDT|task_wdt|brownout|"
     r"Low memory|LOW_MEMORY|heap_caps_malloc failed|out of memory")
 MEM = re.compile(r"\[mem\] internal=(\d+) largest=(\d+) psram=(\d+)")

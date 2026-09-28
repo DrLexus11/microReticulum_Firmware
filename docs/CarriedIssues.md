@@ -188,6 +188,49 @@ ESP-NOW (`impr-rad01-rev2-n16r2-ble-peers-noespnow`), whose send path fails
 all day on this board with no peer; then the BLE peers and the LXMF
 propagation node, one at a time.
 
+**ESP-NOW is not it either** (the no-ESP-NOW build stepped the same way).
+
+### Found, 2026-09-28: links that were never freed -- two library gaps
+
+A diagnostics build (`impr-rad01-rev2-n16r2-ble-peers-noespnow-diaglib`,
+library branch `diag/instance-counters`) prints live instance counts of
+links, request receipts, resources and packets beside `[tables]`. Compared
+against the Transport's active-link count, the step had a name at once: **one
+link more than Transport knew of**, with a receipt, a resource and four
+packets, alive for hours after its teardown -- ~8 KB of internal heap,
+exactly the step size. Inbound links (a deck opening links to the board's
+NomadNet node) freed cleanly; the kept one was the board's *outbound* LXMF
+peer sync, whose `/offer` is never answered -- a known, separate problem
+still open.
+
+Two gaps in microReticulum, both Python features never ported:
+
+1. **A request never answered kept its link for ever.** The receipt holds the
+   link and the link holds the receipt: a `shared_ptr` cycle nothing broke,
+   because Python's response-timeout job was never ported. Fix: `link_closed()`
+   fails every pending request (`99abe11`).
+2. **A link whose peer vanished never closed.** The per-link watchdog --
+   establishment timeout, keepalive, stale close -- sat in a TODO comment. A
+   link closed only on a LINKCLOSE or a local teardown, so a peer out of
+   range, rebooted, or whose LINKCLOSE was lost on LoRa, left its link here
+   indefinitely; one lost request on the bench did exactly that. Fix: the
+   watchdog ported as a cooperative pass on Transport's one-second link check,
+   with the RTT-adaptive keepalive it depends on (`86ca5c0`, host-tested in
+   `test/test_link_watchdog`).
+
+**Measured on Rev 2-2:** 16 deck links via `tools/link_churn.py` (answered,
+abandoned mid-request, left open) -- link objects equal to Transport's
+active links throughout, no receipts or resources kept. On the unfixed build
+three links whose closes were lost were still held 28 min later; on the
+watchdog build a link whose holder was killed with SIGKILL closed at 12-13
+min, as the 360 s keepalive predicts (stale at 720 s, plus grace), while a
+client polling `/get` over one link kept it open for the whole run.
+
+**Owed:** the board's own outbound sync on the fixed build (its first
+`/offer` comes about an hour after boot) and an overnight soak with a flat
+heap. The library branch `fix/link-watchdog` (both commits, on the pinned
+`ca00ad3`) needs pushing before the firmware can pin it.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
@@ -474,8 +517,12 @@ LXMF inbox and time it. It separates "packets cross but links do not" from
 everything else immediately, and it should be a tool in `tools/` rather than a
 thing retyped under pressure.
 
+That tool is now `tools/link_churn.py` (2026-09-28).
+
 **Still open:** whether `rrcd` really needs a restart after an interface outage,
-and if so what state is stale. Reproducing it means reproducing issue #6, which
+and if so what state is stale. One candidate, unproven: until 2026-09-28 the
+boards never expired a link -- not a stale one, not a request that was never
+answered (#1, *links that were never freed*). Reproducing it means reproducing issue #6, which
 is itself not understood.
 
 ## 8. The slow path is crowded, and much of the crowd is ours
