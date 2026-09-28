@@ -226,9 +226,15 @@ watchdog build a link whose holder was killed with SIGKILL closed at 12-13
 min, as the 360 s keepalive predicts (stale at 720 s, plus grace), while a
 client polling `/get` over one link kept it open for the whole run.
 
-**Owed:** the board's own outbound sync on the fixed build (its first
-`/offer` comes about an hour after boot) and an overnight soak with a flat
-heap. The library branch `fix/link-watchdog` (both commits, on the pinned
+The leaking path itself, on the fixed build: the board's own sync to
+`f11d25e5`, `/offer` unanswered, timed out after 3 min (19:30:55); by the
+next minute its link and receipt were gone and internal heap back from
+64 048 to 68 964 B. The same sequence kept ~8 KB for good before. (The
+first outbound `/offer` comes about an hour after boot: a new peer waits a
+full sync interval, and the first due attempt only computes the peering
+key.)
+
+**Owed:** an overnight soak with a flat heap. The library branch `fix/link-watchdog` (both commits, on the pinned
 `ca00ad3`) needs pushing before the firmware can pin it.
 
 ### Considered and currently disfavoured
