@@ -1276,7 +1276,8 @@ the heap leak and fragmentation found by the soak (every board restarting every
 (4), run after the leak fix so one does not mask the other; the multi-peer
 build onto the boards in service (Rev 1, the in-service Rev 2) once the leak is
 fixed; the fallback-interface design (operator item 5, design only); the PR
-texts.
+texts. And R0 of the layered architecture: `IoTPlatform.md` and its rules in
+`CLAUDE.md`, binding on new code from here.
 
 **Added 2026-09-28 from the upstream review** (`UpstreamReview.md`), by the
 operator: (a) the SX1262 over-current limit -- 140 mA where ours writes ~100 mA
@@ -1635,6 +1636,16 @@ holds the gateway, a Go backend, Prometheus and Grafana; this repository holds
 the board-side emitter and the codec, pinned by a shared fixture as
 `tak_native_v1.json` is. The plugin's reachability view reads the same data.
 It replaces the deck-only dashboard proposed in `UpstreamReview.md`.
+
+**The layered architecture arrives with it** (`IoTPlatform.md`, agreed
+2026-09-28), one step per PR and none as a refactor-only cycle: PR F begins
+with R1 (firmware unit tests running on Linux), then R2 (the telemetry and
+position codecs as a pure, host-tested protocol layer) and R3 (the `IService`
+contract wrapped around today's modules, so each service reports its own
+health and telemetry -- the telemetry feature is its first client). R4-R6
+(platform layer, application layer, the core as a library) follow on a
+platform track after PR F, R6 together with the Arduino-core / ESP-IDF 5
+upgrade. Linux compatibility is kept at every step for IMPR-Vox.
 
 ## Open: the mesh and the server are two pictures
 
