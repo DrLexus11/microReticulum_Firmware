@@ -1396,6 +1396,7 @@ without risk is taken here, not carried into F.
      N seconds and off again after M seconds of health -- hysteresis, so a
      flapping link does not flap the radio. A feature, not a fix: **designed in
      PR E, built in PR E only if the reliability items above are closed.**
+     Design written 2026-09-28: `FallbackInterfaces.md`.
    - *Preferring the fat pipe when both hear the same node*: interface
      gravity. **Read in full 2026-09-27 and set aside.** In RNS 1.4.2 gravity
      is consulted in one place: the *same* announce heard again, with equal or
