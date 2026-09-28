@@ -16,6 +16,7 @@
 // CBA Reticulum includes must come before local to avoid collision with local defines
 #ifdef HAS_RNS
 #include <microReticulum.h>
+#include "BootLog.h"
 #if __has_include(<microReticulum/Diagnostics.h>)
 #include <microReticulum/Diagnostics.h>
 #endif
@@ -1422,8 +1423,26 @@ void setup() {
 
     {
       const char* bootlog = "./bootlog.txt";
-      if (filesystem.exists(bootlog) && filesystem.size(bootlog) > 4096) {
-        filesystem.remove(bootlog);   // keep it bounded; oldest history is least useful
+      // One buffer for the trim below and the echo after the append. It covers
+      // the whole cap plus one line, so the echo never hides the newest entries.
+      static char bootlog_buf[BOOTLOG_CAP_BYTES + 257];
+      if (filesystem.exists(bootlog) && filesystem.size(bootlog) > BOOTLOG_CAP_BYTES) {
+        // A ring, not a reset: keep the newest whole lines. Deleting the file
+        // lost every boot record at once. See BootLog.h.
+        size_t n = 0;
+        microStore::File old_log = filesystem.open(bootlog, microStore::File::ModeRead);
+        if (old_log) {
+          n = old_log.read((uint8_t*)bootlog_buf, sizeof(bootlog_buf));
+          old_log.close();
+        }
+        if (n == (size_t)-1) n = 0;
+        const size_t start = bootlog_tail_start(bootlog_buf, n, BOOTLOG_KEEP_BYTES);
+        filesystem.remove(bootlog);
+        microStore::File kept = filesystem.open(bootlog, microStore::File::ModeWrite, true);
+        if (kept) {
+          kept.write((const uint8_t*)bootlog_buf + start, n - start);
+          kept.close();
+        }
       }
       microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
       if (bl) {
@@ -1457,8 +1476,8 @@ void setup() {
         // cap plus one line: a smaller one echoes the OLDEST entries and
         // silently hides the newest, which are the only ones that matter when
         // you are reading this after a board died in the field.
-        static char rdbuf[4353];
-        size_t n = rd.read((uint8_t*)rdbuf, sizeof(rdbuf) - 1);
+        char* rdbuf = bootlog_buf;
+        size_t n = rd.read((uint8_t*)rdbuf, sizeof(bootlog_buf) - 1);
         rd.close();
         if (n > 0 && n != (size_t)-1) {
           rdbuf[n] = 0;
