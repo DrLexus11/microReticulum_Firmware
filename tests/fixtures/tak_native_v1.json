@@ -114,7 +114,8 @@
     "part_request_kind": 9,
     "part_kind": 10,
     "fetch_budget_seconds": 120,
-    "first_part_bytes": 65536,
+    "setup_part_bytes": 4096,
+    "sample_part_bytes": 12288,
     "part_bytes": 524288,
     "part_request": {
       "offset": 65536,
@@ -126,6 +127,38 @@
       "total": 19,
       "data": "4d657368204432",
       "frame": "0a8096a5dc401a94e6166c0fb65a518d1078028a5a5b91e7e324fa2940584c35f700000005000000134d657368204432"
-    }
+    },
+    "status_lines": [
+      {
+        "kind": "held",
+        "filename": "20260926_162737.jpg.zip",
+        "size": 3491288,
+        "from": "LEXUS",
+        "reason": "slow path ~31min",
+        "preview": true,
+        "line": "HELD 20260926_162737.jpg.zip 3.5MB fr LEXUS - slow path ~31min. Preview on map"
+      },
+      {
+        "kind": "held",
+        "filename": "Recon1.zip",
+        "size": 4100,
+        "from": "DECK",
+        "reason": "no path",
+        "preview": false,
+        "line": "HELD Recon1.zip 4KB fr DECK - no path"
+      },
+      {
+        "kind": "slow_reason",
+        "seconds_left": 59,
+        "line": "slow path ~1min"
+      },
+      {
+        "kind": "unfetched",
+        "filename": "Recon1.zip",
+        "size": 640000,
+        "by": "NEXUS",
+        "line": "NOT FETCHED Recon1.zip 640KB by NEXUS - slow path. Still held"
+      }
+    ]
   }
 }

@@ -55,6 +55,27 @@ Design rationale and hardware acceptance records are in `docs/TAKNative.md` and
   bitrate: they are guesses (BLE claims 700 kbit/s, TCP/UDP/Auto 10 Mbit/s).
   Measure. The matrix for TAK files is in `docs/TAKDeliveryPlan.md`.
 
+## Architecture: layers, adopted gradually
+
+`docs/IoTPlatform.md` is the target: **Application -> Services -> Drivers ->
+Platform**, with a pure **Protocol** (codec) layer beside them. Dependencies
+point down only. **Linux compatibility at every layer, always** (IMPR-Vox):
+nothing above Platform touches FreeRTOS, Arduino, ESP-IDF or POSIX.
+
+It arrives one step per PR (R0-R6, scheduled in `TAKDeliveryPlan.md`), never
+as a refactor-only cycle. Until a layer exists, write new code so it can move
+into it; once it exists, its rules bind:
+
+- New wire formats are pure encode/decode with a version byte, host-tested,
+  pinned by shared fixtures.
+- New hardware goes behind a driver interface (`ILoRaRadio` is the model).
+- New features are services: `init/start/poll/health/telemetry/stop`, started
+  by the application, talking through mailboxes -- **no new globals** for
+  sharing between modules, and do not grow `RNode_Firmware.ino`.
+- `poll()` is bounded (default 20 ms) and **does not allocate in the steady
+  state**; allocate in `init()`. Rev 2-2 fragmented to a restart overnight.
+- Health is measured, not asserted; misconfiguration is loud, in one line.
+
 ## Working notes
 
 - Python tests run from the repo root: `python3 -m unittest discover -s tests -t

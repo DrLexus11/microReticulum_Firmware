@@ -60,8 +60,9 @@ where gain is the only constraint.
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
 | **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
 | **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail**, the descriptor and thumbnail together **no more than three fragments**); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and **deferred on LoRa**; a **retention page** in Columba for held files, promoted to the PR F plugin. Also carries **position while ATAK is closed** (built 2026-09-22, see *PR D2* below). Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | the bulk half: a capture of what ATAK emits for a data package and a QuickPic over our endpoint. The position half: nothing |
-| **E** | *The node knows where it is and what it can reach* | GNSS NMEA on the second UART; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
-| — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
+| **E** | *The node knows where it is and what it can reach* | **Closed 2026-09-29 at this scope.** BLE phone-to-phone that holds; several phones per board into the main mesh (multi-peer NimBLE on Rev 2 and Rev 1); relaying made loud; the heap leak that restarted every board fixed in the library. The ESP-NOW reset trigger and the rest of the stability work moved to E2 | the two findings below, resolved or moved to E2 |
+| **E2** | *Stability before the field* | The ESP-NOW chain test and soak (Rev 1 LoRa + ESP-NOW, OZD ESP-NOW + BLE); Rev 1's TASK_WDT; the SX1262 over-current before/after; the in-service Rev 2 onto the fixed library. Small diffs, days of wall clock -- see *PR E2* | E |
+| — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E + E2 |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
 
 C and D collapse into one PR cleanly if a single review is preferred. **E stays
@@ -1257,11 +1258,77 @@ Waydroid's map, current for twice the interval.
 
 ### PR E — the node knows where it is and what it can reach
 
-- **GNSS.** `Position.h` already has the `GNSS` node-position kind; the NMEA
-  reader on the second UART does not exist. `OnboardGNSS.md` deferred it as "not
-  on the critical path for TAK" — that is no longer true. Outdoor Test 1 puts a
-  stationary Rev 2 on a hill with no phone attached, which is exactly the
-  unattended case the document reserved the module for.
+- **GNSS -- moved out of PR E, 2026-09-26.** No IMPR-RAD board has a GNSS
+  module, and none will: GNSS belongs to the IMPR-Vox series, which is not ready
+  yet. The NMEA reader waits for Vox hardware. For Outdoor Test 1, a stationary
+  Rev 2 with no phone attached reports the position it was provisioned with
+  (`Position.h`'s configured kind), not a live fix.
+
+**Order of work, agreed 2026-09-26:** (1) Columba BLE phone-to-phone, then the
+D2 file proof owed on it; (2) the RAD boards onto the multi-peer NimBLE backend,
+several phones on one board; (3) make "not relaying" loud on an unprovisioned
+board; (4) the ESP-NOW reset soak, run in the background; (5) the lone-field
+drill. Then Outdoor Test 1.
+
+**Closed 2026-09-29, at this scope** (operator). PR E had grown into every
+stability issue found along the way, and soaks that take days kept it open.
+Hardware-speed work now has its own PR, **E2**, which gates Outdoor Test 1 and
+nothing else. What PR E shipped, each proven on hardware: BLE phone-to-phone
+that holds (CarriedIssues #11); several phones on one board, into the main mesh
+(Rev 2 and, 2026-09-29, Rev 1 on `impr-rad01-rev1-ble-peers`); "not relaying"
+made loud; tactical status lines; announce on meeting; QuickPic previews over
+BLE, a full picture held on a slow path as designed; the heap leak that
+restarted every board every 10-28 h, fixed in the library (below); the bootlog
+kept as a ring; R0 of the layered architecture.
+
+**Moved out:** to **E2** -- the ESP-NOW reset trigger (as the chain test the
+feature was first built with), Rev 1's TASK_WDT, the SX1262 over-current
+before/after, the in-service Rev 2 onto the fixed library. To **PR F** -- the
+propagation node's name in its announce (identity metadata, beside the
+telemetry). To the **Vox phase** -- the sx126x RX-state refresh review. To
+**when a second current phone is on hand** -- BLE phone-to-phone throughput
+for a full QuickPic. The fallback-interface design stays a design
+(`FallbackInterfaces.md`); the lone-field drill stays at the end of PR F.
+
+**Status 2026-09-28.** (1)-(3) done and proven on hardware (see *PR E
+extended*). (5) **moved to the end of PR F** by the operator. Left in PR E:
+the heap leak and fragmentation found by the soak (every board restarting every
+10-28 h -- gates Outdoor Test 1; CarriedIssues #1); the ESP-NOW-peer half of
+(4), run after the leak fix so one does not mask the other; the multi-peer
+build onto the boards in service (Rev 1, the in-service Rev 2) once the leak is
+fixed; the fallback-interface design (operator item 5, design only); the PR
+texts. And R0 of the layered architecture: `IoTPlatform.md` and its rules in
+`CLAUDE.md`, binding on new code from here.
+
+**Leak -- closed 2026-09-29.** Cause found and fixed in the library, verified
+on Rev 2-2 (CarriedIssues #1, *links that were never freed*). Two unported
+Python pieces: pending requests never failed when a link closed (a
+`shared_ptr` cycle, ~8 KB per unanswered sync), and no link watchdog at all,
+so no link ever timed out. Merged to the library's master
+(DrLexus11/microReticulum#5, #6); the firmware pins `9900724`. The board's own
+unanswered sync -- the path that leaked -- frees its link and receipt on
+timeout, and the fixed build ran 13 h 47 min overnight with a flat heap where
+the unfixed one restarted at 10.5 h. **Next:** the ESP-NOW-peer half of (4)
+and the multi-peer build onto the boards in service, as planned. `tools/link_churn.py` drives links from the deck on
+demand for any later regression.
+
+**Added 2026-09-28 from the upstream review** (`UpstreamReview.md`), by the
+operator: (a) the SX1262 over-current limit -- 140 mA where ours writes ~100 mA
+-- measured before and after (RSSI at a fixed receiver, supply current);
+(b) the radio reset at boot, checked against the "deaf after flash" symptom and
+taken if it applies; (c) the ISR/SPI mutex fix, checked against our drivers and
+disregarded if ours already covers it; (e) `bootlog.txt` as a ring of its last lines --
+today it is deleted whole once past 4 KB, losing all boot history at once; (d) sx126x RX-state refresh, read after
+(a)-(b) and taken only where it applies. **Backlog:** the ESP-IDF 5 / Arduino 3
+upgrade as its own PR, preceded by consolidating the unit tests so a platform
+change is caught by tests and not rediscovered on the bench -- BLE cost days.
+**Vox phase:** native Linux builds, with their packet traces
+(`tracefile.txt`, `tracedetails.txt`) off by default and size-capped with
+rotation when on -- today a Linux build appends every packet to both, forever.
+**Platform track (R4):** one logging service with one rotation policy for every
+log, on ESP32 and Linux alike. RAK/SD work disregarded. Checked 2026-09-28: (b) and (c) are already in our tree -- see `UpstreamReview.md`; the sx126x `isResponding()` probe goes to the Vox phase. Relaying on the RAD boards themselves was checked
+the same day and works: the deck reaches the A54 in three hops, Rev 2 (UDP to
+LoRa) and Rev 1 (LoRa to BLE) both forwarding.
 - **The relaying boundary** and **the ESP-NOW reset trigger**, both below.
 - **BLE as the endpoint's carrier.** The BLE peer protocol exists and is tested;
   it has not yet carried the CoT endpoint's traffic. The last bench run
@@ -1274,9 +1341,219 @@ Waydroid's map, current for twice the interval.
   Reticulum identity, not its address; the peer interface and its paths kept
   across an address change; the MTU raised before use -- **and the D2 proof
   still owed on it**: a data package and a full-size QuickPic phone to phone,
-  exercising the timed-parts gate (64 KB first part, 512 KB after, two-minute
-  budget) on a real slow link for the first time. D2 closed with that row
+  exercising the timed-parts gate (a 4 KB setup part and a 12 KB sample since
+  2026-09-26, 512 KB after, two-minute budget) on a real slow link for the
+  first time. D2 closed with that row
   marked blocked; this is where it is picked up.
+
+### PR E extended -- reliability, interface stability, mesh healing (2026-09-26)
+
+Scope widened at the operator's request: PR F starts from a mesh where nothing
+depends on a responder knowing its quirks. Anything found that can be taken
+without risk is taken here, not carried into F.
+
+**What the bench showed on 2026-09-26.** Columba fixes are uncommitted on its
+`feature/tak-e-node-reach` unless marked committed.
+
+- *BLE phone-to-phone held, then did not.* Three root causes fixed (committed):
+  the 2 s detach grace that destroyed paths (now 120 s); both phones keeping
+  different links of a dual connection (identity tie-break); second connections
+  to a rotated address tearing the shared link down every ~60 s (identity tag in
+  the scan response; only the lower identity connects). Messaging and markers
+  then crossed. A fourth, introduced by the first: a peer that reconnected
+  inside the grace by a path the parent does not revive stayed **offline** --
+  Rev 1 dropped for under a second and the A54 carried nothing to the deck for
+  seven minutes. Fixed (`_revive_reconnected`), tests fail without it.
+- *Round-trip time cannot tell LoRa from BLE.* One LoRa hop at SF7/250 kHz is
+  ~0.19 s on air for a link round trip; a Nexus 6P one BLE hop away measured
+  0.67 s, and Columba reused that stale figure on every retry. The fetch gate
+  now times a 4 KB setup part (unjudged) and a 12 KB sample; a route measured
+  slow is not sampled again until it changes or an hour passes. Both repos.
+- *Direct BLE carries 15 kbit/s.* Measured on the 12 KB sample. The radio link
+  is MTU 512; the losses are above it: the connection interval stays at
+  Android's 30-50 ms default because `CONNECTION_PRIORITY_HIGH`, asked for on
+  connect, collides with the other phone's own procedures (status 42, then 30);
+  every 488-byte fragment is a write *with* response, one per ~90 ms; a
+  Resource moves a small window per ~0.6 s round trip; and LXMF sat 2.3 s
+  between link-up and the resource advertisement. Re-asking for the fast
+  interval after the handshake was tried and **reverted**: on these phones it
+  also cuts the supervision timeout from 20 s to 5 s, and the link churned.
+- *QuickPic offers from the A54 had no thumbnail.* Samsung photos are Display P3
+  and Android embedded the profile, ~500 B of a 655 B budget. Decoded as sRGB.
+- *An offer arrives before its sender's inbox is known.* Both receivers said
+  "no path to its sender yet" at once, and found it 60 s later. Now: look again
+  every 10 s for a minute (`PATH_LOOK_SECONDS`), tell nobody, show a QuickPic's
+  preview at once.
+- *Rev 1 serves one phone, and the phones race for it.* After a restart the
+  Nexus won, the A54 lost its only route to the deck, and neither phone relays.
+  This is PR E step 2, not a defect.
+- *Housekeeping.* The A54 also has the non-debug `network.columba.app`, with its
+  own identity. Launching it by mistake put a second Columba on the same radio.
+  It is stopped; tests use `network.columba.app.debug` only.
+
+**The operator's five items, investigated:**
+
+1. **Status lines are paragraphs.** The only templated text Columba or the deck
+   writes into ATAK is the "Columba files" contact's two lines -- *waiting* and
+   *not fetched yet* -- at 180-250 characters each, several lines on a Nexus.
+   **In PR E:** one line, state first, no prose, identical on both sides, e.g.
+   `HELD Recon1.zip 3.4MB LEXUS - slow path ~31min. Preview on map` and
+   `NOT FETCHED Recon1.zip 3.4MB by NEXUS - slow path`. Any future system line
+   follows the same shape.
+
+2. **BLE must join the main mesh, not form a sub-mesh.** The main mesh as the
+   deck sees it -- Rev 2, the deck, Tailscale clients -- is reached from a phone
+   only through a relaying board. Phones do not relay (`enable_transport = No`),
+   so Nexus-to-A54-to-Rev 1 is a dead end by design, and Rev 1 takes one phone.
+   **In PR E:** multi-peer NimBLE on the RAD boards (step 2), relaying made loud
+   (step 3), and an acceptance check -- with two phones and Rev 1, `rnpath` from
+   the deck to each phone's inbox goes through Rev 1, never through the other
+   phone. Phone relaying stays an opt-in lone-field mode (step 5).
+
+3. **WinTAK over Tailscale today sees OpenTAKServer, not the mesh.** OTS listens
+   on all addresses (8088/8089 CoT, 8443); the bridge's CoT endpoint is bound
+   to the Waydroid address only, and nothing crosses between the two (*the mesh
+   and the server are two pictures*, below). Pointing WinTAK at the bridge
+   directly is not the answer: the bridge speaks for one EUD -- every client on
+   it would be DECK, their self-reports would fight as DECK's position, and file
+   uploads go through the Waydroid-only nginx blocks. **Decided 2026-09-27:
+   deferred, whole.** The operator wants duplex -- Tailscale operators acting,
+   not watching -- so no one-way feed now; the full scope (chat, files, markers
+   both ways, each operator vouched as their own `urtn-` UID, per
+   `MeshAndServerInterop.md`) is taken up in one piece later, not in PR E.
+
+4. **Messages need both sides to re-announce.** Measured and read, not guessed:
+   - Nothing announces when a BLE peer arrives -- not Columba (it replays only
+     announces sent while *no* peer was up) and not the boards' BLE interfaces.
+     Two phones meeting over BLE learn each other only at the next scheduled
+     announce, up to half an hour away, or by hand.
+   - Reticulum keeps a path long after its interface stops carrying it: a week
+     by default, a day on access-point interfaces, six hours on roaming ones. A
+     *newer* announce replaces a path whatever its hop count; the *same*
+     announce heard again on another interface replaces it only if that
+     interface has higher **gravity** (new in RNS 1.4, which Columba ships).
+   - Until today's fixes, a BLE drop of two seconds destroyed the peer's paths
+     outright -- very likely the evening in question. That part is fixed; the
+     rest is not.
+   **In PR E:** announce our own destinations to a BLE peer when its interface
+   comes up or is revived, rate-limited per peer (Columba subclass; the same on
+   the boards' BLE interfaces in step 2). Then a *no-manual-announce* test: two
+   phones that have never met over BLE, message within 30 s, nobody touches
+   Announce. Repeated for a LoRa node coming back into range.
+
+5. **Fallback interfaces, and taking weight off LoRa.** Two parts:
+   - *Automatic fallback* (Columba interfaces screen): an interface marked
+     primary, a fallback that switches on when the primary has had no peer for
+     N seconds and off again after M seconds of health -- hysteresis, so a
+     flapping link does not flap the radio. A feature, not a fix: **designed in
+     PR E, built in PR E only if the reliability items above are closed.**
+     Design written 2026-09-28: `FallbackInterfaces.md`.
+   - *Preferring the fat pipe when both hear the same node*: interface
+     gravity. **Read in full 2026-09-27 and set aside.** In RNS 1.4.2 gravity
+     is consulted in one place: the *same* announce heard again, with equal or
+     fewer hops, on a higher-gravity interface moves the path there. A newer
+     announce still wins on recency, and fewer hops still wins outright -- so
+     gravity cannot make a node prefer a three-hop Wi-Fi or BLE path over a
+     one-hop LoRa one, which is exactly the case that loads LoRa. Columba's BLE
+     peer interfaces do not inherit it either. Reticulum routes by hops and
+     recency, not by cost; taking weight off LoRa is the fallback-interface
+     feature above -- LoRa as the fallback, off or quiet while a fatter primary
+     has peers -- not a routing setting.
+
+**Order of work for 2026-09-27** (the operator chose to keep today's layout --
+the A54 holding Rev 1 -- and fix the phones first, since moving the boards to
+multi-peer first would make today's conditions hard to rebuild):
+
+1. Commit today's uncommitted work on both `feature/tak-e-node-reach` branches.
+2. Tactical status lines (item 1). Small, both repos, shared wording.
+3. A BLE link soak harness before any further BLE change: handshakes,
+   disconnects by status, peer-interface online time, and sample throughput per
+   ten minutes, on both phones. Baseline on today's build. (Bench RF drifts;
+   no A/B without the harness.)
+4. Announce on BLE peer up (item 4), then the no-manual-announce test.
+5. BLE throughput, each change measured on the harness: write-without-response
+   for phone-to-phone links (the characteristic already allows it), and the
+   fast interval asked for only once the link is idle, with the supervision
+   timeout checked. Then the D2 proof on BLE -- data package and full QuickPic.
+6. Gravity (item 5, second part).
+7. Then the original PR E list: step 2 multi-peer boards (with announce on
+   connect), step 3, step 4 in the background, the lone-field drill.
+8. Decisions to take with the operator: item 3's split, item 5's fallback UI
+   build or defer.
+
+**What 2026-09-27 closed**, each measured with `tools/ble_link_soak.py` or on a
+real transfer, A54 and Nexus 6P over direct BLE, Rev 1 on the A54:
+
+- *Status lines* (item 1): one line each, pinned in `tak_native_v1.json`.
+- *A soak harness* (step 3): Columba logs every kept BLE peer and whether it
+  is online every 30 s; the harness turns that into online shares, link events,
+  failures by status and negotiated intervals.
+- *The identity tag vanished after 60 s.* The advertiser's refresh built its
+  own scan response without it, so after the first minute each phone connected
+  out to the other's next address and the duplicate links tore down. Fixed:
+  phone-to-phone online share 70.6 / 55.6 % -> 100 / 100 %, disconnects 8 -> 0,
+  over ten minutes each.
+- *Announce on meeting* (item 4): a newly met BLE peer is sent a fresh announce
+  of each of our destinations, on its link alone. **The no-manual-announce test
+  passed**: both phones' Bluetooth off for three minutes, back on, a message
+  each way -- delivered in 73 ms and under 100 ms, nobody touching Announce.
+  The deck's path to the A54 (three hops through Rev 1) refreshed on its own.
+- *LXMF skipped the message behind a just-delivered one* (upstream, 1.1.0: a
+  list mutated while iterated), so every file part waited for the next four-
+  second job cycle. Columba now runs each outbound pass twice. The 12 KB sample
+  over one BLE hop: 20 -> 52 kbit/s.
+- *QuickPic thumbnails* from Samsung phones: the encoder writes a colour
+  profile into every WebP, ~480 B of the 655 B budget. Stripped after encoding;
+  the offer now carries its preview (640-648 B at 80 px), shown in ATAK at once.
+- *Two BLE connection faults that left a link half-dead*, each seen once and
+  each blocking its own repair: a status-133 retry's leftover 30 s timeout
+  closed the successful retry, and an identity read that timed out fell back to
+  "no identity", so one phone never built the peer while the other counted it
+  linked and refused to reconnect. Fixed: timeouts belong to their own attempt;
+  an unreadable identity is read once more, then the connection is abandoned
+  and made afresh.
+
+**Step 2 proven 2026-09-27: two phones on one board, into the main mesh.**
+The spare Rev 2 ("rev2-2", an ESP32-S3 N16R2: 16 MB flash, 2 MB PSRAM) was
+flashed with `impr-rad01-rev2-n16r2-ble-peers` -- NimBLE, up to seven peers --
+its identity and provisioning kept (same partition table; nvs and filesystem
+backed up first under `~/.impr-tak/backups`). It booted in TNC mode, relaying,
+LoRa receiving. Both the A54 and the Nexus then held it online at every
+heartbeat, and the deck reached each phone's inbox in four hops through the
+boards, neither through the other phone. The deck's bridge saw NEXUS for the
+first time that day: BLE now leads into the main mesh rather than a sub-mesh
+(operator item 2).
+
+Getting the Nexus there found three Columba faults that only Android 12 and
+older show, all fixed: the GATT client handled only the Android 13 forms of
+the read, notification and descriptor-read callbacks, so with the Nexus as the
+connecting side every read timed out and no notification ever arrived -- a
+link that could send and not receive, depending on which phone the identity
+tie-break made connect; a service discovery Android 8 refused right after
+connect was never retried; and a disconnect reported for "an unknown peer"
+left the attempt marked pending, refusing every later one. Much of the
+phone-to-phone variance seen earlier in the day was the first of these.
+
+*Positions from an ATAK with no fix went grey between reports.* ATAK reports
+every several minutes without GPS, and a report it made stated no interval, so
+receivers drew it current for two minutes -- NEXUS showed on the deck, greyed.
+Columba and the deck now state the gap their ATAK last left between reports
+(capped at ten minutes); confirmed on the deck's ATAK: LEXUS and NEXUS both
+live.
+
+**The BLE throughput ceiling with this pair is the radio, not the software.**
+Writing without a response was tried and **reverted**: the A54's writes
+completed in 3 ms, but the Nexus still received one 488-byte packet per ~60 ms
+-- the same pace as with a response -- while the A54's stack buffered the rest,
+and the resulting delay made Reticulum re-request data. The sample fell from 52
+to 12 kbit/s. So ~50-65 kbit/s is what a Nexus 6P link carries (most likely no
+LE data length extension on its controller). At that rate a 3.5 MB QuickPic
+takes ~9 min: held under the two-minute budget, preview shown at once, fetched
+when a faster path appears. **Owed:** the same measurement between two current
+phones (Bluetooth 5, data length extension), which decides whether BLE phone to
+phone can carry a full picture within the budget at all. **Deferred 2026-09-27:** only
+LEXUS (A54) and NEXUS (Nexus 6P) are on hand; the measurement waits for a
+second current phone.
 
 ---
 
@@ -1330,7 +1607,42 @@ TAK traffic, which matters most, since in a disaster simultaneous presence is
 exactly what you do not have; and phone relaying as an opt-in "lone-field
 mode" for groups with no boards.
 
-## Two findings that gate PR E
+### PR E2 — stability before the field
+
+**Created 2026-09-29** from what was holding PR E open. Small diffs, days of
+wall clock. Gates Outdoor Test 1 and nothing else: a board that restarts
+mid-test poisons every range and reconnection reading taken.
+
+1. **The ESP-NOW chain test**, the way the feature was first proven:
+   Columba (TCP client) -> Rev 2 -> LoRa -> Rev 1 -> ESP-NOW -> OZD -> BLE ->
+   a phone. A message end to end both ways, then 24-48 h left running, Rev 1
+   and the OZD logged with `tools/serial_soak.py` for restarts and a deck
+   script opening links across the ESP-NOW hop every few minutes
+   (`tools/link_churn.py`), then a message again. This is also the soak for
+   the ESP-NOW reset trigger (*Two findings*, 2): it was OZD pairs that showed
+   the correlation, and Rev 1 carries the TASK_WDT history. Needs:
+   - a Rev 1 environment with LoRa, ESP-NOW and multi-peer NimBLE together --
+     `impr-rad01-rev1-ble-peers` leaves ESP-NOW out, as `-ble-lora` did for
+     Bluedroid's heap; NimBLE is lighter and Rev 1 has 8 MB of PSRAM;
+   - the OZD on `ozdisan-esp32-espnow` (already current: ESP-NOW, NimBLE,
+     the fixed library);
+   - the Rev 2 at the TCP end on the fixed library (next item);
+   - Rev 1 and the OZD on one Wi-Fi channel -- ESP-NOW follows the channel
+     of the station's AP.
+2. **Rev 1's TASK_WDT** (CarriedIssues #1): eight in its bootlog before the
+   2026-09-29 reflash. Its soak on the no-ESP-NOW build (running since
+   2026-09-29) is the baseline arm; item 1 is the peer arm.
+3. **The in-service Rev 2 onto the fixed library** and the multi-peer build
+   (`impr-rad01-rev2-ble-peers`). It needs to be on the deck's USB.
+4. **SX1262 over-current, before and after** (`OCP_TUNED 0x38`, in the tree
+   since 2026-09-28): RSSI at a fixed receiver and supply current. Same bench
+   session as item 3.
+
+**Done when:** the chain carries a message both ways at the start and at the
+end, and Rev 1 and the OZD run 24 h with no restart -- or the trigger is
+found and fixed.
+
+## Two findings that gate Outdoor Test 1 (PR E2)
 
 ### 1. A board that is not in TNC mode does not relay
 
@@ -1383,6 +1695,70 @@ invalidates every range and reconnection measurement taken, and there is no way
 afterwards to tell which readings were poisoned.
 
 ---
+
+## PR F starts with mesh telemetry -- decided 2026-09-28
+
+Before the ATAK plugin work, and needed for Outdoor Test 1: every board sends
+a compact telemetry report over Reticulum -- uptime and restarts, heap and
+largest block, interfaces up, relaying, peers, battery -- at a budgeted
+interval (`position_budget.py`; on LoRa it is shared airtime). Any node with
+an uplink (the deck, a Vox, a board on Wi-Fi) is a **gateway**: it announces a
+telemetry-uplink destination and publishes what it receives to MQTT; a board
+that cannot reach one has its reports stored and forwarded. MQTT stays off
+ordinary boards (heap; credentials only on gateways). A **new repository**
+holds the gateway, a Go backend, Prometheus and Grafana; this repository holds
+the board-side emitter and the codec, pinned by a shared fixture as
+`tak_native_v1.json` is. The plugin's reachability view reads the same data.
+It replaces the deck-only dashboard proposed in `UpstreamReview.md`.
+
+**Device logs travel with it** (operator, 2026-09-28): each device's log is
+persisted off the device whenever it has a connection. On the device, log lines
+at NOTICE and above go into a bounded spool in flash (a ring, oldest dropped
+first); the telemetry service drains it toward a gateway when a path exists and
+keeps it when none does -- the same store-and-forward as the reports. Priority
+order: boot records and crash backtraces first, warnings next, notices last.
+**Airtime is the budget:** over LoRa only boot/crash records and warnings go,
+rate-limited per device; the full spool drains over a fat link (BLE to a phone
+or board with a gateway, Wi-Fi, HaLow). Lines are compact (binary header, level,
+timestamp, text) and de-duplicated with a repeat count. The gateway publishes
+them per device to MQTT; the backend repository persists them beside the
+metrics (Grafana Loki, or equivalent), so a board's history outlives its flash.
+
+**The layered architecture arrives with it** (`IoTPlatform.md`, agreed
+2026-09-28), one step per PR and none as a refactor-only cycle: PR F begins
+with R1 (firmware unit tests running on Linux), then R2 (the telemetry and
+position codecs as a pure, host-tested protocol layer) and R3 (the `IService`
+contract wrapped around today's modules, so each service reports its own
+health and telemetry -- the telemetry feature is its first client). R4-R6
+(platform layer, application layer, the core as a library) follow on a
+platform track after PR F, R6 together with the Arduino-core / ESP-IDF 5
+upgrade. Linux compatibility is kept at every step for IMPR-Vox.
+
+## After PR F: the repositories go private -- decided 2026-09-28
+
+This firmware, its microReticulum library fork and Columba become private,
+renamed (working name **Tacticulum**; a name containing "reticulum" is avoided
+for anything seen outside, as it is Mark Qvist's project name). Scheduled
+after PR F, once no PR is mid-review.
+
+- **How:** leave the fork network, then set private and rename -- issues and
+  PR history stay in place. The original remains a fetch-only remote, and
+  `UpstreamReview.md` becomes a periodic review.
+- **One pass of references:** remotes, the library URLs in `platformio.ini`
+  (builds then need credentials), the sibling-repo notes and the push rule in
+  `CLAUDE.md`, fixture paths, memory.
+- **Licences shape what private means** (to confirm with counsel before
+  shipping): the firmware is GPL-3.0 -- a private repo is fine, but every board
+  handed to anyone carries the right to its complete source, including code
+  linked into it; microReticulum is Apache-2.0 (proprietary derivatives
+  allowed); Columba is MPL-2.0 (modified files source-available on
+  distribution, new files may be proprietary); Python Reticulum's licence bars
+  systems that can purposefully harm people, and AI training use.
+- **Open:** the final name; an Imperium Softworks organisation or the personal
+  account; and for Astropath, whether it replaces Reticulum's wire protocol --
+  losing ecosystem interoperability and most of the value of pulling upstream --
+  and so whether it is written clean-room outside the GPL firmware.
+- `urban-tak` stays public, as designed.
 
 ## Open: the mesh and the server are two pictures
 

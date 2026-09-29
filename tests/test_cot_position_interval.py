@@ -46,3 +46,35 @@ class StatedIntervalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AtakCadenceTests(unittest.TestCase):
+    """The deck's own ATAK, with no fix, reports every few minutes; NEXUS went
+    grey on the deck between its reports (2026-09-27), and the deck on the
+    phones for the same reason."""
+
+    def test_the_gap_atak_leaves_is_stated_in_whole_minutes(self):
+        import cot_position
+        self.assertEqual(cot_position.stated_interval_minutes(0), 0)
+        self.assertEqual(cot_position.stated_interval_minutes(45), 0)
+        self.assertEqual(cot_position.stated_interval_minutes(250), 5)
+        self.assertEqual(cot_position.stated_interval_minutes(40 * 60), 10)
+
+    def test_the_deck_states_its_atak_cadence_in_what_it_sends(self):
+        from unittest.mock import Mock, patch
+        from cot_bridge import CotBridge
+        from test_cot_position_is_own import SELF_REPORT
+        made = CotBridge.__new__(CotBridge)
+        made.sender_id = 0x11223344
+        made.positions_sent = 0
+        made.position_gate = Mock()
+        made.position_gate.allows.return_value = True
+        sent = []
+        made._fan_out = lambda frame: sent.append(frame) or 1
+        clock = [1000.0]
+        with patch("cot_bridge.time.time", lambda: clock[0]):
+            made._position_from_atak(SELF_REPORT)
+            clock[0] += 250
+            made._position_from_atak(SELF_REPORT)
+        self.assertEqual(position_codec.decode(sent[0]).interval_min, 0, "one report says nothing yet")
+        self.assertEqual(position_codec.decode(sent[1]).interval_min, 5)

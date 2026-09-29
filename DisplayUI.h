@@ -181,7 +181,10 @@ inline uint8_t ui_footer_build(const NodeStatusView& s, UiFooterSlot* slots) {
   // Always first: is this thing working.
   UiFooterSlot& health = slots[count++];
   snprintf(health.left, sizeof(health.left), "%s", s.mesh_on ? "MESH ON" : "NO MESH");
-  if (s.interfaces_ok) {
+  if (s.relay_expected && !s.relaying) {
+    // Between carriers and not forwarding: set to TNC mode, or nothing crosses.
+    snprintf(health.right, sizeof(health.right), "NO RELAY");
+  } else if (s.interfaces_ok) {
     snprintf(health.right, sizeof(health.right), "ALL OK");
   } else {
     snprintf(health.right, sizeof(health.right), "%s DOWN",
@@ -282,7 +285,7 @@ inline void ui_draw_footer_band(Adafruit_SSD1306& d, const NodeStatusView& s) {
   }
 
   // The alarm is the background and does not rotate with the content.
-  const bool trouble = !s.mesh_on || !s.interfaces_ok;
+  const bool trouble = !s.mesh_on || !s.interfaces_ok || (s.relay_expected && !s.relaying);
   canvas.fillScreen(trouble ? 1 : 0);
 
   // Text sits two pixels below the band top when at rest, which is where the
@@ -461,6 +464,7 @@ inline void ui_draw_interfaces(Adafruit_SSD1306& d, const NodeStatusView& s, uin
   ui_pair(d, UI_X_LEFT, UI_X_RIGHT_EDGE, UI_Y_BODY3, "ESP-NOW",
           s.espnow_present ? (s.espnow_active ? "PEERED" : "ALONE") : absent);
   if (s.relaying)        ui_draw_footer(d, "RELAYING FOR OTHERS");
+  else if (s.relay_expected) ui_draw_footer(d, "NOT RELAYING: SET TNC");
   else if (s.time_known) ui_draw_footer(d, "UTC OK");
   else                   ui_draw_footer(d, "NO UTC");
 }

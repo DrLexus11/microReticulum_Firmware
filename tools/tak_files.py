@@ -250,6 +250,33 @@ def size_text(size):
     return "%d B" % size
 
 
+# What the "Columba files" contact says in ATAK. One line each, state first:
+# they are read on a Nexus-sized screen, and a paragraph there is several
+# lines of scrolling (operator, 2026-09-26). Byte-identical with Columba's
+# TakFiles and pinned in tak_native_v1.json.
+
+REASON_SLOW = "slow path"
+REASON_NO_PATH = "no path"
+REASON_PART_TIMED_OUT = "part timed out"
+
+
+def slow_reason(seconds_left):
+    """The path is slow, and roughly how long the rest would take."""
+    return "%s ~%dmin" % (REASON_SLOW, max(1, int(seconds_left // 60)))
+
+
+def held_line(filename, size, sender, reason, previewed):
+    """A file offered to this node is held here until a fast path appears."""
+    line = "HELD %s %s fr %s - %s" % (filename, size_text(size).replace(" ", ""), sender, reason)
+    return line + (". Preview on map" if previewed else "")
+
+
+def unfetched_line(filename, size, member):
+    """A file this node offered has not been fetched by a member yet."""
+    return "NOT FETCHED %s %s by %s - slow path. Still held" % (
+        filename, size_text(size).replace(" ", ""), member)
+
+
 def url_host(url):
     try:
         return urlsplit(url).hostname
@@ -392,18 +419,27 @@ class FileStore:
 
 # ---- parts: a file fetched a piece at a time, each piece timed -------------
 #
-# Round-trip time says whether LoRa is in the path; it does not say whether a
-# file will arrive in reasonable time. BLE is short and slow: a fast round trip
-# and tens of kbit/s. So the receiver fetches in parts, times each, and goes on
-# only while what is left would arrive within FETCH_BUDGET_SECONDS. A paused or
-# broken transfer keeps what it has and resumes from there.
+# A file is fetched in parts, each timed, and goes on only while what is left
+# would arrive within FETCH_BUDGET_SECONDS. A paused or broken transfer keeps
+# what it has and resumes from there.
+#
+# Nothing but a timed part says how fast a path is. Round-trip time was tried
+# first as a cheap filter for LoRa, and does not separate the carriers: one
+# LoRa hop at SF7/250 kHz is ~0.19 s on air for a link round trip, while a
+# Nexus 6P one BLE hop away measured 0.67 s (bench, 2026-09-26). Declared
+# bitrates are guesses. So every attempt starts with two small parts: the
+# first carries the link and transfer setup and is not judged; the second is.
+# A route measured slow is not sampled again until it changes, or an hour on,
+# so a file waiting behind LoRa costs 16 KB on air per route, not per retry.
 #
 #     FILE_PART_REQUEST_V1   kind(1) sha256(32) offset(4) length(4)
 #     FILE_PART_V1           kind(1) sha256(32) offset(4) total(4) data
 
 FETCH_BUDGET_SECONDS = 120
-FIRST_PART_BYTES = 64 * 1024
+SETUP_PART_BYTES = 4 * 1024
+SAMPLE_PART_BYTES = 12 * 1024
 PART_BYTES = 512 * 1024
+RESAMPLE_SECONDS = 60 * 60
 
 _PART_REQUEST = struct.Struct(">B32sII")
 _PART_HEAD = struct.Struct(">B32sII")
@@ -438,9 +474,34 @@ def decode_part(frame):
     return raw.hex(), offset, total, data
 
 
-def next_part_length(offset, total):
-    """The first part is small, a sample; the rest are larger."""
-    return min(FIRST_PART_BYTES if offset == 0 else PART_BYTES, total - offset)
+def part_length(offset, total, parts_this_attempt, judged):
+    """The setup part, then the sample, then full parts once a part is judged."""
+    if judged:
+        size = PART_BYTES
+    else:
+        size = SETUP_PART_BYTES if parts_this_attempt == 0 else SAMPLE_PART_BYTES
+    return min(size, total - offset)
+
+
+class PathRates:
+    """The rate last measured to each sender, and over which route.
+
+    A route is what the path table says now: hops and the next-hop interface.
+    A rate is trusted for the route it was measured on, for RESAMPLE_SECONDS.
+    """
+
+    def __init__(self):
+        self._rates = {}
+
+    def record(self, sender, route, bytes_per_second, now):
+        self._rates[sender] = (route, bytes_per_second, now)
+
+    def known(self, sender, route, now):
+        """Bytes per second measured on this route lately, or None."""
+        held = self._rates.get(sender)
+        if held is None or held[0] != route or now - held[2] > RESAMPLE_SECONDS:
+            return None
+        return held[1]
 
 
 def seconds_left(remaining_bytes, part_bytes, part_seconds):

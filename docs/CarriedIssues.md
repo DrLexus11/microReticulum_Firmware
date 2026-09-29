@@ -113,6 +113,156 @@ It must land **before** Outdoor Test 1: a board that resets mid-test invalidates
 every range and reconnection measurement taken, with no way afterwards to tell
 which readings were poisoned.
 
+### Rev 2-2's bootlog, read 2026-09-27, and an overnight soak
+
+Rev 2-2 was reflashed for PR E step 2 (multi-peer BLE) before its bootlog was
+read -- against the note above -- but its whole filesystem had been backed up
+first (`~/.impr-tak/backups/rev2-2-20260927-1842`), and the log came out of it
+with littlefs-python (PlatformIO's `mklittlefs` could not mount the image):
+
+    boot reason=SW (ESP.restart) prev=89063s
+    boot reason=SW (ESP.restart) prev=102034s
+    boot reason=SW (ESP.restart) prev=90147s
+    boot reason=POWERON prev=hw-reset          <- plugged into the deck, 18:38
+    boot reason=UNKNOWN prev=180s              <- esptool flash_id
+    boot reason=UNKNOWN prev=0s                <- esptool read_flash
+
+**No TASK_WDT, and ESP-NOW down throughout** -- consistent with the lead above.
+But **a software restart roughly every 25-28 hours.** The only ESP.restart in
+this firmware is `hard_reset()`, reached through RNS_LOW_MEMORY_REBOOT at
+<=2 % free heap, so this reads as a slow leak on the in-service Rev 2 build,
+not a watchdog. It matters as much for Outdoor Test 1: a board restarting once
+a day loses its paths each time.
+
+Now soaking overnight with `tools/serial_soak.py` (serial, attached without a
+reset, reattaching after each reboot): every boot and its reason, backtraces,
+`[mem]` internal heap and largest block each minute, ESP-NOW state. At start:
+internal 55 284 B free, largest block 23 540 B, ESP-NOW `strict ch=0 peers=0`
+-- no peer, so this run is the no-peer half of the A/B, now on the multi-peer
+BLE build with two phones attached. `--summary` gives the heap slope per hour.
+
+**First two hours (20:38-22:41), measured:** internal heap 55 276 -> 39 324 B,
+**-7.8 KB/h**, largest block 23 540 -> 20 468 B (low 16 372). No boots. Two
+phones attached over BLE the whole time. At that rate internal heap is gone by
+about 03:30-04:00 -- far sooner than the 25-28 h the old bootlog implies (about
+2 KB/h from ~55 KB), so either this build leaks faster (NimBLE multi-peer, two
+phones' traffic) or the rate is not linear. The host sleeps overnight and the
+serial log with it; the board keeps running, and **what happened at the heap's
+end is recoverable from its bootlog** (boot reason and previous uptime per
+boot) and the soak's reattach in the morning. Read both before anything else
+touches this board.
+
+**Overnight result, read 2026-09-28.** The host did not sleep; the log is
+complete, one `[mem]` sample a minute. The board **restarted at 05:29 by
+RNS_LOW_MEMORY_REBOOT** (`SW (ESP.restart)`, previous uptime 37 960 s, 10.5 h),
+not by the watchdog. The curve:
+
+    20:38  internal 55 276  largest 23 540
+    22:38           39 108          20 468
+    01:39           20 876           7 668
+    04:09           24 296           3 060
+    05:09           21 504           3 060     min largest block 1 268
+    05:39  (after restart) 63 124   45 044
+
+Free internal heap fell in ~8 KB steps (21:08-21:38, 22:08-22:38, 00:39-01:09,
+01:09-01:39), then held near 21-24 KB -- and the **largest free block
+collapsed** from 23 KB to about 1-3 KB. It restarted with ~21 KB free in
+total: fragmentation, not exhaustion, ended it. Both phones stayed attached
+from 20:38 to 05:22 with no reconnects, so BLE connection churn is not the
+step. The in-service Rev 2's older bootlog (restarts every 25-28 h) says the
+same thing more slowly.
+
+**Next:** the firmware now prints a `[tables]` line beside `[mem]` each minute
+-- every Transport table's size -- and `serial_soak.py --summary` reports each
+table's growth. Rev 2-2 is reflashed with it and soaking 24 h from 2026-09-28
+morning. The table that grows in steps names the leak.
+
+**The tables are not it** (1.7 h, 2026-09-28 morning): every Transport table
+flat -- 27 new paths, 50 hashes, the rest near zero -- while the largest block
+fell 47 -> 33 KB. **Logging is half of it** (A/B, runtime level NOTICE vs
+TRACE, 1.5 h each): total free heap -5.8 -> -2.6 KB/h; the largest block still
+fell 45 -> 37 KB, and **allocated heap blocks climbed 1 859 -> 1 927** (~45/h,
+peak 1 996) -- small objects allocated and kept, scattered through the heap.
+NOTICE stays for field builds regardless. **Next A/B:** the same build without
+ESP-NOW (`impr-rad01-rev2-n16r2-ble-peers-noespnow`), whose send path fails
+all day on this board with no peer; then the BLE peers and the LXMF
+propagation node, one at a time.
+
+**ESP-NOW is not it either** (the no-ESP-NOW build stepped the same way).
+
+### Found, 2026-09-28: links that were never freed -- two library gaps
+
+A diagnostics build (`impr-rad01-rev2-n16r2-ble-peers-noespnow-diaglib`, removed
+2026-09-29 with the no-ESP-NOW one once the leak closed;
+library branch `diag/instance-counters`) prints live instance counts of
+links, request receipts, resources and packets beside `[tables]`. Compared
+against the Transport's active-link count, the step had a name at once: **one
+link more than Transport knew of**, with a receipt, a resource and four
+packets, alive for hours after its teardown -- ~8 KB of internal heap,
+exactly the step size. Inbound links (a deck opening links to the board's
+NomadNet node) freed cleanly; the kept one was the board's *outbound* LXMF
+peer sync, whose `/offer` is never answered -- a known, separate problem
+still open.
+
+Two gaps in microReticulum, both Python features never ported:
+
+1. **A request never answered kept its link for ever.** The receipt holds the
+   link and the link holds the receipt: a `shared_ptr` cycle nothing broke,
+   because Python's response-timeout job was never ported. Fix: `link_closed()`
+   fails every pending request (`99abe11`).
+2. **A link whose peer vanished never closed.** The per-link watchdog --
+   establishment timeout, keepalive, stale close -- sat in a TODO comment. A
+   link closed only on a LINKCLOSE or a local teardown, so a peer out of
+   range, rebooted, or whose LINKCLOSE was lost on LoRa, left its link here
+   indefinitely; one lost request on the bench did exactly that. Fix: the
+   watchdog ported as a cooperative pass on Transport's one-second link check,
+   with the RTT-adaptive keepalive it depends on (`86ca5c0`, host-tested in
+   `test/test_link_watchdog`).
+
+**Measured on Rev 2-2:** 16 deck links via `tools/link_churn.py` (answered,
+abandoned mid-request, left open) -- link objects equal to Transport's
+active links throughout, no receipts or resources kept. On the unfixed build
+three links whose closes were lost were still held 28 min later; on the
+watchdog build a link whose holder was killed with SIGKILL closed at 12-13
+min, as the 360 s keepalive predicts (stale at 720 s, plus grace), while a
+client polling `/get` over one link kept it open for the whole run.
+
+The leaking path itself, on the fixed build: the board's own sync to
+`f11d25e5`, `/offer` unanswered, timed out after 3 min (19:30:55); by the
+next minute its link and receipt were gone and internal heap back from
+64 048 to 68 964 B. The same sequence kept ~8 KB for good before. (The
+first outbound `/offer` comes about an hour after boot: a new peer waits a
+full sync interval, and the first due attempt only computes the peering
+key.)
+
+**Overnight, closed 2026-09-29.** The watchdog build ran 13 h 47 min with
+no restart (bootlog `prev=49625s`, read from flash at the next flash; the
+unfixed build restarted by RNS_LOW_MEMORY_REBOOT at 10.5 h). Internal heap
+68 876 B at 21:11, 67 792 B at 07:55; largest block 42 996 -> 45 044 B:
+flat, where the old build lost ~8 KB per unanswered sync.
+
+Merged to the library's master as DrLexus11/microReticulum#6 (`b3f25c9`),
+after one Copilot review round: a failed callback that closed the link
+again failed the remaining requests twice (6 callbacks for 3 receipts);
+the set is now detached first (`9900724`, host-tested). The firmware pins
+`9900724`. The ESP-NOW transport fix it sits on (`ca00ad3`) merged as #5.
+
+### Rev 1, 2026-09-29: still TASK_WDT; reflashed with the multi-peer build
+
+Rev 1's bootlog, read from a backup before it was reflashed
+(`~/.impr-tak/backups/rev1-20260929-1142`, 73 lines): the last eight software
+restarts are all **TASK_WDT**, after 56 min to 3.9 days of uptime, then five
+power-ons and a **PANIC (exception) 72 s after the last power-on** -- the host
+restart that morning. The leak fixed above is a heap problem, not a watchdog
+one, so this is still open.
+
+Reflashed with `impr-rad01-rev1-ble-peers` (NimBLE, up to seven phones, the
+library with the link fixes; RRC hub, propagation node and TCP/ESP-NOW/UDP
+left out as in `-ble-lora`). It came up relaying LoRa with 2/7 BLE peers,
+one of them Rev 2-2 board-to-board, and is soaking with `serial_soak.py`.
+Seen once at boot, not yet explained: `esp_littlefs: Failed to unlink path
+"./hashlist_store/seg1.dat". Has open FD.`
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
@@ -399,8 +549,12 @@ LXMF inbox and time it. It separates "packets cross but links do not" from
 everything else immediately, and it should be a tool in `tools/` rather than a
 thing retyped under pressure.
 
+That tool is now `tools/link_churn.py` (2026-09-28).
+
 **Still open:** whether `rrcd` really needs a restart after an interface outage,
-and if so what state is stale. Reproducing it means reproducing issue #6, which
+and if so what state is stale. One candidate, unproven: until 2026-09-28 the
+boards never expired a link -- not a stale one, not a request that was never
+answered (#1, *links that were never freed*). Reproducing it means reproducing issue #6, which
 is itself not understood.
 
 ## 8. The slow path is crowded, and much of the crowd is ours
@@ -595,3 +749,39 @@ its address, keep the peer interface (and so its paths) across an address
 change, raise the MTU before use -- which is PR E's "BLE proven as the
 endpoint's carrier". Until then, BLE phone-to-phone is marked **not usable**
 for TAK files in the D2 matrix, and the timed-parts gate stays untested there.
+
+### Root causes, found and fixed 2026-09-26 (Columba)
+
+Measured with the A54 and the Nexus, both on the fixes as they landed:
+
+1. **The parent keeps a departed peer's interface two seconds.** A drop longer
+   than that destroyed the interface and every path learned on it. Now 120 s,
+   with the identity cache kept as long; the interface is marked offline
+   meanwhile, and announces sent in the gap are held for it.
+2. **Both phones connect to each other, and each kept a different link.** Each
+   refused the other's survivor as a duplicate; they reconnected every few
+   seconds and no TAK traffic crossed. Now both keep the link whose central is
+   the lower identity.
+3. **A second connection to a rotated address tore down the shared link** about
+   every 60 s, in step with advertising refresh. The local MAC is hidden on
+   Android, so ordering by MAC could not work. Each phone now advertises the
+   first 8 bytes of its identity in the scan response, and only the lower
+   identity connects.
+4. **Introduced by 1: a peer back inside the grace by a path the parent does not
+   revive stayed offline.** Rev 1 reconnected in under a second, packets kept
+   arriving, and Transport routed nothing to it for seven minutes. Now any kept
+   interface with a connected address and no detach pending is online.
+
+The MTU-20 observation above was only the pre-handshake value; links reach
+509-512 once negotiated. Messaging and markers crossed phone to phone after 1-3.
+
+**Resolved 2026-09-27**, measured with `tools/ble_link_soak.py`: the identity
+tag dropped from the scan response after the first advertising refresh (fixed:
+100 % online both sides, no disconnects over ten minutes); a status-133 retry's
+leftover timeout and an unreadable identity each left a one-sided link; and
+the GATT client handled only Android 13 callbacks, so an Android 8 phone as the
+connecting side could send but never receive. Throughput between the A54 and
+the Nexus 6P is ~50 kbit/s and bounded by the Nexus's radio -- one 488-byte
+packet per ~60 ms, with or without a write response; see *PR E extended* in
+`TAKDeliveryPlan.md`. Still owed: the same measurement between two current
+phones.

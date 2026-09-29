@@ -16,6 +16,10 @@
 // CBA Reticulum includes must come before local to avoid collision with local defines
 #ifdef HAS_RNS
 #include <microReticulum.h>
+#include "BootLog.h"
+#if __has_include(<microReticulum/Diagnostics.h>)
+#include <microReticulum/Diagnostics.h>
+#endif
 #include "Provisioning.h"
 #include "LoopPhase.h"
 #include "RadioPresets.h"
@@ -1419,8 +1423,43 @@ void setup() {
 
     {
       const char* bootlog = "./bootlog.txt";
-      if (filesystem.exists(bootlog) && filesystem.size(bootlog) > 4096) {
-        filesystem.remove(bootlog);   // keep it bounded; oldest history is least useful
+      // One buffer for the trim below and the echo after the append. It covers
+      // the whole cap plus one line, so the echo never hides the newest entries.
+      static char bootlog_buf[BOOTLOG_CAP_BYTES + 257];
+      const char* bootlog_tmp = "./bootlog.tmp";
+      // A trim cut off between its remove and its rename (power lost at that
+      // instant) left the kept tail in bootlog.tmp: take it back.
+      if (!filesystem.exists(bootlog) && filesystem.exists(bootlog_tmp)) {
+        filesystem.rename(bootlog_tmp, bootlog);
+      }
+      if (filesystem.exists(bootlog) && filesystem.size(bootlog) > BOOTLOG_CAP_BYTES) {
+        // A ring, not a reset: keep the newest whole lines. Deleting the file
+        // lost every boot record at once. See BootLog.h.
+        size_t n = 0;
+        microStore::File old_log = filesystem.open(bootlog, microStore::File::ModeRead);
+        if (old_log) {
+          n = old_log.read((uint8_t*)bootlog_buf, sizeof(bootlog_buf));
+          old_log.close();
+        }
+        if (n == (size_t)-1) n = 0;
+        const size_t start = bootlog_tail_start(bootlog_buf, n, BOOTLOG_KEEP_BYTES);
+        // Write the tail beside the log and replace the log only once every
+        // byte is down: a failed create or write keeps the old, over-cap log
+        // rather than losing the history this exists to preserve.
+        bool kept_ok = false;
+        if (n > 0) {
+          microStore::File kept = filesystem.open(bootlog_tmp, microStore::File::ModeWrite, true);
+          if (kept) {
+            const size_t len = n - start;
+            kept_ok = kept.write((const uint8_t*)bootlog_buf + start, len) == len;
+            kept.close();
+          }
+        }
+        if (kept_ok && filesystem.remove(bootlog)) {
+          filesystem.rename(bootlog_tmp, bootlog);
+        } else {
+          filesystem.remove(bootlog_tmp);
+        }
       }
       microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);
       if (bl) {
@@ -1454,8 +1493,8 @@ void setup() {
         // cap plus one line: a smaller one echoes the OLDEST entries and
         // silently hides the newest, which are the only ones that matter when
         // you are reading this after a board died in the field.
-        static char rdbuf[4353];
-        size_t n = rd.read((uint8_t*)rdbuf, sizeof(rdbuf) - 1);
+        char* rdbuf = bootlog_buf;
+        size_t n = rd.read((uint8_t*)rdbuf, sizeof(bootlog_buf) - 1);
         rd.close();
         if (n > 0 && n != (size_t)-1) {
           rdbuf[n] = 0;
@@ -1618,6 +1657,14 @@ void setup() {
       HEAD("Starting RNS...\r\n", RNS::LOG_VERBOSE);
 #if defined(RNS_MEM_LOG)
       RNS::loglevel(RNS::LOG_MEM);
+#elif defined(RNS_RUNTIME_LOG_LEVEL)
+      // A board in the field has nobody reading its console, and TRACE builds
+      // and prints a line for every packet and four neighbor scans a second,
+      // each ending in Serial.flush(). Rev 2-2's heap fragmented overnight
+      // until RNS_LOW_MEMORY_REBOOT (CarriedIssues #1); this is how a build
+      // tests, and then ships, a quieter level. printf diagnostics ([mem],
+      // [tables], [blepeer]) are not affected.
+      RNS::loglevel(RNS_RUNTIME_LOG_LEVEL);
 #else
       RNS::loglevel(RNS::LOG_TRACE);
 #endif
@@ -1664,7 +1711,13 @@ void setup() {
 printf("[init] hw_ready: %u\n", hw_ready);
 printf("[init] op_mode: %U\n", op_mode);
       if (op_mode != MODE_TNC) {
-        INFO("Not in TNC mode, transport will be disabled");
+        // Loud, because the consequence is silent: this board accepts peers,
+        // announces, is reachable -- and forwards nothing between its
+        // interfaces. The compiled default is MODE_HOST; provisioning sets
+        // TNC. The panel shows NO RELAY once two interfaces are up.
+        printf("\n[init] !!! NOT RELAYING: op_mode is not TNC (0x%02x). This board will not\n"
+               "[init] !!! forward between its interfaces. Provision it into TNC mode.\n\n",
+               (unsigned)op_mode);
         reticulum.transport_enabled(false);
       }
       // Transport reads the path, known-destination and hashlist stores into
@@ -3941,12 +3994,45 @@ static void heap_watch() {
   //                         same file gives boards that have external flash.
   //                         If this number climbs with the curve, that is the
   //                         consumer and the cap is the fix.
-  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u\n",
+  // Block counts beside the sizes: allocated blocks climbing steadily is many
+  // small objects never freed; flat counts with a shrinking largest block is
+  // churn fragmenting the heap.
+  multi_heap_info_t internal_info;
+  heap_caps_get_info(&internal_info, MALLOC_CAP_INTERNAL);
+  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u alloc_blocks=%u free_blocks=%u\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
          (unsigned)RNS::Transport::path_table().size(),
-         (unsigned)RNS::Transport::path_table_maxsize());
+         (unsigned)RNS::Transport::path_table_maxsize(),
+         (unsigned)internal_info.allocated_blocks,
+         (unsigned)internal_info.free_blocks);
+  // What holds the memory. Rev 2-2's internal heap fell in ~8 KB steps over a
+  // night -- 55 KB to 21 KB, largest block 23 KB to 1.3 KB -- until
+  // RNS_LOW_MEMORY_REBOOT restarted it after 10.5 h (2026-09-28), with its two
+  // phones attached throughout and no reconnect churn. Every table Transport
+  // keeps, each minute beside the heap, so the one that grows in steps names
+  // itself. Read by tools/serial_soak.py --summary.
+  printf("[tables] newpaths=%u announces=%u rates=%u links=%u pending=%u active=%u "
+         "reverse=%u dests=%u hashlist=%u\n",
+         (unsigned)RNS::Transport::new_path_table().size(),
+         (unsigned)RNS::Transport::announce_table().size(),
+         (unsigned)RNS::Transport::announce_rate_table().size(),
+         (unsigned)RNS::Transport::link_table().size(),
+         (unsigned)RNS::Transport::pending_links().size(),
+         (unsigned)RNS::Transport::active_links().size(),
+         (unsigned)RNS::Transport::reverse_table().size(),
+         (unsigned)RNS::Transport::destinations().size(),
+         (unsigned)RNS::Transport::packet_hashlist().size());
+  #if __has_include(<microReticulum/Diagnostics.h>)
+  // Live objects of a link's lifetime (a diagnostics build of the library):
+  // a count that rises by one per link and never falls is what a closed link
+  // leaves behind.
+  printf("[diag] links=%ld request_receipts=%ld resources=%ld packet_receipts=%ld packets=%ld\n",
+         (long)RNS::Diag::links.load(), (long)RNS::Diag::request_receipts.load(),
+         (long)RNS::Diag::resources.load(), (long)RNS::Diag::packet_receipts.load(),
+         (long)RNS::Diag::packets.load());
+  #endif
 #endif
 }
 #endif

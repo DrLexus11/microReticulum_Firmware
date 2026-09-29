@@ -38,7 +38,15 @@
 
 #if defined(NIMBLE_PEER_TRANSPORT)
 
+// Config.h defines MTU as a macro, and NimBLE names parameters MTU: on a board
+// with a LoRa radio Config.h is already included by now (through
+// LoRaInterface.h), and every such declaration fails to parse. The OZD fixture
+// has no radio, which is why it never met this. Hide the macro from NimBLE's
+// headers only, and give it back to the firmware straight after.
+#pragma push_macro("MTU")
+#undef MTU
 #include <NimBLEDevice.h>
+#pragma pop_macro("MTU")
 
 // The constrained OZD backend has materially different connection ownership:
 // one shared GATT service carries several simultaneous Reticulum peers. It is

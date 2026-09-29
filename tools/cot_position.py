@@ -93,6 +93,25 @@ def _event_unix(event):
         return 0
 
 
+# However slow ATAK has been, a stated interval never exceeds this: past it,
+# the handset reports in ATAK's place anyway. Columba's AtakCadence.MAX_QUIET_MS.
+MAX_STATED_GAP_SECONDS = 10 * 60
+
+
+def stated_interval_minutes(last_gap_seconds):
+    """The interval to state in a report ATAK made; 0 for the receiver's default.
+
+    ATAK with no GPS fix reports every several minutes, and a receiver draws an
+    unstated report as current for two minutes, so the track went grey between
+    every pair of reports (NEXUS on the deck, 2026-09-27). The gap ATAK last
+    left, in whole minutes, keeps it current for two of them. Unstated while
+    ATAK reports at least once a minute. Columba's AtakCadence does the same.
+    """
+    if not last_gap_seconds or last_gap_seconds <= 60:
+        return 0
+    return int(-(-min(last_gap_seconds, MAX_STATED_GAP_SECONDS) // 60))
+
+
 def fix_from_cot(cot_xml, sender_id):
     """A PositionFix from a CoT event, or None if it does not carry one.
 
