@@ -234,8 +234,17 @@ first outbound `/offer` comes about an hour after boot: a new peer waits a
 full sync interval, and the first due attempt only computes the peering
 key.)
 
-**Owed:** an overnight soak with a flat heap. Library branch `fix/link-watchdog` (both commits, on `ca00ad3`) pushed
-2026-09-29; the firmware now pins `86ca5c0`.
+**Overnight, closed 2026-09-29.** The watchdog build ran 13 h 47 min with
+no restart (bootlog `prev=49625s`, read from flash at the next flash; the
+unfixed build restarted by RNS_LOW_MEMORY_REBOOT at 10.5 h). Internal heap
+68 876 B at 21:11, 67 792 B at 07:55; largest block 42 996 -> 45 044 B:
+flat, where the old build lost ~8 KB per unanswered sync.
+
+Merged to the library's master as DrLexus11/microReticulum#6 (`b3f25c9`),
+after one Copilot review round: a failed callback that closed the link
+again failed the remaining requests twice (6 callbacks for 3 receipts);
+the set is now detached first (`9900724`, host-tested). The firmware pins
+`9900724`. The ESP-NOW transport fix it sits on (`ca00ad3`) merged as #5.
 
 ### Considered and currently disfavoured
 

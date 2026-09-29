@@ -1279,17 +1279,16 @@ fixed; the fallback-interface design (operator item 5, design only); the PR
 texts. And R0 of the layered architecture: `IoTPlatform.md` and its rules in
 `CLAUDE.md`, binding on new code from here.
 
-**Leak, 2026-09-28 evening: cause found and fixed in the library, verified on
-Rev 2-2** (CarriedIssues #1, *links that were never freed*). Two unported
+**Leak -- closed 2026-09-29.** Cause found and fixed in the library, verified
+on Rev 2-2 (CarriedIssues #1, *links that were never freed*). Two unported
 Python pieces: pending requests never failed when a link closed (a
 `shared_ptr` cycle, ~8 KB per unanswered sync), and no link watchdog at all,
-so no link ever timed out. Library branch `fix/link-watchdog` (`99abe11`,
-`86ca5c0`) -- pushed 2026-09-29 and pinned in `platformio.ini`
-(was `ca00ad3`). The board's own unanswered sync -- the path that
-leaked -- now frees its link and receipt on timeout (verified 19:31). Still
-owed before the leak item closes: an overnight soak with a flat heap.
-Then the ESP-NOW-peer half of (4) and the multi-peer build onto the boards in
-service, as planned. `tools/link_churn.py` drives links from the deck on
+so no link ever timed out. Merged to the library's master
+(DrLexus11/microReticulum#5, #6); the firmware pins `9900724`. The board's own
+unanswered sync -- the path that leaked -- frees its link and receipt on
+timeout, and the fixed build ran 13 h 47 min overnight with a flat heap where
+the unfixed one restarted at 10.5 h. **Next:** the ESP-NOW-peer half of (4)
+and the multi-peer build onto the boards in service, as planned. `tools/link_churn.py` drives links from the deck on
 demand for any later regression.
 
 **Added 2026-09-28 from the upstream review** (`UpstreamReview.md`), by the
