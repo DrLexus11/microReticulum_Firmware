@@ -246,6 +246,22 @@ again failed the remaining requests twice (6 callbacks for 3 receipts);
 the set is now detached first (`9900724`, host-tested). The firmware pins
 `9900724`. The ESP-NOW transport fix it sits on (`ca00ad3`) merged as #5.
 
+### Rev 1, 2026-09-29: still TASK_WDT; reflashed with the multi-peer build
+
+Rev 1's bootlog, read from a backup before it was reflashed
+(`~/.impr-tak/backups/rev1-20260929-1142`, 73 lines): the last eight software
+restarts are all **TASK_WDT**, after 56 min to 3.9 days of uptime, then five
+power-ons and a **PANIC (exception) 72 s after the last power-on** -- the host
+restart that morning. The leak fixed above is a heap problem, not a watchdog
+one, so this is still open.
+
+Reflashed with `impr-rad01-rev1-ble-peers` (NimBLE, up to seven phones, the
+library with the link fixes; RRC hub, propagation node and TCP/ESP-NOW/UDP
+left out as in `-ble-lora`). It came up relaying LoRa with 2/7 BLE peers,
+one of them Rev 2-2 board-to-board, and is soaking with `serial_soak.py`.
+Seen once at boot, not yet explained: `esp_littlefs: Failed to unlink path
+"./hashlist_store/seg1.dat". Has open FD.`
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
