@@ -36,8 +36,14 @@ KEEP = re.compile(
 MEM = re.compile(r"\[mem\] internal=(\d+) largest=(\d+) psram=(\d+)")
 BLOCKS = re.compile(r"alloc_blocks=(\d+) free_blocks=(\d+)")
 ESPNOW = re.compile(r"\[espnow\] state=(\S+) ch=(\d+) peers=(\d+)")
-TABLES = re.compile(r"\[(?:tables|diag)\] ((?:\w+=\d+ ?)+)")
+TABLES = re.compile(r"\[(tables|diag)\] ((?:\w+=\d+ ?)+)")
 BOOT = re.compile(r"boot reason=([^\r\n]*?)(?: prev=(\S+))?$|\[boot\] reset reason: ([^,(]+)")
+# At every boot the firmware prints a live "[boot] reset reason:" line, then
+# echoes the whole bootlog between these markers -- its last entry is this
+# same boot, and the rest are history, not boots seen by this soak.
+ECHO_START = re.compile(r"\[boot\] --- bootlog history")
+ECHO_END = re.compile(r"\[boot\] --- end bootlog")
+SAME_BOOT_SECONDS = 120
 
 
 def open_quietly(port, baud):
@@ -86,9 +92,13 @@ def stamp():
 
 
 def summarise(path, out=sys.stdout):
-    boots, mem, espnow, crashes, tables, blocks = [], [], [], [], [], []
+    boots, mem, espnow, crashes, blocks = [], [], [], [], []
+    series = {"tables": [], "diag": []}
     first = last = None
-    for line in open(path, errors="replace"):
+    in_echo, echo_newest, live_boot_at = False, None, None
+    with open(path, errors="replace") as log:
+        lines = log.readlines()
+    for line in lines:
         when = line[:19]
         try:
             moment = datetime.strptime(when, "%Y-%m-%d %H:%M:%S")
@@ -96,9 +106,27 @@ def summarise(path, out=sys.stdout):
             continue
         first = first or moment
         last = moment
+        if ECHO_START.search(line):
+            in_echo, echo_newest = True, None
+            continue
+        if ECHO_END.search(line):
+            in_echo = False
+            # The echo's newest entry is this boot. Count it only when the live
+            # line was not captured (a USB-CDC board prints before the host
+            # reattaches), so one boot is never counted twice.
+            if echo_newest and not (live_boot_at and
+                                    (moment - live_boot_at).total_seconds() <= SAME_BOOT_SECONDS):
+                boots.append(echo_newest)
+            continue
         found = BOOT.search(line)
         if found:
-            boots.append((when, (found.group(1) or found.group(3) or "").strip(), found.group(2) or ""))
+            entry = (when, (found.group(1) or found.group(3) or "").strip(), found.group(2) or "")
+            if in_echo:
+                echo_newest = entry
+            else:
+                boots.append(entry)
+                if found.group(3):
+                    live_boot_at = moment
         found = MEM.search(line)
         if found:
             mem.append((moment, int(found.group(1)), int(found.group(2))))
@@ -107,7 +135,8 @@ def summarise(path, out=sys.stdout):
             blocks.append((int(found.group(1)), int(found.group(2))))
         found = TABLES.search(line)
         if found:
-            tables.append(dict((k, int(v)) for k, v in re.findall(r"(\w+)=(\d+)", found.group(1))))
+            series[found.group(1)].append(
+                dict((k, int(v)) for k, v in re.findall(r"(\w+)=(\d+)", found.group(2))))
         found = ESPNOW.search(line)
         if found:
             espnow.append((found.group(1), int(found.group(3))))
@@ -136,11 +165,13 @@ def summarise(path, out=sys.stdout):
         print("blocks: allocated %d -> %d (max %d), free %d -> %d (max %d)"
               % (blocks[0][0], blocks[-1][0], max(b[0] for b in blocks),
                  blocks[0][1], blocks[-1][1], max(b[1] for b in blocks)), file=out)
-    if tables:
-        print("tables (first -> last, max):", file=out)
-        for key in tables[0]:
-            values = [t.get(key, 0) for t in tables]
-            print("  %-10s %6d -> %6d, max %d" % (key, values[0], values[-1], max(values)), file=out)
+    for label, rows in series.items():
+        if not rows:
+            continue
+        print("%s (first -> last, max):" % label, file=out)
+        for key in rows[0]:
+            values = [r.get(key, 0) for r in rows]
+            print("  %-16s %6d -> %6d, max %d" % (key, values[0], values[-1], max(values)), file=out)
     if espnow:
         peers = [p for _, p in espnow]
         states = sorted({s for s, _ in espnow})

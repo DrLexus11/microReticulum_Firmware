@@ -43,9 +43,27 @@ class SummaryTests(unittest.TestCase):
     def setUp(self):
         self.summary = ble_link_soak.summarise(LINES)
 
+    def test_a_peer_that_drops_out_of_the_heartbeats_is_counted_offline(self):
+        # Online in one beat, then detached and no longer listed: 1 of 3, not 100%.
+        summary = ble_link_soak.summarise([
+            "BLEInterface[Bluetooth LE] peers: 60ba5291[RNode 1114]=online",
+            "BLEInterface[Bluetooth LE] peers: none",
+            "BLEInterface[Bluetooth LE] peers: none",
+        ])
+        self.assertEqual(summary["peers"]["60ba5291"]["heartbeats"], 3)
+        self.assertEqual(summary["peers"]["60ba5291"]["online"], 1)
+
+    def test_a_peer_met_late_is_not_charged_for_before_it_was_met(self):
+        summary = ble_link_soak.summarise([
+            "BLEInterface[Bluetooth LE] peers: none",
+            "BLEInterface[Bluetooth LE] peers: 60ba5291[RNode 1114]=online",
+        ])
+        self.assertEqual(summary["peers"]["60ba5291"]["heartbeats"], 1)
+
     def test_online_share_comes_from_the_heartbeats(self):
         self.assertEqual(self.summary["heartbeats"], 2)
-        self.assertEqual(self.summary["peers"]["60ba5291"], {"name": "RNode 1114", "heartbeats": 2, "online": 2})
+        self.assertEqual(self.summary["peers"]["60ba5291"],
+                         {"name": "RNode 1114", "heartbeats": 2, "listed": 2, "online": 2})
         self.assertEqual(self.summary["peers"]["53ccf1db"]["online"], 1)
 
     def test_link_events_are_counted(self):

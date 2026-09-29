@@ -1426,6 +1426,12 @@ void setup() {
       // One buffer for the trim below and the echo after the append. It covers
       // the whole cap plus one line, so the echo never hides the newest entries.
       static char bootlog_buf[BOOTLOG_CAP_BYTES + 257];
+      const char* bootlog_tmp = "./bootlog.tmp";
+      // A trim cut off between its remove and its rename (power lost at that
+      // instant) left the kept tail in bootlog.tmp: take it back.
+      if (!filesystem.exists(bootlog) && filesystem.exists(bootlog_tmp)) {
+        filesystem.rename(bootlog_tmp, bootlog);
+      }
       if (filesystem.exists(bootlog) && filesystem.size(bootlog) > BOOTLOG_CAP_BYTES) {
         // A ring, not a reset: keep the newest whole lines. Deleting the file
         // lost every boot record at once. See BootLog.h.
@@ -1437,11 +1443,22 @@ void setup() {
         }
         if (n == (size_t)-1) n = 0;
         const size_t start = bootlog_tail_start(bootlog_buf, n, BOOTLOG_KEEP_BYTES);
-        filesystem.remove(bootlog);
-        microStore::File kept = filesystem.open(bootlog, microStore::File::ModeWrite, true);
-        if (kept) {
-          kept.write((const uint8_t*)bootlog_buf + start, n - start);
-          kept.close();
+        // Write the tail beside the log and replace the log only once every
+        // byte is down: a failed create or write keeps the old, over-cap log
+        // rather than losing the history this exists to preserve.
+        bool kept_ok = false;
+        if (n > 0) {
+          microStore::File kept = filesystem.open(bootlog_tmp, microStore::File::ModeWrite, true);
+          if (kept) {
+            const size_t len = n - start;
+            kept_ok = kept.write((const uint8_t*)bootlog_buf + start, len) == len;
+            kept.close();
+          }
+        }
+        if (kept_ok && filesystem.remove(bootlog)) {
+          filesystem.rename(bootlog_tmp, bootlog);
+        } else {
+          filesystem.remove(bootlog_tmp);
         }
       }
       microStore::File bl = filesystem.open(bootlog, microStore::File::ModeAppend, true);

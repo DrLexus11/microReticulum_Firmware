@@ -59,6 +59,7 @@ def summarise(lines):
     ticks = 0
     online = collections.Counter()
     seen = collections.Counter()
+    first_tick = {}
     names = {}
     events = collections.Counter()
     gatt = collections.Counter()
@@ -73,6 +74,7 @@ def summarise(lines):
             for peer, name, state in PEER_STATE.findall(beat.group(1)):
                 names[peer] = name
                 seen[peer] += 1
+                first_tick.setdefault(peer, ticks)
                 online[peer] += state == "online"
             continue
         for label, pattern in EVENTS.items():
@@ -97,7 +99,11 @@ def summarise(lines):
             rates.append(int(found.group(1)))
     return {
         "heartbeats": ticks,
-        "peers": {peer: {"name": names[peer], "heartbeats": seen[peer], "online": online[peer]}
+        # A peer's share is over every heartbeat from the one that first listed
+        # it: a detached peer drops out of later lines, and those beats are
+        # time it was not online, not time that did not happen.
+        "peers": {peer: {"name": names[peer], "heartbeats": ticks - first_tick[peer] + 1,
+                         "listed": seen[peer], "online": online[peer]}
                   for peer in seen},
         "events": dict(events),
         "gatt_failures": {str(k): v for k, v in sorted(gatt.items())},

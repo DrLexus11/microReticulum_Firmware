@@ -1382,7 +1382,8 @@ without risk is taken here, not carried into F.
   and Android embedded the profile, ~500 B of a 655 B budget. Decoded as sRGB.
 - *An offer arrives before its sender's inbox is known.* Both receivers said
   "no path to its sender yet" at once, and found it 60 s later. Now: look again
-  every 15 s for a minute, tell nobody, show a QuickPic's preview at once.
+  every 10 s for a minute (`PATH_LOOK_SECONDS`), tell nobody, show a QuickPic's
+  preview at once.
 - *Rev 1 serves one phone, and the phones race for it.* After a restart the
   Nexus won, the A54 lost its only route to the deck, and neither phone relays.
   This is PR E step 2, not a defect.
