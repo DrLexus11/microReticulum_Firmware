@@ -192,7 +192,8 @@ propagation node, one at a time.
 
 ### Found, 2026-09-28: links that were never freed -- two library gaps
 
-A diagnostics build (`impr-rad01-rev2-n16r2-ble-peers-noespnow-diaglib`,
+A diagnostics build (`impr-rad01-rev2-n16r2-ble-peers-noespnow-diaglib`, removed
+2026-09-29 with the no-ESP-NOW one once the leak closed;
 library branch `diag/instance-counters`) prints live instance counts of
 links, request receipts, resources and packets beside `[tables]`. Compared
 against the Transport's active-link count, the step had a name at once: **one

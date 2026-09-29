@@ -60,8 +60,9 @@ where gain is the only constraint.
 | **C** | *Chat that survives a partition* | **Built; partly proven.** Addressed chat on LXMF; room receipts suppressed at the endpoint; replay buffer for a detached ATAK. A held message completed the chain 2026-09-13, but the collect was triggered by hand — the unattended triggers have not run on hardware, so store-and-forward is **not** yet proven end to end | nothing |
 | **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
 | **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail**, the descriptor and thumbnail together **no more than three fragments**); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and **deferred on LoRa**; a **retention page** in Columba for held files, promoted to the PR F plugin. Also carries **position while ATAK is closed** (built 2026-09-22, see *PR D2* below). Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | the bulk half: a capture of what ATAK emits for a data package and a QuickPic over our endpoint. The position half: nothing |
-| **E** | *The node knows where it is and what it can reach* | BLE phone-to-phone and several phones per board; the relaying/boundary resolution; the ESP-NOW reset trigger; BLE proven as the endpoint's carrier | the two findings below |
-| — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E |
+| **E** | *The node knows where it is and what it can reach* | **Closed 2026-09-29 at this scope.** BLE phone-to-phone that holds; several phones per board into the main mesh (multi-peer NimBLE on Rev 2 and Rev 1); relaying made loud; the heap leak that restarted every board fixed in the library. The ESP-NOW reset trigger and the rest of the stability work moved to E2 | the two findings below, resolved or moved to E2 |
+| **E2** | *Stability before the field* | The ESP-NOW chain test and soak (Rev 1 LoRa + ESP-NOW, OZD ESP-NOW + BLE); Rev 1's TASK_WDT; the SX1262 over-current before/after; the in-service Rev 2 onto the fixed library. Small diffs, days of wall clock -- see *PR E2* | E |
+| — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E + E2 |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
 
 C and D collapse into one PR cleanly if a single review is preferred. **E stays
@@ -1269,6 +1270,26 @@ several phones on one board; (3) make "not relaying" loud on an unprovisioned
 board; (4) the ESP-NOW reset soak, run in the background; (5) the lone-field
 drill. Then Outdoor Test 1.
 
+**Closed 2026-09-29, at this scope** (operator). PR E had grown into every
+stability issue found along the way, and soaks that take days kept it open.
+Hardware-speed work now has its own PR, **E2**, which gates Outdoor Test 1 and
+nothing else. What PR E shipped, each proven on hardware: BLE phone-to-phone
+that holds (CarriedIssues #11); several phones on one board, into the main mesh
+(Rev 2 and, 2026-09-29, Rev 1 on `impr-rad01-rev1-ble-peers`); "not relaying"
+made loud; tactical status lines; announce on meeting; QuickPic previews over
+BLE, a full picture held on a slow path as designed; the heap leak that
+restarted every board every 10-28 h, fixed in the library (below); the bootlog
+kept as a ring; R0 of the layered architecture.
+
+**Moved out:** to **E2** -- the ESP-NOW reset trigger (as the chain test the
+feature was first built with), Rev 1's TASK_WDT, the SX1262 over-current
+before/after, the in-service Rev 2 onto the fixed library. To **PR F** -- the
+propagation node's name in its announce (identity metadata, beside the
+telemetry). To the **Vox phase** -- the sx126x RX-state refresh review. To
+**when a second current phone is on hand** -- BLE phone-to-phone throughput
+for a full QuickPic. The fallback-interface design stays a design
+(`FallbackInterfaces.md`); the lone-field drill stays at the end of PR F.
+
 **Status 2026-09-28.** (1)-(3) done and proven on hardware (see *PR E
 extended*). (5) **moved to the end of PR F** by the operator. Left in PR E:
 the heap leak and fragmentation found by the soak (every board restarting every
@@ -1585,7 +1606,42 @@ TAK traffic, which matters most, since in a disaster simultaneous presence is
 exactly what you do not have; and phone relaying as an opt-in "lone-field
 mode" for groups with no boards.
 
-## Two findings that gate PR E
+### PR E2 — stability before the field
+
+**Created 2026-09-29** from what was holding PR E open. Small diffs, days of
+wall clock. Gates Outdoor Test 1 and nothing else: a board that restarts
+mid-test poisons every range and reconnection reading taken.
+
+1. **The ESP-NOW chain test**, the way the feature was first proven:
+   Columba (TCP client) -> Rev 2 -> LoRa -> Rev 1 -> ESP-NOW -> OZD -> BLE ->
+   a phone. A message end to end both ways, then 24-48 h left running, Rev 1
+   and the OZD logged with `tools/serial_soak.py` for restarts and a deck
+   script opening links across the ESP-NOW hop every few minutes
+   (`tools/link_churn.py`), then a message again. This is also the soak for
+   the ESP-NOW reset trigger (*Two findings*, 2): it was OZD pairs that showed
+   the correlation, and Rev 1 carries the TASK_WDT history. Needs:
+   - a Rev 1 environment with LoRa, ESP-NOW and multi-peer NimBLE together --
+     `impr-rad01-rev1-ble-peers` leaves ESP-NOW out, as `-ble-lora` did for
+     Bluedroid's heap; NimBLE is lighter and Rev 1 has 8 MB of PSRAM;
+   - the OZD on `ozdisan-esp32-espnow` (already current: ESP-NOW, NimBLE,
+     the fixed library);
+   - the Rev 2 at the TCP end on the fixed library (next item);
+   - Rev 1 and the OZD on one Wi-Fi channel -- ESP-NOW follows the channel
+     of the station's AP.
+2. **Rev 1's TASK_WDT** (CarriedIssues #1): eight in its bootlog before the
+   2026-09-29 reflash. Its soak on the no-ESP-NOW build (running since
+   2026-09-29) is the baseline arm; item 1 is the peer arm.
+3. **The in-service Rev 2 onto the fixed library** and the multi-peer build
+   (`impr-rad01-rev2-ble-peers`). It needs to be on the deck's USB.
+4. **SX1262 over-current, before and after** (`OCP_TUNED 0x38`, in the tree
+   since 2026-09-28): RSSI at a fixed receiver and supply current. Same bench
+   session as item 3.
+
+**Done when:** the chain carries a message both ways at the start and at the
+end, and Rev 1 and the OZD run 24 h with no restart -- or the trigger is
+found and fixed.
+
+## Two findings that gate Outdoor Test 1 (PR E2)
 
 ### 1. A board that is not in TNC mode does not relay
 
