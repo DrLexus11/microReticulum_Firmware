@@ -1270,7 +1270,8 @@ several phones on one board; (3) make "not relaying" loud on an unprovisioned
 board; (4) the ESP-NOW reset soak, run in the background; (5) the lone-field
 drill. Then Outdoor Test 1.
 
-**Closed 2026-09-29, at this scope** (operator). PR E had grown into every
+**Closed 2026-09-29, at this scope** (operator); **merged the same day** as
+microReticulum_Firmware#29 and columba#9, after one Copilot review round. PR E had grown into every
 stability issue found along the way, and soaks that take days kept it open.
 Hardware-speed work now has its own PR, **E2**, which gates Outdoor Test 1 and
 nothing else. What PR E shipped, each proven on hardware: BLE phone-to-phone
@@ -1608,6 +1609,8 @@ exactly what you do not have; and phone relaying as an opt-in "lone-field
 mode" for groups with no boards.
 
 ### PR E2 — stability before the field
+
+**Branch:** `feature/e2-stability` (firmware), from `master` after PR E.
 
 **Created 2026-09-29** from what was holding PR E open. Small diffs, days of
 wall clock. Gates Outdoor Test 1 and nothing else: a board that restarts
