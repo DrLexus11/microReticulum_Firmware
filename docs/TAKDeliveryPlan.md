@@ -1284,8 +1284,8 @@ Rev 2-2** (CarriedIssues #1, *links that were never freed*). Two unported
 Python pieces: pending requests never failed when a link closed (a
 `shared_ptr` cycle, ~8 KB per unanswered sync), and no link watchdog at all,
 so no link ever timed out. Library branch `fix/link-watchdog` (`99abe11`,
-`86ca5c0`) -- **the operator pushes it**, then `platformio.ini` is repinned
-from `ca00ad3`. The board's own unanswered sync -- the path that
+`86ca5c0`) -- pushed 2026-09-29 and pinned in `platformio.ini`
+(was `ca00ad3`). The board's own unanswered sync -- the path that
 leaked -- now frees its link and receipt on timeout (verified 19:31). Still
 owed before the leak item closes: an overnight soak with a flat heap.
 Then the ESP-NOW-peer half of (4) and the multi-peer build onto the boards in

@@ -234,8 +234,8 @@ first outbound `/offer` comes about an hour after boot: a new peer waits a
 full sync interval, and the first due attempt only computes the peering
 key.)
 
-**Owed:** an overnight soak with a flat heap. The library branch `fix/link-watchdog` (both commits, on the pinned
-`ca00ad3`) needs pushing before the firmware can pin it.
+**Owed:** an overnight soak with a flat heap. Library branch `fix/link-watchdog` (both commits, on `ca00ad3`) pushed
+2026-09-29; the firmware now pins `86ca5c0`.
 
 ### Considered and currently disfavoured
 
