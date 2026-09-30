@@ -70,7 +70,14 @@ def main():
         print("sent; waiting up to 40 s for the board to join %s ..." % ssid.decode(errors="replace"))
         deadline, seen = time.time() + 40, b""
         while time.time() < deadline:
-            seen += link.read(4096)
+            try:
+                seen += link.read(4096)
+            except serial.SerialException:
+                # Something else is reading the port -- a soak logger. The
+                # settings were written before this; only the confirmation is lost.
+                print("settings sent, but another program is reading this port (a soak "
+                      "logger?), so the board's confirmation cannot be read here", file=sys.stderr)
+                return 2
             text = re.sub(rb"[^\x20-\x7e\n]", b"", seen).decode()
             if re.search(r"\[WiFi\] status: 3\b", text):
                 print("joined (WiFi status 3)")
