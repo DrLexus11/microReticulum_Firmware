@@ -1645,6 +1645,35 @@ mid-test poisons every range and reconnection reading taken.
 end, and Rev 1 and the OZD run 24 h with no restart -- or the trigger is
 found and fixed.
 
+**Status 2026-09-30 (end of day).** The chain is built and a link crosses it;
+the phone-to-phone message test is next.
+
+- **Carriers fixed by build, not by distance.** With BLE on every board, all
+  three boards linked to each other directly and the chain collapsed to one
+  BLE hop. Now: the spare Rev 2 on `impr-rad01-rev2-n16r2-no-espnow` (LoRa +
+  Wi-Fi: TCP server at 192.168.1.37:4242 for phone A, UDP to the deck; no BLE,
+  no ESP-NOW); Rev 1 on `impr-rad01-rev1-espnow` (LoRa + ESP-NOW, no BLE; on a
+  wall plug); the OZD on `ozdisan-esp32-espnow` (ESP-NOW + BLE for phone B).
+  Rev 1 and the OZD pair on channel 1.
+- **The OZD was made stable** (it had run out of memory, see CarriedIssues
+  #1): packet-hash list in RAM (microReticulum#7), two BLE connections instead
+  of seven. ~35 KB free with the Nexus attached, no allocation faults.
+- **Proven:** a link from the deck to the OZD across the whole chain -- deck
+  -> UDP -> in-service Rev 2 -> LoRa -> Rev 1 -> ESP-NOW -> OZD -- carrying a
+  page request and its answer. Phone A (A54) is connected to the spare over
+  TCP; phone B (Nexus) to the OZD over BLE.
+- **Next:** each phone limited to its one carrier (A54: TCP client only; Nexus:
+  BLE only -- no phone-to-phone BLE, no local-network interface), then a
+  message each way, then the 24-48 h soak (`tools/link_churn.py` across the
+  ESP-NOW hop; Rev 1 read with `tools/node_page.py <hash> /page/device.mu
+  boot`, its bootlog at the end).
+- **Rev 1's baseline arm:** 23 h without a restart on the no-ESP-NOW build
+  (bootlog, 2026-09-30).
+- **To look at:** the Nexus came back with a different BLE peer identity after
+  its BLE interface was restarted in Columba (`5bdbfbd6` -> `8bf64505`); Columba
+  keys BLE peers on identity. And the deck's two USB ports brown boards out
+  under radio load -- a board on the deck's USB is not a clean power supply.
+
 ## Two findings that gate Outdoor Test 1 (PR E2)
 
 ### 1. A board that is not in TNC mode does not relay

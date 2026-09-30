@@ -292,6 +292,28 @@ lines before the host reattaches, so `serial_soak.py --summary` reported
 "boots: 0" across these. A reattach after the first attach is the tell; the
 bootlog is the record.
 
+### The OZD ran out of memory, 2026-09-30 -- fixed
+
+In PR E2's chain test the OZD (ESP32, no PSRAM) failed allocations under
+ordinary load, three causes deep:
+
+1. **Board-to-board BLE churn.** Its link to Rev 1, at the edge of range,
+   dropped and rebuilt every few minutes; heap 27 -> 18 KB in 15 min. Fixed by
+   builds that keep BLE off the other boards.
+2. **The file-backed packet-hash store.** Once a minute, "BLEPeerInterface::
+   handle_incoming: out of memory" in the same second as "Failed to unlink
+   ./hashlist_store/journal.dat": the journal could not be removed while open
+   (microStore), so each rotation met a larger file. 4 KB segments delayed it
+   to minute 11. Fixed by keeping the list in RAM (`RNS_PERSIST_HASHLIST=0`),
+   which did not compile in the library until microReticulum#7. Rev 1 printed
+   the same unlink failure at boot; PSRAM absorbs it there.
+3. **Seven NimBLE connections reserved.** Even then, announce validation and
+   clock writes failed with bad_alloc and a link to the board never became
+   active. Two connections freed ~8 KB (39.8 KB free after boot, 31.7 before).
+
+After all three: ~35 KB free with a phone attached, the RNS pool reporting no
+allocation faults, and a link across the whole chain to the board.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
