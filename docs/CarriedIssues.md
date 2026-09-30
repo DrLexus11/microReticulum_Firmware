@@ -263,6 +263,27 @@ one of them Rev 2-2 board-to-board, and is soaking with `serial_soak.py`.
 Seen once at boot, not yet explained: `esp_littlefs: Failed to unlink path
 "./hashlist_store/seg1.dat". Has open FD.`
 
+### Overnight 2026-09-29/30: no restarts; two brownouts at a host reboot
+
+Both boards ran the night without a restart: Rev 1 on the multi-peer build
+(heap flat at 171 KB), Rev 2-2 on the fixed library (heap flat near 70 KB,
+nothing orphaned). The host slept 21:51-08:13 and the soak logs with it, so
+those 10.4 h are known from other evidence: Rev 2-2's bootlog (read from flash
+2026-09-30) ends on the boot it is still running, and neither logger had to
+reattach after the host woke, which a restart's USB re-enumeration forces.
+
+**Rev 2-2 browned out twice** on 2026-09-29 at ~10:52, 23 min after the host
+reboot powered it on (`BROWNOUT prev=1380s`, then `prev=0s`) -- within seconds
+of a soak logger opening its port. One board, one event, cause not known. It
+is a supply-margin data point for PR E2's over-current item: `OCP_TUNED 0x38`
+lets the SX1262 PA draw up to 140 mA where 0x28 capped it near 100 mA, and the
+board is fed from the deck's USB hub. Measure supply current under TX there.
+
+**The soak logger misses restarts on USB-CDC boards**: they print their boot
+lines before the host reattaches, so `serial_soak.py --summary` reported
+"boots: 0" across these. A reattach after the first attach is the tell; the
+bootlog is the record.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
