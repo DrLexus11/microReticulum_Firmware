@@ -272,12 +272,20 @@ those 10.4 h are known from other evidence: Rev 2-2's bootlog (read from flash
 2026-09-30) ends on the boot it is still running, and neither logger had to
 reattach after the host woke, which a restart's USB re-enumeration forces.
 
-**Rev 2-2 browned out twice** on 2026-09-29 at ~10:52, 23 min after the host
-reboot powered it on (`BROWNOUT prev=1380s`, then `prev=0s`) -- within seconds
-of a soak logger opening its port. One board, one event, cause not known. It
-is a supply-margin data point for PR E2's over-current item: `OCP_TUNED 0x38`
-lets the SX1262 PA draw up to 140 mA where 0x28 capped it near 100 mA, and the
-board is fed from the deck's USB hub. Measure supply current under TX there.
+**Rev 2-2 browned out twice** on 2026-09-29 at ~10:52 (`BROWNOUT prev=1380s`,
+then `prev=0s`), after ten power-ons. All of it falls in a disturbance the
+operator reported: the deck's USB hub misbehaving for ~15 min, the deck asleep
+~30 min, a restart, and much plugging and unplugging -- settled by 11:30. Not
+a finding against the board. (The E2 over-current item still measures supply
+current under TX: `0x38` lets the PA draw up to 140 mA.)
+
+**From 11:30, the settled picture.** Rev 1: no restart, internal heap 170.6-171.3
+KB throughout. Rev 2-2: no restart; 74.6 KB at 11:30, ~4 KB less once Rev 1's
+BLE link to it came up, then flat at 68-70 KB for 21 h. Dips every 30 min (to
+~55 KB, largest block to ~35 KB) line up with the LXMF sync cadence and recover
+within a minute. No link object outlived its link: the one minute where
+objects exceeded active links (21:50) was an outbound link still pending, active
+with its request a minute later.
 
 **The soak logger misses restarts on USB-CDC boards**: they print their boot
 lines before the host reattaches, so `serial_soak.py --summary` reported
