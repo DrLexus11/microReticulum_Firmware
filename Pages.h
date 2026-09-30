@@ -29,6 +29,7 @@
 #include "PositionReport.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
+#include "NodeStatus.h"
 #endif
 #ifdef HAS_BME
 #include "BME680.h"
@@ -584,6 +585,26 @@ RNS::Bytes serve_page(
         content << "  \"mgmt_destination\": \"" << (RNS::Transport::remote_management_destination() ? RNS::Transport::remote_management_destination().hash().toHex() : RNS::Bytes{}.toHex()) << "\",\n";
         content << "  \"nomadnet_destination\": \"" << (nomadnet_destination ? nomadnet_destination.hash().toHex() : RNS::Bytes{}.toHex()) << "\",\n";
       	content << "}";
+      }
+      else if (category == "boot") {
+        // Restarts and uptime, over the mesh. A board on a wall plug has no
+        // serial to watch, and its bootlog is read only when it is replugged;
+        // this is how a soak follows it meanwhile (PR E2). A watchdog or
+        // brownout restart counts in "crashes", an exception in "panics".
+        extern const char* boot_reset_reason;
+        const NodeStatusView s = node_status();
+        content = "{\n";
+        content << "  \"uptime_s\": " << std::to_string(s.uptime_s) << ",\n";
+        content << "  \"reset_reason\": \"" << boot_reset_reason << "\",\n";
+#if defined(ESP32)
+        extern uint32_t boot_prev_uptime;
+        extern bool boot_rail_lost;
+        content << "  \"prev_uptime_s\": " << (boot_rail_lost ? std::string("null") : std::to_string(boot_prev_uptime)) << ",\n";
+#endif
+        content << "  \"boots_since_power\": " << std::to_string(s.boots) << ",\n";
+        content << "  \"crashes\": " << std::to_string(s.crashes) << ",\n";
+        content << "  \"panics\": " << std::to_string(s.panics) << "\n";
+        content << "}";
       }
       else if (category == "interfaces") {
         content = "{\n";
