@@ -1645,6 +1645,23 @@ mid-test poisons every range and reconnection reading taken.
 end, and Rev 1 and the OZD run 24 h with no restart -- or the trigger is
 found and fixed.
 
+**2026-10-01: a message each way through the chain; soak started.** A54 ->
+Nexus at 4 hops with the A54's BLE off, and the reply back -- each phone had
+one carrier, so both went TCP -> spare -> LoRa -> Rev 1 -> ESP-NOW -> OZD ->
+BLE. The Nexus's ATAK positions also reach the deck's ATAK over it unattended.
+Soak from 08:28: serial loggers on the spare and the OZD; Rev 1's `boot` page
+polled every 30 min (`~/.impr-tak/soak/rev1-boot-20261001.log`); a link from
+the deck to the OZD every 10 min (`churn-ozd-20261001.log`), the first up in
+3.6 s. Rev 1 at the start: up 14.4 h, crashes 9, panics 8 (lifetime totals).
+
+The OZD panicked once overnight (07:09, after 9.9 h), out of memory: a
+retransmission's path lookup threw bad_alloc. Library fixes merged as
+microReticulum#8 -- each retransmission send and the path-request block catch
+their own exceptions, and a scope guard releases Transport's jobs lock however
+outbound()/inbound() are left (an exception or an early return had left it set,
+stopping the jobs pass, and with it table culling, until something cleared
+it). Firmware pinned to `35d9193`; the OZD flashed with it at 08:19.
+
 **Status 2026-09-30 (end of day).** The chain is built and a link crosses it;
 the phone-to-phone message test is next.
 
