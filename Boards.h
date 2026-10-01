@@ -604,8 +604,9 @@
       // (100 mA). Near 21-22 dBm the SX1262 draws ~110-140 mA, so the PA may
       // be current-limited below its set power. 0x38 is 140 mA, the value
       // attermann's 06511a2 uses. It lets the PA reach its setting; it does
-      // not raise it. In since PR E; the before/after measurement (RSSI at a fixed
-      // receiver, supply current) is still owed, in PR E2 (UpstreamReview.md).
+      // not raise it. In since PR E, following upstream; the before/after
+      // measurement (RSSI at a fixed receiver, supply current) is deferred to
+      // an RF-tools PR (TAKDeliveryPlan.md, "RF characterisation").
       #define OCP_TUNED 0x38
       // No external RX/TX switch pins on this module; DIO2 does it internally.
       #define HAS_RF_SWITCH_RX_TX false

@@ -61,7 +61,7 @@ where gain is the only constraint.
 | **D** | *Everything that does not fit one packet* | Tier 3 fragmentation **proven on the radios both ways 2026-09-21**; **a recipient on the marker frame**, so a pin can be sent to one person; **the member table survives a restart**. Closes after a **locked-phone test**. Moved out: polyline codec, MEDEVAC dictionary (backlog), blocked-edge format (own item) -- see *Closing PR D* | nothing |
 | **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail**, the descriptor and thumbnail together **no more than three fragments**); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and **deferred on LoRa**; a **retention page** in Columba for held files, promoted to the PR F plugin. Also carries **position while ATAK is closed** (built 2026-09-22, see *PR D2* below). Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | the bulk half: a capture of what ATAK emits for a data package and a QuickPic over our endpoint. The position half: nothing |
 | **E** | *The node knows where it is and what it can reach* | **Closed 2026-09-29 at this scope.** BLE phone-to-phone that holds; several phones per board into the main mesh (multi-peer NimBLE on Rev 2 and Rev 1); relaying made loud; the heap leak that restarted every board fixed in the library. The ESP-NOW reset trigger and the rest of the stability work moved to E2 | the two findings below, resolved or moved to E2 |
-| **E2** | *Stability before the field* | The ESP-NOW chain test and soak (Rev 1 LoRa + ESP-NOW, OZD ESP-NOW + BLE); Rev 1's TASK_WDT; the SX1262 over-current before/after; the in-service Rev 2 onto the fixed library. Small diffs, days of wall clock -- see *PR E2* | E |
+| **E2** | *Stability before the field* | The ESP-NOW chain test and soak (Rev 1 LoRa + ESP-NOW, OZD ESP-NOW + BLE); Rev 1's TASK_WDT; the in-service Rev 2 onto the fixed library. (SX1262 over-current before/after deferred to an RF-tools PR, 2026-10-01; OZD hardening to after the IDF upgrade.) Small diffs, days of wall clock -- see *PR E2* | E |
 | — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E + E2 |
 | **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
 
@@ -1637,13 +1637,18 @@ mid-test poisons every range and reconnection reading taken.
    2026-09-29) is the baseline arm; item 1 is the peer arm.
 3. **The in-service Rev 2 onto the fixed library** and the multi-peer build
    (`impr-rad01-rev2-ble-peers`). It needs to be on the deck's USB.
-4. **SX1262 over-current, before and after** (`OCP_TUNED 0x38`, in the tree
-   since 2026-09-28): RSSI at a fixed receiver and supply current. Same bench
-   session as item 3.
+4. ~~SX1262 over-current, before and after~~ -- **deferred 2026-10-01**
+   (operator). No USB breakout or RF bench to measure supply current and RSSI
+   properly. We follow upstream's 140 mA (`OCP_TUNED 0x38`, in since
+   2026-09-28) as their fix for a limit we had not known we had; the
+   before/after waits for a PR with RF tools (*Later: RF characterisation*).
 
 **Done when:** the chain carries a message both ways at the start and at the
-end, and Rev 1 and the OZD run 24 h with no restart -- or the trigger is
-found and fixed.
+end, and Rev 1 runs 24 h with a live ESP-NOW peer and no restart -- or the
+trigger is found and fixed. The OZD was dropped from this gate 2026-10-01: on
+a board with no PSRAM it aborts when a traffic burst exhausts its ~26 KB of
+usable heap (CarriedIssues #1); it is re-evaluated after the ESP-IDF 5 /
+Arduino 3 upgrade, which allows trimming the Wi-Fi and NimBLE buffers.
 
 **2026-10-01: a message each way through the chain; soak started.** A54 ->
 Nexus at 4 hops with the A54's BLE off, and the reply back -- each phone had
@@ -1782,6 +1787,16 @@ health and telemetry -- the telemetry feature is its first client). R4-R6
 (platform layer, application layer, the core as a library) follow on a
 platform track after PR F, R6 together with the Arduino-core / ESP-IDF 5
 upgrade. Linux compatibility is kept at every step for IMPR-Vox.
+
+## Later: RF characterisation -- when the bench has the tools
+
+Measurements that need equipment we do not have yet (a USB current breakout or
+inline meter, a fixed-position receiver, ideally an SDR or spectrum analyser):
+
+- **SX1262 over-current, before and after** (deferred from E2, 2026-10-01).
+  `OCP_TUNED 0x38` (140 mA) follows upstream's 06511a2; measure supply current
+  under TX and RSSI at a fixed receiver for 0x28 and 0x38.
+- Gain at the legal limit (21) per board, and how close each sits to it.
 
 ## After PR F: the repositories go private -- decided 2026-09-28
 
