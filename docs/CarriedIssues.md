@@ -314,6 +314,28 @@ ordinary load, three causes deep:
 After all three: ~35 KB free with a phone attached, the RNS pool reporting no
 allocation faults, and a link across the whole chain to the board.
 
+### The OZD's real headroom, 2026-10-01: ~26 KB, and it aborts at zero
+
+The `[mem]` line's `internal` counts MALLOC_CAP_INTERNAL, which on the ESP32
+includes instruction RAM added to the heap -- 32-bit access only, unusable by
+malloc(). Now also `heap8`/`largest8` (MALLOC_CAP_8BIT). Just after boot the OZD
+reads internal 39.3 KB but heap8 26.2 KB: the "30-35 KB free" of 2026-09-30 was
+~17-22 KB, and a largest block pinned at 12276 was that instruction RAM.
+
+It aborted twice on 2026-10-01 (07:09 after 9.9 h, 08:48 after 28 min) with
+the same signature: an allocation failed with the pool and the system heap both
+exhausted, then allocating the bad_alloc exception object itself failed
+(`__cxa_allocate_exception` -> `__terminate`). No catch can help there. The
+library now keeps the jobs lock from sticking and catches send failures
+(microReticulum#8), which removes the way it used to slide into that state, but
+not the base cost: Wi-Fi driver (needed for ESP-NOW), NimBLE, Reticulum and its
+18 KB pool in ~26 KB. It recovers by itself -- re-pairs with Rev 1 within ~5 s.
+
+**Treated as a fixture limit, not a product one**: every product board has
+PSRAM. An abort reads PANIC with this backtrace, so it cannot be mistaken for
+the TASK_WDT the E2 soak is looking for. A memory budget pass on the OZD (Wi-Fi
+driver buffers, NimBLE msys) is possible and not scheduled.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
