@@ -11,6 +11,7 @@
 #include "BLEPeerProtocol.h"
 #include "ESPNowProtocol.h"
 #include "PositionCodec.h"
+#include "TelemetryCodec.h"
 
 #include <cstdint>
 #include <cstring>
@@ -308,6 +309,99 @@ void test_position_round_trips_its_own_encoding() {
 	TEST_ASSERT_EQUAL_STRING("020ffedcba98f8a432eb05e30a786ab13bfbfffff400ff09", encoded(fix).c_str());
 }
 
+// --- TelemetryCodec.h: the board health report, v1 ---------------------------
+// Every hex string below is a case in tests/fixtures/telemetry_v1.json, which
+// tools/telemetry_codec.py is tested against too; tests/test_telemetry_fixture.py
+// checks that each one appears here.
+
+static std::string telemetry_hex(const NodeTelemetry& t) {
+	uint8_t out[TELEMETRY_WIRE_MAX_LEN];
+	return hex_of(out, telemetry_encode(t, out, sizeof(out)));
+}
+
+void test_telemetry_ozd_report_bytes() {
+	NodeTelemetry t;
+	t.sender_id = 0x0a0b0c0d;
+	t.uptime_s = 3600;
+	t.reset = TELEMETRY_RESET_PANIC;
+	t.boots = 1; t.crashes = 9; t.panics = 8;
+	t.heap_bytes = 26220; t.largest_bytes = 19444;          // 25 and 18 KB
+	t.if_present = TELEMETRY_IF_BLE | TELEMETRY_IF_WIFI | TELEMETRY_IF_ESPNOW;
+	t.if_up = TELEMETRY_IF_BLE | TELEMETRY_IF_ESPNOW;
+	t.ble_peers = 1; t.espnow_peers = 1; t.paths = 23; t.nodes = 5;
+	t.relaying = true; t.relay_expected = true;
+	TEST_ASSERT_EQUAL_STRING("01030a0b0c0d00000e1003000100090008001900120e0a010100170005", telemetry_hex(t).c_str());
+}
+
+void test_telemetry_saturates_and_carries_the_optional_fields() {
+	NodeTelemetry t;
+	t.sender_id = 0xfedcba98;
+	t.uptime_s = 143512;
+	t.reset = TELEMETRY_RESET_POWERON;
+	t.boots = 1; t.crashes = 70000; t.panics = 0;          // crashes saturate
+	t.heap_bytes = 243000; t.largest_bytes = 233460;
+	t.psram_known = true; t.psram_bytes = 8230059;          // 8037 KB
+	t.if_present = TELEMETRY_IF_LORA | TELEMETRY_IF_WIFI | TELEMETRY_IF_ESPNOW;
+	t.if_up = t.if_present;
+	t.ble_peers = 300; t.espnow_peers = 2;                  // peers saturate
+	t.paths = 70000; t.nodes = 12;                          // paths saturate
+	t.relaying = true; t.relay_expected = true; t.time_current = true;
+	t.battery_known = true; t.battery_mv = 3912; t.battery_pct = 150;   // caps at 100
+	TEST_ASSERT_EQUAL_STRING("011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864",
+	                         telemetry_hex(t).c_str());
+}
+
+void test_telemetry_all_zero_is_the_base_length() {
+	NodeTelemetry t;
+	TEST_ASSERT_EQUAL_STRING("0100000000000000000000000000000000000000000000000000000000", telemetry_hex(t).c_str());
+	uint8_t out[TELEMETRY_WIRE_MAX_LEN];
+	TEST_ASSERT_EQUAL_size_t(0, telemetry_encode(t, out, TELEMETRY_WIRE_BASE_LEN - 1));
+}
+
+void test_telemetry_decode_ignores_appended_bytes() {
+	uint8_t in[TELEMETRY_WIRE_MAX_LEN + 8];
+	const size_t n = bytes_of("01030a0b0c0d00000e1003000100090008001900120e0a010100170005aabbcc", in, sizeof(in));
+	NodeTelemetry t;
+	TEST_ASSERT_TRUE(telemetry_decode(in, n, t));
+	TEST_ASSERT_EQUAL_HEX32(0x0a0b0c0d, t.sender_id);
+	TEST_ASSERT_EQUAL_UINT32(3600, t.uptime_s);
+	TEST_ASSERT_EQUAL_UINT8(TELEMETRY_RESET_PANIC, t.reset);
+	TEST_ASSERT_EQUAL_UINT32(9, t.crashes);
+	TEST_ASSERT_EQUAL_UINT32(25 * 1024, t.heap_bytes);      // whole KB back
+	TEST_ASSERT_EQUAL_UINT8(TELEMETRY_IF_BLE | TELEMETRY_IF_ESPNOW, t.if_up);
+	TEST_ASSERT_TRUE(t.relaying);
+	TEST_ASSERT_FALSE(t.psram_known);
+	TEST_ASSERT_FALSE(t.battery_known);
+}
+
+void test_telemetry_round_trips_the_full_report() {
+	uint8_t in[TELEMETRY_WIRE_MAX_LEN];
+	const char* hex = "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864";
+	const size_t n = bytes_of(hex, in, sizeof(in));
+	NodeTelemetry t;
+	TEST_ASSERT_TRUE(telemetry_decode(in, n, t));
+	TEST_ASSERT_TRUE(t.psram_known);
+	TEST_ASSERT_EQUAL_UINT32(8037u * 1024u, t.psram_bytes);
+	TEST_ASSERT_TRUE(t.battery_known);
+	TEST_ASSERT_EQUAL_UINT16(3912, t.battery_mv);
+	TEST_ASSERT_EQUAL_UINT8(100, t.battery_pct);
+	TEST_ASSERT_EQUAL_STRING(hex, telemetry_hex(t).c_str());
+}
+
+void test_telemetry_decode_refuses_what_it_cannot_read() {
+	const char* refused[] = {
+		"011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f",   // truncated before battery
+		"02030a0b0c0d00000e1003000100090008001900120e0a010100170005",         // version 2
+		"01030a0b0c0d00000e1003000100090008001900120e0a0101001700",           // shorter than the base
+	};
+	for (const char* hex : refused) {
+		uint8_t in[TELEMETRY_WIRE_MAX_LEN];
+		const size_t n = bytes_of(hex, in, sizeof(in));
+		NodeTelemetry t;
+		TEST_ASSERT_FALSE_MESSAGE(telemetry_decode(in, n, t), hex);
+	}
+}
+
 int main() {
 	UNITY_BEGIN();
 	RUN_TEST(test_bootlog_that_fits_is_kept_whole);
@@ -330,5 +424,11 @@ int main() {
 	RUN_TEST(test_position_decode_ignores_the_interval_byte);
 	RUN_TEST(test_position_decode_refuses_what_it_cannot_read);
 	RUN_TEST(test_position_round_trips_its_own_encoding);
+	RUN_TEST(test_telemetry_ozd_report_bytes);
+	RUN_TEST(test_telemetry_saturates_and_carries_the_optional_fields);
+	RUN_TEST(test_telemetry_all_zero_is_the_base_length);
+	RUN_TEST(test_telemetry_decode_ignores_appended_bytes);
+	RUN_TEST(test_telemetry_round_trips_the_full_report);
+	RUN_TEST(test_telemetry_decode_refuses_what_it_cannot_read);
 	return UNITY_END();
 }
