@@ -159,6 +159,42 @@ ANNOUNCE_INTERVAL_SECONDS = 30 * 60
 POSITION_STALE_SECONDS = 2 * cot_position.DEFAULT_INTERVAL_SECONDS
 
 
+# A fixed site -- a command post -- reports its position this often while its
+# ATAK is not reporting: a GPS-less ATAK sends none at all, manual location or
+# not (measured on the deck's Waydroid 2026-10-02: keepalive pings only), and a
+# member with no position is no contact on anybody's map or chat list. The
+# report states this interval, so receivers keep it fresh for twice as long.
+SITE_REPORT_INTERVAL_S = 300
+# A site is surveyed once, not fixed by a receiver; claim no better than this.
+SITE_ACCURACY_M = 10
+
+
+def parse_site(text):
+    """'LAT,LON' in decimal degrees -> (lat_e7, lon_e7). ValueError otherwise."""
+    parts = [part.strip() for part in (text or "").split(",")]
+    if len(parts) != 2:
+        raise ValueError("expected LAT,LON, got %r" % text)
+    lat, lon = float(parts[0]), float(parts[1])
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        raise ValueError("%r is not a position on Earth" % text)
+    if lat == 0.0 and lon == 0.0:
+        # The position of nothing in particular: an unset value, not a site.
+        raise ValueError("0,0 is not a site")
+    return int(round(lat * 1e7)), int(round(lon * 1e7))
+
+
+def site_report_due(now, atak_last_report, site_last_report, interval_s=SITE_REPORT_INTERVAL_S):
+    """Whether the site should report for this node now.
+
+    Only while ATAK has been quiet for a whole interval -- a reporting ATAK is
+    the better source, and two tracks for one node would be worse than either --
+    and no more often than the interval.
+    """
+    if atak_last_report is not None and now - atak_last_report < interval_s:
+        return False
+    return site_last_report is None or now - site_last_report >= interval_s
+
+
 def position_stale_seconds(fix):
     """How long to draw this fix as current: twice its sender's cadence.
 
@@ -330,9 +366,12 @@ class CotBridge:
                  lxmf_storage=None, propagation_node=None,
                  announce_interval=ANNOUNCE_INTERVAL_SECONDS,
                  bind_host=BIND_HOST, lxmf_direct_only=False,
-                 members_path=None):
+                 members_path=None, site=None):
         import RNS
         self.rns = RNS
+        # (lat_e7, lon_e7) of a fixed site, or None; see SITE_REPORT_INTERVAL_S.
+        self.site = site
+        self._site_last_report = None
         self.bind_host = bind_host
         self.announce_interval = announce_interval
         self.team = team
@@ -669,6 +708,31 @@ class CotBridge:
                 # A failed announce is not worth losing the bridge over; the
                 # next one is half an hour away and members are kept far longer.
                 print("[bridge] announce failed: %s" % error, flush=True)
+
+    def _site_forever(self):
+        """Report the site's position while ATAK is not reporting one."""
+        said = False
+        while True:
+            time.sleep(15)
+            now = time.time()
+            if not site_report_due(now, self.__dict__.get("_atak_last_report"),
+                                   self._site_last_report):
+                continue
+            fix = position_codec.PositionFix(
+                lat_e7=self.site[0], lon_e7=self.site[1], fix_unix_s=int(now),
+                accuracy_m=SITE_ACCURACY_M, sender_id=self.sender_id,
+                interval_min=SITE_REPORT_INTERVAL_S // 60)
+            try:
+                self.positions_sent += self._fan_out(position_codec.encode(fix))
+            except Exception as error:                      # noqa: BLE001
+                print("[bridge] site report failed: %s" % error, flush=True)
+                continue
+            self._site_last_report = now
+            if not said:
+                print("[bridge] ATAK not reporting a position: reporting the site "
+                      "(%.5f, %.5f) every %d min" % (self.site[0] / 1e7, self.site[1] / 1e7,
+                                                     SITE_REPORT_INTERVAL_S // 60), flush=True)
+                said = True
 
     def _fragment_arrived(self, index, count, held, elapsed):
         """One line per fragment, so a slow transfer is visible as it happens.
@@ -2133,6 +2197,8 @@ class CotBridge:
         self.announce()
         self._announce_thread = threading.Thread(target=self._announce_forever, daemon=True)
         self._announce_thread.start()
+        if self.site is not None:
+            threading.Thread(target=self._site_forever, daemon=True).start()
         print("[bridge] point ATAK at %s:%d, TCP, no SSL"
               % (self.bind_host, self.port), flush=True)
         self._report_propagation()
@@ -2201,6 +2267,9 @@ def main():
     parser.add_argument("--callsign", default="BRIDGE",
                         help="how this node identifies itself to the team")
     parser.add_argument("--role", default="Team Member")
+    parser.add_argument("--site", default=None, metavar="LAT,LON",
+                        help="a fixed site's position (a command post), reported "
+                             "while ATAK reports none -- a GPS-less ATAK sends nothing")
     parser.add_argument("--identity", default=None,
                         help="this node's identity file (default %s)" % DEFAULT_IDENTITY_PATH)
     parser.add_argument("--announce-interval", type=int,
@@ -2252,6 +2321,13 @@ def main():
                  "not %d" % args.announce_interval)
 
     bind_host = checked_bind_host(args.bind)
+
+    site = None
+    if args.site:
+        try:
+            site = parse_site(args.site)
+        except ValueError as error:
+            sys.exit("--site: %s" % error)
 
     propagation_node = None
     if args.propagation_node:
@@ -2308,7 +2384,8 @@ def main():
                        lxmf_direct_only=args.lxmf_direct_only,
                        members_path=os.path.join(
                            os.path.expanduser(args.config or "~/.reticulum"),
-                           "tak_members.json"))
+                           "tak_members.json"),
+                       site=site)
     if not args.no_files:
         bridge.enable_files(os.path.join(os.path.expanduser(args.config or "~/.reticulum"),
                                          "tak_files"), args.files_port)

@@ -139,3 +139,33 @@ class BindHostTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SiteTests(unittest.TestCase):
+    """A command post with no GPS is on nobody's map unless its site reports."""
+
+    def test_a_site_parses(self):
+        import cot_bridge
+        self.assertEqual(cot_bridge.parse_site("40.9627, 29.0950"), (409627000, 290950000))
+        self.assertEqual(cot_bridge.parse_site("-33.5,-70.25"), (-335000000, -702500000))
+
+    def test_nonsense_is_refused_before_anything_starts(self):
+        for value in ("91,0", "0,181", "40.9", "a,b", "0,0"):
+            with self.subTest(value=value):
+                result = run(["--site", value])
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("--site", result.stderr)
+
+    def test_the_site_reports_only_while_atak_is_quiet(self):
+        import cot_bridge
+        due = cot_bridge.site_report_due
+        interval = cot_bridge.SITE_REPORT_INTERVAL_S
+        # Never heard from ATAK, never reported: report.
+        self.assertTrue(due(1000.0, None, None))
+        # ATAK reported within the interval: the better source is talking.
+        self.assertFalse(due(1000.0, 1000.0 - interval + 1, None))
+        # ATAK quiet a whole interval: the site speaks for it.
+        self.assertTrue(due(1000.0, 1000.0 - interval, None))
+        # And no more often than the interval.
+        self.assertFalse(due(1000.0, None, 1000.0 - interval + 1))
+        self.assertTrue(due(1000.0, None, 1000.0 - interval))
