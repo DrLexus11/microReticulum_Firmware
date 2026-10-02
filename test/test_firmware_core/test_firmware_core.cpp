@@ -90,10 +90,14 @@ void test_espnow_discovery_round_trips_at_its_exact_size() {
 	TEST_ASSERT_EQUAL_UINT8(5, back.coding_rate);
 	TEST_ASSERT_EQUAL_UINT8(1, back.wifi_channel);
 	TEST_ASSERT_EQUAL_UINT8(discovery.capabilities, back.capabilities);
-	// The frequency goes big-endian, like every field on this wire:
-	// 867200000 = 0x33b06c00.
-	const uint8_t frequency[4] = {0x33, 0xb0, 0x6c, 0x00};
-	TEST_ASSERT_EQUAL_UINT8_ARRAY(frequency, out + 4, 4);
+	// The whole payload against a vector computed independently (Python's
+	// struct.pack(">IIIBBBB", ...)), so an encoder and decoder that drift
+	// together still fail: phy_hash, frequency, bandwidth big-endian, then
+	// SF, CR, Wi-Fi channel and capabilities.
+	const uint8_t expected[ESPNOW_DISCOVERY_SIZE] = {
+		0x33, 0xdb, 0xd2, 0x94,  0x33, 0xb0, 0x6c, 0x00,  0x00, 0x03, 0xd0, 0x90,
+		0x07, 0x05, 0x01, 0x0b};
+	TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, ESPNOW_DISCOVERY_SIZE);
 	// Any other length is a different frame, not a short discovery.
 	TEST_ASSERT_FALSE(espnow_read_discovery(out, ESPNOW_DISCOVERY_SIZE + 1, back));
 	TEST_ASSERT_FALSE(espnow_read_discovery(out, ESPNOW_DISCOVERY_SIZE - 1, back));
@@ -105,11 +109,30 @@ void test_espnow_recovery_reply_carries_nonce_discovery_and_proof() {
 	uint8_t out[ESPNOW_RECOVERY_REPLY_SIZE];
 	TEST_ASSERT_EQUAL_size_t(ESPNOW_RECOVERY_REPLY_SIZE,
 	                         espnow_write_recovery_reply(out, sizeof(out), 0xdeadbeef, discovery, proof));
+	// The bytes, independently computed: nonce, the discovery, the proof.
+	const uint8_t expected[ESPNOW_RECOVERY_REPLY_SIZE] = {
+		0xde, 0xad, 0xbe, 0xef,
+		0x01, 0x02, 0x03, 0x04,  0x33, 0xbc, 0xa1, 0x00,  0x00, 0x01, 0xe8, 0x48,
+		0x09, 0x05, 0x06, 0x04,
+		1, 2, 3, 4, 5, 6, 7, 8};
+	TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, ESPNOW_RECOVERY_REPLY_SIZE);
+	// And through the parser ESPNowInterface uses.
 	uint32_t nonce = 0;
-	TEST_ASSERT_TRUE(espnow_read_solicit(out, ESPNOW_SOLICIT_SIZE, nonce));
+	ESPNowDiscovery back{};
+	const uint8_t* back_proof = nullptr;
+	TEST_ASSERT_TRUE(espnow_read_recovery_reply(out, sizeof(out), nonce, back, back_proof));
 	TEST_ASSERT_EQUAL_HEX32(0xdeadbeef, nonce);
-	TEST_ASSERT_EQUAL_UINT8_ARRAY(proof, out + ESPNOW_SOLICIT_SIZE + ESPNOW_DISCOVERY_SIZE,
-	                              ESPNOW_RECOVERY_PROOF_SIZE);
+	TEST_ASSERT_EQUAL_HEX32(0x01020304, back.phy_hash);
+	TEST_ASSERT_EQUAL_UINT32(868000000, back.frequency);
+	TEST_ASSERT_EQUAL_UINT32(125000, back.bandwidth);
+	TEST_ASSERT_EQUAL_UINT8(9, back.spreading_factor);
+	TEST_ASSERT_EQUAL_UINT8(5, back.coding_rate);
+	TEST_ASSERT_EQUAL_UINT8(6, back.wifi_channel);
+	TEST_ASSERT_EQUAL_UINT8(ESPNOW_CAP_IFAC_PROOF, back.capabilities);
+	TEST_ASSERT_NOT_NULL(back_proof);
+	TEST_ASSERT_EQUAL_UINT8_ARRAY(proof, back_proof, ESPNOW_RECOVERY_PROOF_SIZE);
+	// Exactly its size: one byte short or long is another frame.
+	TEST_ASSERT_FALSE(espnow_read_recovery_reply(out, sizeof(out) - 1, nonce, back, back_proof));
 	TEST_ASSERT_EQUAL_size_t(0, espnow_write_recovery_reply(out, sizeof(out), 1, discovery, nullptr));
 }
 

@@ -1994,8 +1994,8 @@ argument already keeps Columba separate.
 
 **Named `reticulum-atak`** (operator, 2026-10-02): `DrLexus11/reticulum-atak`,
 public, cloned at `~/projects/reticulum-atak` and scaffolded the same day --
-its purpose, roadmap, and the decisions that block code (how it reads Columba's
-Reticulum state; the ATAK-CIV SDK; the licence) in its `docs/`.
+its purpose, roadmap and open decisions in its `docs/`: two block code (how it
+reads Columba's Reticulum state; the ATAK-CIV SDK), the licence does not yet.
 
 The same public-repo discipline applies as for `urban-tak`: no fleet secrets,
 node hashes, callsigns, IFAC passphrases, exercise coordinates or team details,
