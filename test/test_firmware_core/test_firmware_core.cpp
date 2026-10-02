@@ -411,8 +411,14 @@ static uint32_t fake_clock() { return fake_now; }
 static char poll_log[64];
 static size_t poll_log_len = 0;
 static size_t hook_log[16];
+static size_t hook_polls_done[16];
 static size_t hook_count = 0;
-static void record_hook(size_t index) { if (hook_count < 16) hook_log[hook_count++] = index; }
+// Records, with each index, how many polls had run when the hook fired: the
+// hook must come before its service's poll, so a poll that hangs has already
+// left its watchdog breadcrumb.
+static void record_hook(size_t index) {
+	if (hook_count < 16) { hook_polls_done[hook_count] = poll_log_len; hook_log[hook_count++] = index; }
+}
 
 struct FakeService : IService {
 	char tag;
@@ -453,8 +459,10 @@ void test_runner_polls_in_declared_order_with_the_hook_first() {
 	runner.poll_all();
 	TEST_ASSERT_EQUAL_STRING("abcabc", poll_log);
 	TEST_ASSERT_EQUAL_size_t(6, hook_count);
-	TEST_ASSERT_EQUAL_size_t(0, hook_log[0]);
-	TEST_ASSERT_EQUAL_size_t(2, hook_log[2]);
+	for (size_t i = 0; i < hook_count; ++i) {
+		TEST_ASSERT_EQUAL_size_t(i % 3, hook_log[i]);
+		TEST_ASSERT_EQUAL_size_t(i, hook_polls_done[i]);        // before its poll, after the last
+	}
 }
 
 void test_runner_measures_each_poll_against_its_budget() {
@@ -466,12 +474,12 @@ void test_runner_measures_each_poll_against_its_budget() {
 	runner.poll_all();
 	slow.cost_ms = 10;
 	runner.poll_all();
-	TEST_ASSERT_EQUAL_UINT32(2, runner.timing(0).polls);
-	TEST_ASSERT_EQUAL_UINT32(0, runner.timing(0).overruns);
-	TEST_ASSERT_EQUAL_UINT32(1, runner.timing(1).overruns);    // 30 ms over 20, then 10 within
-	TEST_ASSERT_EQUAL_UINT32(30, runner.timing(1).worst_ms);
-	TEST_ASSERT_EQUAL_UINT32(10, runner.timing(1).last_ms);
-	TEST_ASSERT_EQUAL_UINT32(0, runner.timing(2).overruns);    // its own 50 ms budget
+	TEST_ASSERT_EQUAL_UINT32(2, runner.timing(0)->polls);
+	TEST_ASSERT_EQUAL_UINT32(0, runner.timing(0)->overruns);
+	TEST_ASSERT_EQUAL_UINT32(1, runner.timing(1)->overruns);    // 30 ms over 20, then 10 within
+	TEST_ASSERT_EQUAL_UINT32(30, runner.timing(1)->worst_ms);
+	TEST_ASSERT_EQUAL_UINT32(10, runner.timing(1)->last_ms);
+	TEST_ASSERT_EQUAL_UINT32(0, runner.timing(2)->overruns);    // its own 50 ms budget
 }
 
 void test_runner_timing_survives_the_clock_wrapping() {
@@ -482,7 +490,7 @@ void test_runner_timing_survives_the_clock_wrapping() {
 	runner.add(&a);
 	runner.start_all(AppContext{});
 	runner.poll_all();
-	TEST_ASSERT_EQUAL_UINT32(32, runner.timing(0).last_ms);
+	TEST_ASSERT_EQUAL_UINT32(32, runner.timing(0)->last_ms);
 }
 
 void test_runner_leaves_out_a_service_that_did_not_start() {
@@ -497,6 +505,25 @@ void test_runner_leaves_out_a_service_that_did_not_start() {
 	TEST_ASSERT_EQUAL(ServiceState::Failed, runner.health(1).state);
 	TEST_ASSERT_EQUAL(ServiceState::Healthy, runner.health(0).state);
 	TEST_ASSERT_EQUAL(ServiceState::Failed, runner.health(99).state);
+	TEST_ASSERT_EQUAL(ServiceStage::InitFailed, runner.stage(1));
+	TEST_ASSERT_NULL(runner.timing(99));                        // no borrowed figures
+}
+
+struct ExplainingService : FakeService {
+	const char* why;
+	ExplainingService(const char* why_) : FakeService('x', 0, 20, false), why(why_) {}
+	Health health() const override { return Health{ServiceState::Starting, why}; }
+};
+
+void test_runner_keeps_the_reason_a_failed_service_gives() {
+	reset_runner_logs();
+	ExplainingService radio("radio not responding"), silent("");
+	ServiceRunner runner(fake_clock);
+	runner.add(&radio); runner.add(&silent);
+	runner.start_all(AppContext{});
+	TEST_ASSERT_EQUAL(ServiceState::Failed, runner.health(0).state);       // forced Failed
+	TEST_ASSERT_EQUAL_STRING("radio not responding", runner.health(0).reason);
+	TEST_ASSERT_EQUAL_STRING("init failed", runner.health(1).reason);      // the stage, when silent
 }
 
 void test_runner_collects_telemetry_from_running_services_only() {
@@ -565,6 +592,7 @@ int main() {
 	RUN_TEST(test_runner_measures_each_poll_against_its_budget);
 	RUN_TEST(test_runner_timing_survives_the_clock_wrapping);
 	RUN_TEST(test_runner_leaves_out_a_service_that_did_not_start);
+	RUN_TEST(test_runner_keeps_the_reason_a_failed_service_gives);
 	RUN_TEST(test_runner_collects_telemetry_from_running_services_only);
 	RUN_TEST(test_runner_stops_in_reverse_order);
 	RUN_TEST(test_runner_refuses_past_its_capacity);

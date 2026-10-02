@@ -18,9 +18,9 @@
 // optional hook passed in, so it is tested on Linux with a fake clock and runs
 // unchanged on the boards.
 //
-// What it measures, per service, is what LoopPhase.h measures per loop phase on
-// the ESP32 -- worst poll time ever, worst in the current window -- plus the
-// count of polls over the service's own budget. The hook runs before each poll
+// What it measures, per service: the worst poll time since boot, the last one,
+// and the count of polls over the service's own budget. (LoopPhase.h also keeps
+// a per-window worst for each loop phase; the runner does not, yet.) The hook runs before each poll
 // with the service's index, which is how the firmware keeps its TASK_WDT
 // breadcrumb: the phase that was running when the watchdog fired.
 
@@ -32,6 +32,10 @@
 #ifndef SERVICE_RUNNER_CAPACITY
 #define SERVICE_RUNNER_CAPACITY 24
 #endif
+
+// Where a service that is not running stopped. Kept because init() and start()
+// return only bool: the runner records which of them failed.
+enum class ServiceStage : uint8_t { Added = 0, InitFailed, StartFailed, Running, Stopped };
 
 struct ServiceTiming {
   uint32_t polls = 0;
@@ -54,6 +58,7 @@ public:
     if (service == nullptr || _count >= SERVICE_RUNNER_CAPACITY) return false;
     _services[_count] = service;
     _started[_count] = false;
+    _stage[_count] = ServiceStage::Added;
     _timing[_count] = ServiceTiming{};
     ++_count;
     return true;
@@ -64,7 +69,14 @@ public:
   size_t start_all(const AppContext& context) {
     size_t running = 0;
     for (size_t i = 0; i < _count; ++i) {
-      _started[i] = _services[i]->init(context) && _services[i]->start();
+      if (!_services[i]->init(context)) {
+        _stage[i] = ServiceStage::InitFailed;
+      } else if (!_services[i]->start()) {
+        _stage[i] = ServiceStage::StartFailed;
+      } else {
+        _stage[i] = ServiceStage::Running;
+      }
+      _started[i] = _stage[i] == ServiceStage::Running;
       if (_started[i]) ++running;
     }
     return running;
@@ -88,7 +100,10 @@ public:
 
   void stop_all() {
     for (size_t i = _count; i > 0; --i) {       // reverse order of start
-      if (_started[i - 1]) _services[i - 1]->stop();
+      if (_started[i - 1]) {
+        _services[i - 1]->stop();
+        _stage[i - 1] = ServiceStage::Stopped;
+      }
       _started[i - 1] = false;
     }
   }
@@ -101,16 +116,29 @@ public:
     }
   }
 
-  // A service that did not start is Failed, whatever it would say itself.
+  // A service that did not start is Failed, whatever state it would claim --
+  // but its own reason is kept when it gives one (what failed: configuration,
+  // allocation, hardware), and the stage is named when it does not.
   Health health(size_t index) const {
     if (index >= _count) return Health{ServiceState::Failed, "no such service"};
-    if (!_started[index]) return Health{ServiceState::Failed, "did not start"};
-    return _services[index]->health();
+    if (_started[index]) return _services[index]->health();
+    const Health own = _services[index]->health();
+    if (own.reason != nullptr && own.reason[0] != '\0') return Health{ServiceState::Failed, own.reason};
+    switch (_stage[index]) {
+      case ServiceStage::InitFailed:  return Health{ServiceState::Failed, "init failed"};
+      case ServiceStage::StartFailed: return Health{ServiceState::Failed, "start failed"};
+      case ServiceStage::Stopped:     return Health{ServiceState::Failed, "stopped"};
+      default:                        return Health{ServiceState::Failed, "not started"};
+    }
   }
+
+  ServiceStage stage(size_t index) const { return index < _count ? _stage[index] : ServiceStage::Added; }
 
   size_t count() const { return _count; }
   IService* service(size_t index) const { return index < _count ? _services[index] : nullptr; }
-  const ServiceTiming& timing(size_t index) const { return _timing[index < _count ? index : 0]; }
+  // Null for an index that is not a service: a stale index must not borrow
+  // another service's figures.
+  const ServiceTiming* timing(size_t index) const { return index < _count ? &_timing[index] : nullptr; }
   bool running(size_t index) const { return index < _count && _started[index]; }
 
 private:
@@ -118,6 +146,7 @@ private:
   Hook _before;
   IService* _services[SERVICE_RUNNER_CAPACITY] = {};
   bool _started[SERVICE_RUNNER_CAPACITY] = {};
+  ServiceStage _stage[SERVICE_RUNNER_CAPACITY] = {};
   ServiceTiming _timing[SERVICE_RUNNER_CAPACITY] = {};
   size_t _count = 0;
 };
