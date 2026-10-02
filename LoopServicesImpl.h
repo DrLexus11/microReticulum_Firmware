@@ -1,0 +1,358 @@
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#pragma once
+
+// The adapters behind LoopServices.h. Included once, from the end of
+// RNode_Firmware.ino, after the functions they call: heap_watch(),
+// radio_rx_watchdog() and the rest are file-static there, and so is the state
+// their health is measured from.
+//
+// This is the wrapping step, not the rewrite. Each poll() calls the function
+// loop() used to call, unchanged, in the same order; what is new is that each
+// is now timed by the runner, carries its own health, and writes its own part
+// of the board's telemetry report. Moving the bodies and their state into the
+// services is R5 (the application layer), one service at a time.
+//
+// Health comes from something measured, never from a flag the service set
+// (IService.h). A service with nothing to measure yet says "unmeasured" rather
+// than claiming to be healthy: the runner's timing still covers it.
+
+#include "LoopServices.h"
+#include "LoopPhase.h"
+
+// Below these, the heap is short of what the mesh stack needs to keep working.
+// heap8/largest8, not "internal": see the [mem] line in heap_watch().
+#ifndef SERVICE_HEAP8_LOW
+#define SERVICE_HEAP8_LOW      (24u * 1024u)
+#endif
+#ifndef SERVICE_LARGEST8_LOW
+#define SERVICE_LARGEST8_LOW   (8u * 1024u)
+#endif
+// An exception out of reticulum.loop() within this window marks it degraded.
+#ifndef SERVICE_RNS_ERROR_WINDOW_MS
+#define SERVICE_RNS_ERROR_WINDOW_MS 60000u
+#endif
+
+// A service that is one phase of the old loop. The phase is what the TASK_WDT
+// breadcrumb records, and its name is the service's name, so a watchdog report
+// and the service table use the same words.
+class LoopService : public IService {
+public:
+  explicit LoopService(uint8_t phase) : _phase(phase) {}
+  uint8_t phase() const { return _phase; }
+  const char* name() const override { return loop_phase_name(_phase); }
+  bool init(const AppContext&) override { return true; }
+  bool start() override { return true; }
+  Health health() const override { return Health{ServiceState::Healthy, "unmeasured"}; }
+  void telemetry(NodeTelemetry&) const override {}
+  void stop() override {}
+private:
+  const uint8_t _phase;
+};
+
+#if defined(ESP32) && defined(HAS_RNS)
+class HeapService : public LoopService {
+public:
+  HeapService() : LoopService(LOOP_PHASE_HEAP) {}
+  void poll(uint32_t) override { heap_watch(); }
+  Health health() const override {
+    if (heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL) < SERVICE_HEAP8_LOW)
+      return Health{ServiceState::Degraded, "heap8 low"};
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL) < SERVICE_LARGEST8_LOW)
+      return Health{ServiceState::Degraded, "largest8 low"};
+    return Health{ServiceState::Healthy, ""};
+  }
+  void telemetry(NodeTelemetry& report) const override {
+    report.heap_bytes = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    report.largest_bytes = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) {
+      report.psram_known = true;
+      report.psram_bytes = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    }
+  }
+};
+#endif
+
+#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+class NomadAnnounceService : public LoopService {
+public:
+  NomadAnnounceService() : LoopService(LOOP_PHASE_NOMAD_ANN) {}
+  void poll(uint32_t) override { nomadnet_announce_watch(); }
+  Health health() const override {
+    if (!nomadnet_enabled) return Health{ServiceState::Disabled, "nomadnet off"};
+    return LoopService::health();
+  }
+};
+#endif
+
+#if defined(HAS_RNS) && defined(RRC_HUB)
+class RrcHubService : public LoopService {
+public:
+  RrcHubService() : LoopService(LOOP_PHASE_RRC) {}
+  void poll(uint32_t) override { rrc_hub_loop(); }
+};
+#endif
+
+#if defined(BLE_PEER_TRANSPORT)
+class BlePeerService : public LoopService {
+public:
+  BlePeerService() : LoopService(LOOP_PHASE_BLE_PEER) {}
+  void poll(uint32_t) override {
+    // Started lazily rather than at init: the GATT server does not exist until
+    // Bluetooth has come up, and the transport identity is not loaded until
+    // Reticulum has. Waiting for both here avoids ordering assumptions that
+    // would fail silently.
+  #if defined(NIMBLE_PEER_TRANSPORT)
+    if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
+        RNS::Transport::identity()) {
+      ble_peer_impl->begin(RNS::Transport::identity().hash());
+    }
+  #else
+    if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
+        bt_state != BT_STATE_OFF && bt_state != BT_STATE_NA &&
+        SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
+      ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
+    }
+  #endif
+    if (ble_peer_impl != nullptr) ble_peer_impl->loop();
+  }
+  Health health() const override {
+    if (ble_peer_impl == nullptr) return Health{ServiceState::Failed, "no interface"};
+    if (!ble_peer_impl->started()) return Health{ServiceState::Starting, "not advertising"};
+  #if defined(NIMBLE_PEER_TRANSPORT)
+    // No peer is not a fault -- nobody may be in range -- but it is said.
+    if (ble_peer_impl->connected_peers() == 0) return Health{ServiceState::Healthy, "no peers"};
+    return Health{ServiceState::Healthy, ""};
+  #else
+    return LoopService::health();
+  #endif
+  }
+  void telemetry(NodeTelemetry& report) const override {
+    report.if_present |= TELEMETRY_IF_BLE;
+    if (ble_peer_impl != nullptr && ble_peer_impl->started()) report.if_up |= TELEMETRY_IF_BLE;
+  #if defined(NIMBLE_PEER_TRANSPORT)
+    if (ble_peer_impl != nullptr) report.ble_peers = ble_peer_impl->connected_peers();
+  #endif
+  }
+};
+#endif
+
+#if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+class RadioRxWatchService : public LoopService {
+public:
+  RadioRxWatchService() : LoopService(LOOP_PHASE_RADIO_WD) {}
+  void poll(uint32_t) override { radio_rx_watchdog(); }
+  // Silence for half the watchdog period is reported before the watchdog acts
+  // on the whole of it. A quiet channel and a deaf receiver look the same from
+  // here (see radio_rx_watchdog()); the reason says which was measured.
+  Health health() const override {
+    if (!radio_online) return Health{ServiceState::Degraded, "radio offline"};
+  #if RADIO_RX_WATCHDOG_MS > 0
+    if (!rx_tracking) return Health{ServiceState::Starting, "no rx yet"};
+    const uint32_t quiet = millis() - rx_last_change_ms;
+    if (quiet >= RADIO_RX_WATCHDOG_MS / 2) {
+      snprintf(_reason, sizeof(_reason), "no rx %lus", (unsigned long)(quiet / 1000));
+      return Health{ServiceState::Degraded, _reason};
+    }
+    return Health{ServiceState::Healthy, ""};
+  #else
+    return LoopService::health();
+  #endif
+  }
+  void telemetry(NodeTelemetry& report) const override {
+    report.if_present |= TELEMETRY_IF_LORA;
+    if (radio_online) report.if_up |= TELEMETRY_IF_LORA;
+  }
+private:
+  mutable char _reason[24] = {};
+};
+
+class LoraConfigService : public LoopService {
+public:
+  LoraConfigService() : LoopService(LOOP_PHASE_LORA_CFG) {}
+  void poll(uint32_t) override { lora_config_consistency_watch(); }
+};
+
+class RadioCommitService : public LoopService {
+public:
+  RadioCommitService() : LoopService(LOOP_PHASE_RADIO_CMT) {}
+  void poll(uint32_t) override { radio_commit_confirm_watch(); }
+  // A PHY change waiting for its first packet: working, not yet proven.
+  Health health() const override {
+    if (rb_armed) return Health{ServiceState::Degraded, "config unconfirmed"};
+    return Health{ServiceState::Healthy, ""};
+  }
+};
+
+#if defined(LXMF_PROPAGATION_NODE)
+class LxmfAnnounceService : public LoopService {
+public:
+  LxmfAnnounceService() : LoopService(LOOP_PHASE_LXMF_ANN) {}
+  void poll(uint32_t) override { lxmf_propagation_announce_watch(); }
+};
+
+class LxmfSyncService : public LoopService {
+public:
+  LxmfSyncService() : LoopService(LOOP_PHASE_LXMF_SYNC) {}
+  void poll(uint32_t) override { lxmf_peer_sync_watch(); }
+};
+#endif
+#endif
+
+#ifdef HAS_RNS
+class ReticulumService : public LoopService {
+public:
+  ReticulumService() : LoopService(LOOP_PHASE_RETICULUM) {}
+  void poll(uint32_t now_ms) override {
+    if (!reticulum) return;
+    try {
+      reticulum.loop();
+    }
+    catch (const std::bad_alloc&) {
+      note_error(now_ms);
+      ERROR("RNS loop failed: bad_alloc - out of memory");
+    }
+    catch (std::exception& e) {
+      note_error(now_ms);
+      ERRORF("RNS loop failed: %s", e.what());
+    }
+  }
+  Health health() const override {
+    if (!reticulum) return Health{ServiceState::Failed, "not started"};
+    if (_errors > 0 && millis() - _last_error_ms < SERVICE_RNS_ERROR_WINDOW_MS)
+      return Health{ServiceState::Degraded, "loop threw"};
+    return Health{ServiceState::Healthy, ""};
+  }
+  void telemetry(NodeTelemetry& report) const override {
+    report.paths = RNS::Transport::path_table().size();
+    report.nodes = RNS::Identity::known_destinations().size();
+  }
+private:
+  void note_error(uint32_t now_ms) { ++_errors; _last_error_ms = now_ms; }
+  uint32_t _errors = 0;
+  uint32_t _last_error_ms = 0;
+};
+#endif
+
+// Reports on the others: one line per HEAP_REPORT_INTERVAL_MS, beside [mem], so
+// a soak log shows a service going wrong without anyone asking. Healthy and
+// unmeasured services are counted, not listed; anything else is named with its
+// reason. Registered last, so its own poll is measured like the rest.
+class ServiceReportService : public LoopService {
+public:
+  explicit ServiceReportService(const ServiceRunner& runner)
+    : LoopService(LOOP_PHASE_SVC_REPORT), _runner(runner) {}
+  void poll(uint32_t now_ms) override {
+    if (_last != 0 && now_ms - _last < HEAP_REPORT_INTERVAL_MS) return;
+    _last = now_ms == 0 ? 1 : now_ms;
+    size_t running = 0, slowest = 0;
+    uint32_t overruns = 0, slowest_ms = 0;
+    for (size_t i = 0; i < _runner.count(); ++i) {
+      if (_runner.running(i)) ++running;
+      const ServiceTiming* t = _runner.timing(i);
+      if (t == nullptr) continue;
+      overruns += t->overruns;
+      if (t->worst_ms > slowest_ms) { slowest_ms = t->worst_ms; slowest = i; }
+    }
+    // Built whole and printed once, so other output cannot split the line.
+    size_t at = (size_t)snprintf(_line, sizeof(_line), "[svc] running=%u/%u overruns=%lu slowest=%s:%lums",
+        (unsigned)running, (unsigned)_runner.count(), (unsigned long)overruns,
+        _runner.service(slowest)->name(), (unsigned long)slowest_ms);
+    for (size_t i = 0; i < _runner.count() && at < sizeof(_line); ++i) {
+      const Health h = _runner.health(i);
+      if (h.state == ServiceState::Healthy) continue;
+      at += (size_t)snprintf(_line + at, sizeof(_line) - at, " | %s %s%s%s",
+          _runner.service(i)->name(), service_state_name(h.state),
+          h.reason[0] ? ": " : "", h.reason);
+    }
+    printf("%s\n", _line);
+  }
+private:
+  const ServiceRunner& _runner;
+  uint32_t _last = 0;
+  char _line[256] = {};
+};
+
+static uint32_t loop_services_clock() { return (uint32_t)millis(); }
+
+// The breadcrumb, before every poll: if this poll never returns, the TASK_WDT
+// report on the next boot names it.
+static void loop_services_before_poll(size_t index);
+
+static ServiceRunner& loop_services_runner() {
+  static ServiceRunner runner(loop_services_clock, loop_services_before_poll);
+  return runner;
+}
+
+static void loop_services_before_poll(size_t index) {
+  // Every service in this runner is a LoopService (loop_services_start adds
+  // nothing else), so the cast is exact.
+  const IService* service = loop_services_runner().service(index);
+  if (service != nullptr) loop_phase(static_cast<const LoopService*>(service)->phase());
+}
+
+const ServiceRunner& loop_services() { return loop_services_runner(); }
+
+// A full table is a build configuration error: said, in one line, never a
+// silent drop (ServiceRunner::add).
+static void loop_services_add(ServiceRunner& runner, LoopService* service) {
+  if (!runner.add(service)) {
+    printf("[svc] %s not added: service table full (%u), raise SERVICE_RUNNER_CAPACITY\n",
+           service->name(), (unsigned)SERVICE_RUNNER_CAPACITY);
+  }
+}
+
+void loop_services_start() {
+  ServiceRunner& runner = loop_services_runner();
+  // The order is loop()'s, which it was before F3b. Statics, so nothing is
+  // allocated after boot.
+#if defined(ESP32) && defined(HAS_RNS)
+  static HeapService heap;                 loop_services_add(runner, &heap);
+#endif
+#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
+  static NomadAnnounceService nomad;       loop_services_add(runner, &nomad);
+#endif
+#if defined(HAS_RNS) && defined(RRC_HUB)
+  static RrcHubService rrc;                loop_services_add(runner, &rrc);
+#endif
+#if defined(BLE_PEER_TRANSPORT)
+  static BlePeerService ble_peer;          loop_services_add(runner, &ble_peer);
+#endif
+#if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+  static RadioRxWatchService radio_wd;     loop_services_add(runner, &radio_wd);
+  static LoraConfigService lora_cfg;       loop_services_add(runner, &lora_cfg);
+  static RadioCommitService radio_cmt;     loop_services_add(runner, &radio_cmt);
+#if defined(LXMF_PROPAGATION_NODE)
+  static LxmfAnnounceService lxmf_ann;     loop_services_add(runner, &lxmf_ann);
+  static LxmfSyncService lxmf_sync;        loop_services_add(runner, &lxmf_sync);
+#endif
+#endif
+#ifdef HAS_RNS
+  static ReticulumService rns;             loop_services_add(runner, &rns);
+#endif
+  static ServiceReportService report(runner);
+  loop_services_add(runner, &report);
+
+  AppContext context;
+  context.boot_ms = (uint32_t)millis();
+  const size_t running = runner.start_all(context);
+  printf("[svc] %u of %u services running\n", (unsigned)running, (unsigned)runner.count());
+  for (size_t i = 0; i < runner.count(); ++i) {
+    const Health h = runner.health(i);
+    if (runner.running(i) && h.state != ServiceState::Disabled) continue;
+    printf("[svc] %s %s: %s\n", runner.service(i)->name(), service_state_name(h.state), h.reason);
+  }
+}
+
+void loop_services_poll() { loop_services_runner().poll_all(); }

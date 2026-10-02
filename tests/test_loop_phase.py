@@ -16,6 +16,9 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HEADER = os.path.join(ROOT, "LoopPhase.h")
 SKETCH = os.path.join(ROOT, "RNode_Firmware.ino")
+# Since F3b the loop's first phases are services; each enters its phase through
+# the runner's hook, from the phase it was constructed with.
+SERVICES = os.path.join(ROOT, "LoopServicesImpl.h")
 
 
 class LoopPhaseTests(unittest.TestCase):
@@ -24,6 +27,8 @@ class LoopPhaseTests(unittest.TestCase):
             self.header = handle.read()
         with open(SKETCH, "r", encoding="utf-8") as handle:
             self.sketch = handle.read()
+        with open(SERVICES, "r", encoding="utf-8") as handle:
+            self.services = handle.read()
         # Only the phase enumeration block: everything up to and including
         # LOOP_PHASE_COUNT. Config constants defined after it -- WINDOW_MS,
         # MAGIC -- match the name pattern but are not phases.
@@ -59,8 +64,38 @@ class LoopPhaseTests(unittest.TestCase):
             if name in ("LOOP_PHASE_COUNT", "LOOP_PHASE_NONE"):
                 continue
             with self.subTest(phase=name):
-                self.assertIn("loop_phase(%s)" % name, self.sketch,
-                              "%s is defined but never entered in loop()" % name)
+                in_loop = "loop_phase(%s)" % name in self.sketch
+                as_service = "LoopService(%s)" % name in self.services
+                self.assertTrue(in_loop or as_service,
+                                "%s is defined but never entered, in loop() or "
+                                "by a service" % name)
+
+    def _registered_services(self):
+        """Service classes in the order loop_services_start() adds them."""
+        start = self.services.index("void loop_services_start()")
+        body = self.services[start:self.services.index("start_all(", start)]
+        return re.findall(r"static (\w+) \w+(?:\(runner\))?;\s+loop_services_add", body)
+
+    def _phase_of(self, cls):
+        match = re.search(r"%s\([^)]*\)\s*:\s*LoopService\((LOOP_PHASE_\w+)\)" % cls,
+                          self.services)
+        self.assertIsNotNone(match, "%s has no phase" % cls)
+        return self.phases[match.group(1)]
+
+    def test_every_service_is_registered(self):
+        """A service class that is never added is never polled -- the phase it
+        replaced silently stops running."""
+        registered = set(self._registered_services())
+        for cls in re.findall(r"^class (\w+) : public LoopService", self.services, re.M):
+            with self.subTest(service=cls):
+                self.assertIn(cls, registered)
+
+    def test_services_run_in_the_old_loop_order(self):
+        """F3b wraps, it does not reorder: the phases were numbered in the order
+        loop() called them, and the services are added in that order."""
+        phases = [self._phase_of(cls) for cls in self._registered_services()]
+        self.assertEqual(phases, sorted(phases))
+        self.assertGreater(len(phases), 1)
 
     def test_the_breadcrumb_survives_a_reset(self):
         """NOINIT is the whole mechanism: a zeroed variable says nothing."""

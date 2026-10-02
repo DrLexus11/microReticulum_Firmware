@@ -23,7 +23,8 @@ FIELDS = ["uptime_s", "reset_reason", "prev_uptime_s", "boots_since_power", "cra
 def boot_block():
     source = PAGES.read_text()
     start = source.index('category == "boot"')
-    end = source.index('else if (category == "interfaces")', start)
+    # Up to whichever category follows; the order of categories is not fixed.
+    end = source.index('else if (category == ', start + 1)
     return source[start:end]
 
 

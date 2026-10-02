@@ -1822,7 +1822,13 @@ reads what it produces. Each step is its own pull request.
    twin in `tools/`, as `tak_native_v1.json` pins the TAK formats.
 3. **F3 / R3 -- the `IService` contract** around today's modules, each
    reporting its own health and telemetry; the telemetry service is its first
-   client. Poll timing measured.
+   client. Poll timing measured. **F3a** (merged, #33): `IService.h` and
+   `ServiceRunner.h`, host-tested. **F3b**: the loop's first ten phases,
+   `heap_watch` through `reticulum.loop`, as services under the runner in the
+   same order (`LoopServicesImpl.h`), the TASK_WDT breadcrumb set by the
+   runner's hook, a `[svc]` line beside `[mem]` and a `services` category on
+   `/page/device.mu`. The radio I/O block, serial, peripherals and memory
+   handling stay in `loop()` until R5.
 4. **F4 -- the board emitter and the gateway.** Boards send the report at a
    budgeted interval (`position_budget.py`); a node with an uplink announces a
    telemetry-uplink destination and publishes to MQTT. The **backend
@@ -1830,8 +1836,12 @@ reads what it produces. Each step is its own pull request.
    visibility to be decided by the operator.
 5. **F5 -- device logs off-device**: the bounded spool, boot and crash records
    first, rate-limited on LoRa.
-6. **F6+ -- the plugin** in `reticulum-atak`, once its two blocking decisions
-   are made.
+6. **F6+ -- the plugin** in `reticulum-atak`. Its two blocking decisions are
+   made, and its scaffold and release path were proven early, on 2026-10-02:
+   built against SDK 5.5.1.8, loaded in the developer ATAK on the bench phone,
+   and a TAK.gov pipeline build targeting 5.8.0 loaded in the store ATAK
+   5.8.0.4. What remains is the work itself: delivery state, queues,
+   reachability, cost, mesh health.
 
 ## Later: RF characterisation -- when the bench has the tools
 
