@@ -1915,8 +1915,9 @@ for anything seen outside, as it is Mark Qvist's project name). Scheduled
 after PR F, once no PR is mid-review.
 
 - **How:** leave the fork network, then set private and rename -- issues and
-  PR history stay in place. The original remains a fetch-only remote, and
-  `UpstreamReview.md` becomes a periodic review.
+  PR history stay in place. No original repository is kept as a remote (removed
+  2026-10-02); `UpstreamReview.md` becomes a periodic review, reading upstream
+  on GitHub or from a throwaway clone, never through a remote here.
 - **One pass of references:** remotes, the library URLs in `platformio.ini`
   (builds then need credentials), the sibling-repo notes and the push rule in
   `CLAUDE.md`, fixture paths, memory.
@@ -2086,7 +2087,7 @@ here.
   protocol politeness by default.
 - Scope: microReticulum, its library, Columba, and the sibling ATAK repo. Other
   people's projects are not ours to fix.
-- Push to `origin` (DrLexus11) only. `attermann` and `upstream` are
-  push-disabled deliberately.
+- DrLexus11 remotes only: the original projects' remotes were removed
+  2026-10-02, and `gh`'s default is pinned to DrLexus11 in every repository.
 - Fleet secrets and IFAC passphrases are prompted on the terminal, never passed
   as command-line arguments.
