@@ -62,8 +62,8 @@ where gain is the only constraint.
 | **D2** | *Bulk: data packages and QuickPic* | A local file shim that looks like a TAK server's file API to ATAK; a **descriptor** over the mesh (name, size, hash, sender, and for QuickPic a **thumbnail**, the descriptor and thumbnail together **no more than three fragments**); **fetch on demand** over a Reticulum `Link` + `Resource`, automatic on a path **measured** to be fast (TCP, Wi-Fi, later HaLow) and **deferred on LoRa**; a **retention page** in Columba for held files, promoted to the PR F plugin. Also carries **position while ATAK is closed** (built 2026-09-22, see *PR D2* below). Brought forward from the HaLow phase 2026-09-21: fast paths exist now, and a critical image seen as a thumbnail over LoRa is worth having before HaLow | the bulk half: a capture of what ATAK emits for a data package and a QuickPic over our endpoint. The position half: nothing |
 | **E** | *The node knows where it is and what it can reach* | **Closed 2026-09-29 at this scope.** BLE phone-to-phone that holds; several phones per board into the main mesh (multi-peer NimBLE on Rev 2 and Rev 1); relaying made loud; the heap leak that restarted every board fixed in the library. The ESP-NOW reset trigger and the rest of the stability work moved to E2 | the two findings below, resolved or moved to E2 |
 | **E2** | *Stability before the field* | The ESP-NOW chain test and soak (Rev 1 LoRa + ESP-NOW, OZD ESP-NOW + BLE); Rev 1's TASK_WDT; the in-service Rev 2 onto the fixed library. (SX1262 over-current before/after deferred to an RF-tools PR, 2026-10-01; OZD hardening to after the IDF upgrade.) Small diffs, days of wall clock -- see *PR E2* | E |
-| — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end | C + D + E + E2 |
-| **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | Outdoor Test 1, and plugin know-how from the sibling repo |
+| **F** | *The Reticulum ATAK plugin* | Delivery state, what is queued for whom, reachability and hops, fetch cost before spending it, propagation status, consent. **Lands in its own repo, not this one** — see *The second plugin repo* | E2, and plugin know-how from the sibling repo |
+| — | **Outdoor Test 1** | Range, disconnection, reconnection, with a mission executable at the far end. **After F** (operator, 2026-10-02): the IMPR-RADs have no casings and the weather rules out field work now | C + D + E + E2 + F; casings |
 
 C and D collapse into one PR cleanly if a single review is preferred. **E stays
 separate regardless**, because it is not yet known whether it is a
@@ -1636,7 +1636,8 @@ mid-test poisons every range and reconnection reading taken.
    2026-09-29 reflash. Its soak on the no-ESP-NOW build (running since
    2026-09-29) is the baseline arm; item 1 is the peer arm.
 3. ~~The in-service Rev 2 onto the fixed library~~ -- moved to Outdoor Test 1's
-   preparation, 2026-10-02: operations, not something E2 has to prove. Flash
+   preparation, 2026-10-02 (now after PR F): operations, not something E2 has
+   to prove. Flash
    `impr-rad01-rev2-ble-peers` with a backup first, as Rev 1 was.
 4. ~~SX1262 over-current, before and after~~ -- **deferred 2026-10-01**
    (operator). No USB breakout or RF bench to measure supply current and RSSI
@@ -1974,9 +1975,11 @@ in any file or commit message. It has a stronger reason to be careful, because
 it handles identity and reachability rather than map data — **it may name the
 concepts, never the fleet.**
 
-**When it is created:** not yet. PR F is gated on Outdoor Test 1, and the
-scaffold should be written against a transport whose behaviour is known rather
-than one still being hardened. The decision is recorded now so that PR D and PR
+**When it is created:** at the start of PR F. Reordered 2026-10-02 (operator):
+PR F now comes before Outdoor Test 1 -- the IMPR-RADs have no casings and the
+weather rules out field work -- so the plugin is built against the transport as
+E2 left it (proven through every carrier, soaked) rather than after the field
+test, and the field test then exercises the plugin too. The decision is recorded now so that PR D and PR
 E stop accreting Android-shaped work on the assumption it has somewhere to live
 here.
 
