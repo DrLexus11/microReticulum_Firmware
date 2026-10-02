@@ -1844,8 +1844,38 @@ reads what it produces. Each step is its own pull request.
    made, and its scaffold and release path were proven early, on 2026-10-02:
    built against SDK 5.5.1.8, loaded in the developer ATAK on the bench phone,
    and a TAK.gov pipeline build targeting 5.8.0 loaded in the store ATAK
-   5.8.0.4. What remains is the work itself: delivery state, queues,
-   reachability, cost, mesh health.
+   5.8.0.4. **Features agreed 2026-10-02** (`reticulum-atak`'s `Roadmap.md`
+   and `OpenDecisions.md`). In PR F: Columba's bound service (read surface,
+   caller allow-list, an "allow ATAK control" gate, the announce command),
+   then the mesh panel -- peers, hops, carrier, command post reachability,
+   locate on the map, open ATAK's GeoChat to a peer, announce -- and the
+   propagation node's status. After Outdoor Test 1: interface switching, the
+   propagation node pinned to the command post with fleet fallback, NomadNet
+   pages then data feeds, delivery state and queues, cost before fetching,
+   and team rooms over RRC.
+
+## After Outdoor Test 1: Eridanus merges into Columba -- decided 2026-10-02
+
+**A full merge**, UI included, so rooms are usable in Columba itself as well
+as from ATAK. Eridanus (`~/projects/eridanus`) is RRC chatrooms on Android, by
+Columba's original author, on the same Reticulum layers (`rns-api`, Kotlin
+and Python backends) and the same licence (MPL-2.0). Sizes as of today: the RRC
+client and codec about 640 lines, the hub about 1,600, the app and UI about
+8,000.
+
+- **Why:** ATAK team chat today is a Reticulum group broadcast (`TakGroups`),
+  with no backlog -- a member out of range loses those lines for good (G4).
+  RRC rooms are hosted on hubs with a roster and backfill, and the boards
+  already host RRC hubs (`RRCHub`, `RRCBridge`). One app gives one Reticulum
+  host and one identity, and an RRC interface beside Columba's others for the
+  plugin (`TAKNative.md`, *RRC first needs Eridanus and Columba to be one
+  app*).
+- **Codec discipline applies:** the Kotlin RRC codec and the firmware's
+  `RRCProtocol` pinned by shared fixtures, as `tak_native_v1.json` pins TAK.
+- **Then:** ATAK team chat carried by hub rooms; the plugin's team-room
+  feature.
+- **Before starting:** ask upstream whether a merge is already planned, so
+  the work is not done twice.
 
 ## Later: RF characterisation -- when the bench has the tools
 
