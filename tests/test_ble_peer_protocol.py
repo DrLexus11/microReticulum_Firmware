@@ -251,13 +251,17 @@ class NimBLEMultiPeerTests(unittest.TestCase):
         self.assertIn("_tx->notify(data, length, peer.server_handle)",
                       self.source)
 
-    def test_ozd_expands_nimble_controller_to_seven_connections(self):
+    def test_ozd_nimble_controller_matches_the_peer_limit(self):
+        # The controller must hold as many connections as the peer interface
+        # accepts. Two on the OZD since 2026-09-30 (PR E2): NimBLE reserves memory
+        # per connection up front, and seven ran this no-PSRAM fixture out of
+        # memory with one phone attached.
         with open(PLATFORMIO, "r", encoding="utf-8") as handle:
             platform = handle.read()
         target = platform[platform.index("[env:ozdisan-esp32-espnow]"):]
         target = target[:target.index("\n[env:", 1)]
-        self.assertIn("-DBLE_PEER_MAX_CONNECTIONS=7", target)
-        self.assertIn("-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=7", target)
+        self.assertIn("-DBLE_PEER_MAX_CONNECTIONS=2", target)
+        self.assertIn("-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=2", target)
 
 
 class DeckClientTests(unittest.TestCase):

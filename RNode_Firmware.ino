@@ -3999,14 +3999,22 @@ static void heap_watch() {
   // churn fragmenting the heap.
   multi_heap_info_t internal_info;
   heap_caps_get_info(&internal_info, MALLOC_CAP_INTERNAL);
-  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u alloc_blocks=%u free_blocks=%u\n",
+  // heap8/largest8: what malloc() can actually have. MALLOC_CAP_INTERNAL also
+  // counts instruction RAM added to the heap, which takes only 32-bit access:
+  // on the OZD (ESP32, no PSRAM) "internal" read 30 KB free with a largest
+  // block pinned at 12276, and 12 s later an ordinary allocation failed in
+  // malloc() itself and the board aborted (2026-10-01). Appended, so readers
+  // of the fields before it are unaffected.
+  printf("[mem] internal=%u largest=%u psram=%u paths=%u/%u alloc_blocks=%u free_blocks=%u heap8=%u largest8=%u\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
          (unsigned)RNS::Transport::path_table().size(),
          (unsigned)RNS::Transport::path_table_maxsize(),
          (unsigned)internal_info.allocated_blocks,
-         (unsigned)internal_info.free_blocks);
+         (unsigned)internal_info.free_blocks,
+         (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
   // What holds the memory. Rev 2-2's internal heap fell in ~8 KB steps over a
   // night -- 55 KB to 21 KB, largest block 23 KB to 1.3 KB -- until
   // RNS_LOW_MEMORY_REBOOT restarted it after 10.5 h (2026-09-28), with its two

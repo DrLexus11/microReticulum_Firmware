@@ -263,6 +263,90 @@ one of them Rev 2-2 board-to-board, and is soaking with `serial_soak.py`.
 Seen once at boot, not yet explained: `esp_littlefs: Failed to unlink path
 "./hashlist_store/seg1.dat". Has open FD.`
 
+### Overnight 2026-09-29/30: no restarts; two brownouts at a host reboot
+
+Both boards ran the night without a restart: Rev 1 on the multi-peer build
+(heap flat at 171 KB), Rev 2-2 on the fixed library (heap flat near 70 KB,
+nothing orphaned). The host slept 21:51-08:13 and the soak logs with it, so
+those 10.4 h are known from other evidence: Rev 2-2's bootlog (read from flash
+2026-09-30) ends on the boot it is still running, and neither logger had to
+reattach after the host woke, which a restart's USB re-enumeration forces.
+
+**Rev 2-2 browned out twice** on 2026-09-29 at ~10:52 (`BROWNOUT prev=1380s`,
+then `prev=0s`), after ten power-ons. All of it falls in a disturbance the
+operator reported: the deck's USB hub misbehaving for ~15 min, the deck asleep
+~30 min, a restart, and much plugging and unplugging -- settled by 11:30. Not
+a finding against the board. (The E2 over-current item still measures supply
+current under TX: `0x38` lets the PA draw up to 140 mA.)
+
+**From 11:30, the settled picture.** Rev 1: no restart, internal heap 170.6-171.3
+KB throughout. Rev 2-2: no restart; 74.6 KB at 11:30, ~4 KB less once Rev 1's
+BLE link to it came up, then flat at 68-70 KB for 21 h. Dips every 30 min (to
+~55 KB, largest block to ~35 KB) line up with the LXMF sync cadence and recover
+within a minute. No link object outlived its link: the one minute where
+objects exceeded active links (21:50) was an outbound link still pending, active
+with its request a minute later.
+
+**The soak logger misses restarts on USB-CDC boards**: they print their boot
+lines before the host reattaches, so `serial_soak.py --summary` reported
+"boots: 0" across these. A reattach after the first attach is the tell; the
+bootlog is the record.
+
+### The OZD ran out of memory, 2026-09-30 -- fixed
+
+In PR E2's chain test the OZD (ESP32, no PSRAM) failed allocations under
+ordinary load, three causes deep:
+
+1. **Board-to-board BLE churn.** Its link to Rev 1, at the edge of range,
+   dropped and rebuilt every few minutes; heap 27 -> 18 KB in 15 min. Fixed by
+   builds that keep BLE off the other boards.
+2. **The file-backed packet-hash store.** Once a minute, "BLEPeerInterface::
+   handle_incoming: out of memory" in the same second as "Failed to unlink
+   ./hashlist_store/journal.dat": the journal could not be removed while open
+   (microStore), so each rotation met a larger file. 4 KB segments delayed it
+   to minute 11. Fixed by keeping the list in RAM (`RNS_PERSIST_HASHLIST=0`),
+   which did not compile in the library until microReticulum#7. Rev 1 printed
+   the same unlink failure at boot; PSRAM absorbs it there.
+3. **Seven NimBLE connections reserved.** Even then, announce validation and
+   clock writes failed with bad_alloc and a link to the board never became
+   active. Two connections freed ~8 KB (39.8 KB free after boot, 31.7 before).
+
+After all three: ~35 KB free with a phone attached, the RNS pool reporting no
+allocation faults, and a link across the whole chain to the board.
+
+### The OZD's real headroom, 2026-10-01: ~26 KB, and it aborts at zero
+
+The `[mem]` line's `internal` counts MALLOC_CAP_INTERNAL, which on the ESP32
+includes instruction RAM added to the heap -- 32-bit access only, unusable by
+malloc(). Now also `heap8`/`largest8` (MALLOC_CAP_8BIT). Just after boot the OZD
+reads internal 39.3 KB but heap8 26.2 KB: the "30-35 KB free" of 2026-09-30 was
+~17-22 KB, and a largest block pinned at 12276 was that instruction RAM.
+
+It aborted twice on 2026-10-01 (07:09 after 9.9 h, 08:48 after 28 min) with
+the same signature: an allocation failed with the pool and the system heap both
+exhausted, then allocating the bad_alloc exception object itself failed
+(`__cxa_allocate_exception` -> `__terminate`). No catch can help there. The
+library now keeps the jobs lock from sticking and catches send failures
+(microReticulum#8), which removes the way it used to slide into that state, but
+not the base cost: Wi-Fi driver (needed for ESP-NOW), NimBLE, Reticulum and its
+18 KB pool in ~26 KB. It recovers by itself -- re-pairs with Rev 1 within ~5 s.
+
+**Treated as a fixture limit, not a product one**: every product board has
+PSRAM. An abort reads PANIC with this backtrace, so it cannot be mistaken for
+the TASK_WDT the E2 soak is looking for. A memory budget pass on the OZD (Wi-Fi
+driver buffers, NimBLE msys) is possible and not scheduled.
+
+### Rev 1 with a live ESP-NOW peer, 2026-10-01/02: no restart in 39.9 h
+
+PR E2's soak. Rev 1 on `impr-rad01-rev1-espnow` (LoRa + ESP-NOW), the OZD
+pinned to it as its ESP-NOW parent, both carrying the chain's traffic. Rev 1's
+`boot` page over the mesh, every 30 min: one boot from 2026-09-30 18:02 to
+past 39.9 h, crash and panic totals unchanged (9/8, lifetime). With the 23 h
+no-ESP-NOW baseline before it, a live ESP-NOW peer is not Rev 1's watchdog
+trigger on the current firmware. Its old TASK_WDT restarts (0.9-93 h) predate
+the library's link watchdog and lock fixes; whether those removed the cause or
+only the conditions is not proven.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
