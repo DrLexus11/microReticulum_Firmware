@@ -1852,13 +1852,13 @@ reads what it produces. Each step is its own pull request.
    propagation node's status. After Outdoor Test 1: interface switching, the
    propagation node pinned to the command post with fleet fallback, NomadNet
    pages then data feeds, delivery state and queues, cost before fetching,
-   and team rooms over RRC. **Also in PR F, found 2026-10-02:** Columba's main
+   and team rooms over RRC. **Also, found 2026-10-02:** Columba's main
    process -- the TAK endpoint, the mesh service -- has no foreground service
-   of its own (only `:reticulum` does), and stayed protected on Lexus only
-   because ATAK's plugin was bound to it. `:reticulum` binds an anchor service
-   in the main process with `BIND_IMPORTANT`, so the endpoint cannot be
-   reclaimed while ATAK is in front. A Columba pull request, before Outdoor
-   Test 1.
+   of its own (only `:reticulum` does). It is protected today by accident:
+   `:reticulum` binds Room's `MultiInstanceInvalidationService`, which lives
+   there. An anchor service bound from `:reticulum` with `BIND_IMPORTANT` makes
+   it deliberate (Columba `feature/main-process-anchor`). Hardening, not a
+   live failure.
 
 ## Online in ATAK means a fresh position -- decided 2026-10-02
 
