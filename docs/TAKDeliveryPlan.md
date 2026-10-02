@@ -1880,6 +1880,35 @@ from any traffic heard from the member, not from announces alone.
 GPS, no network location, no site -- cannot be an ATAK contact, because ATAK
 draws a contact at a point. Give it a site.
 
+## Open before Outdoor Test 1: a stationary ATAK is invisible after a restart -- found 2026-10-02
+
+**Observed on the bench (operator):** after ATAK starts, every side has to
+receive a position update from every other before it shows them online -- and
+an ATAK with a manual location, or with no GPS fix, sends its own position only
+when it changes. So after any restart such a node is on nobody's map and in
+nobody's contact list, GeoChat cannot address it, and it stays that way until
+someone moves its marker by hand. Reproduced on the deck (Waydroid, manual
+location) and on the Nexus (indoors, no fix); moving each marker once at ATAK
+start made everything work, messaging included. In the field that cannot be a
+procedure: nobody will know to do it, on every device, after every restart.
+
+**What should have covered the deck did not:** the bridge's site fallback
+(`--site`, firmware #35) is meant to report the site whenever ATAK has been
+quiet for 5 minutes, and printed nothing in five hours of a quiet ATAK. Why is
+not yet known; next step is a bridge run with `--capture` to see exactly what
+the deck's ATAK sends, then a test that reproduces it.
+
+**The fix, in both places that speak for ATAK:**
+
+- **Columba and the bridge re-send ATAK's last own position on a cadence while
+  ATAK is connected but quiet**, stating the interval, so receivers keep it
+  fresh -- a manual location counts as a position. Columba already reports the
+  phone's own fix while ATAK is closed (`reportOwnPosition`); this covers ATAK
+  open and silent, and a phone with no fix at all.
+- **A newly heard member is answered with this node's position**, as the
+  membership greeting already answers with an announce, so two nodes that start
+  apart see each other at once instead of at the next movement.
+
 ## Eridanus merges into Columba -- decided 2026-10-02, started the same day
 
 **A full merge**, UI included, so rooms are usable in Columba itself as well
