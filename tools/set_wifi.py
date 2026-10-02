@@ -27,6 +27,21 @@ WR_WIFI_STA = 0x01
 FIELD_MAX = 32          # the board keeps 32 bytes of each
 
 
+def keep_modem_lines(link):
+    """Clear HUPCL, so closing the port does not drop DTR/RTS.
+
+    On a CP2102 board (the OZD) dropping them on close is a reset pulse on EN:
+    the board reboots when this tool exits. Same fix as ozd_serial_log.py.
+    """
+    try:
+        import termios
+        attrs = termios.tcgetattr(link.fileno())
+        attrs[2] &= ~termios.HUPCL          # c_cflag
+        termios.tcsetattr(link.fileno(), termios.TCSANOW, attrs)
+    except Exception as exc:                # non-POSIX, or an exotic driver
+        print("-- could not clear HUPCL (%s); closing may reset the board" % exc, file=sys.stderr)
+
+
 def frame(command, data):
     escaped = bytearray()
     for byte in data:
@@ -57,6 +72,7 @@ def main():
     link.dtr = True          # held, so opening the port does not reset the board
     link.rts = True
     link.open()
+    keep_modem_lines(link)
     try:
         link.write(frame(CMD_WIFI_SSID, ssid + b"\x00"))
         link.flush()

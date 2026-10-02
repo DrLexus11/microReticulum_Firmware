@@ -46,6 +46,21 @@ ECHO_END = re.compile(r"\[boot\] --- end bootlog")
 SAME_BOOT_SECONDS = 120
 
 
+def keep_modem_lines(link):
+    """Clear HUPCL, so closing the port does not drop DTR/RTS.
+
+    On a CP2102 board (the OZD) dropping them on close is a reset pulse on EN:
+    the board reboots when this tool exits. Same fix as ozd_serial_log.py.
+    """
+    try:
+        import termios
+        attrs = termios.tcgetattr(link.fileno())
+        attrs[2] &= ~termios.HUPCL          # c_cflag
+        termios.tcsetattr(link.fileno(), termios.TCSANOW, attrs)
+    except Exception as exc:                # non-POSIX, or an exotic driver
+        print("-- could not clear HUPCL (%s); closing may reset the board" % exc, file=sys.stderr)
+
+
 def open_quietly(port, baud):
     import serial
     link = serial.Serial(baudrate=baud, timeout=0.5, dsrdtr=False, rtscts=False)
@@ -53,6 +68,7 @@ def open_quietly(port, baud):
     link.dtr = True
     link.rts = True
     link.open()
+    keep_modem_lines(link)
     return link
 
 

@@ -29,6 +29,19 @@ def main():
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
 
+    # A destination hash is TRUNCATED_HASHLENGTH/8 bytes of hex. Check before
+    # starting Reticulum: bad hex would raise, and a wrong length would only
+    # show up later as a misleading "no path".
+    want = RNS.Reticulum.TRUNCATED_HASHLENGTH // 8
+    try:
+        raw = bytes.fromhex(args.node)
+    except ValueError:
+        print("%s is not hex" % args.node, file=sys.stderr)
+        return 2
+    if len(raw) != want:
+        print("%s is %d bytes; a destination hash is %d" % (args.node, len(raw), want), file=sys.stderr)
+        return 2
+
     RNS.Reticulum(loglevel=RNS.LOG_WARNING)
     node = bytes.fromhex(args.node)
     if not RNS.Transport.has_path(node):
