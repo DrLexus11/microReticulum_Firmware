@@ -1,0 +1,135 @@
+{
+ "note": "Board health report, telemetry wire format v1 (TelemetryCodec.h, tools/telemetry_codec.py). Synthetic values only. 'encode': reports and their exact bytes (byte counts are encoded as whole KB, counts saturate, battery percent caps at 100). 'decode': bytes and what they decode to, or null when refused; decoded byte counts are whole KB x 1024.",
+ "version": 1,
+ "encode": [
+  {
+   "name": "ozd_no_psram",
+   "telemetry": {
+    "sender_id": 168496141,
+    "uptime_s": 3600,
+    "reset": 3,
+    "boots": 1,
+    "crashes": 9,
+    "panics": 8,
+    "heap_bytes": 26220,
+    "largest_bytes": 19444,
+    "psram_known": false,
+    "psram_bytes": 0,
+    "if_present": 14,
+    "if_up": 10,
+    "ble_peers": 1,
+    "espnow_peers": 1,
+    "paths": 23,
+    "nodes": 5,
+    "relaying": true,
+    "relay_expected": true,
+    "time_current": false,
+    "battery_known": false,
+    "battery_mv": 0,
+    "battery_pct": 0
+   },
+   "hex": "01030a0b0c0d00000e1003000100090008001900120e0a010100170005"
+  },
+  {
+   "name": "rad_with_psram_and_battery",
+   "telemetry": {
+    "sender_id": 4275878552,
+    "uptime_s": 143512,
+    "reset": 1,
+    "boots": 1,
+    "crashes": 70000,
+    "panics": 0,
+    "heap_bytes": 243000,
+    "largest_bytes": 233460,
+    "psram_known": true,
+    "psram_bytes": 8230059,
+    "if_present": 13,
+    "if_up": 13,
+    "ble_peers": 300,
+    "espnow_peers": 2,
+    "paths": 70000,
+    "nodes": 12,
+    "relaying": true,
+    "relay_expected": true,
+    "time_current": true,
+    "battery_known": true,
+    "battery_mv": 3912,
+    "battery_pct": 150
+   },
+   "hex": "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864"
+  },
+  {
+   "name": "all_zero",
+   "telemetry": {
+    "sender_id": 0,
+    "uptime_s": 0,
+    "reset": 0,
+    "boots": 0,
+    "crashes": 0,
+    "panics": 0,
+    "heap_bytes": 0,
+    "largest_bytes": 0,
+    "psram_known": false,
+    "psram_bytes": 0,
+    "if_present": 0,
+    "if_up": 0,
+    "ble_peers": 0,
+    "espnow_peers": 0,
+    "paths": 0,
+    "nodes": 0,
+    "relaying": false,
+    "relay_expected": false,
+    "time_current": false,
+    "battery_known": false,
+    "battery_mv": 0,
+    "battery_pct": 0
+   },
+   "hex": "0100000000000000000000000000000000000000000000000000000000"
+  }
+ ],
+ "decode": [
+  {
+   "name": "appended_bytes_ignored",
+   "hex": "01030a0b0c0d00000e1003000100090008001900120e0a010100170005aabbcc",
+   "telemetry": {
+    "sender_id": 168496141,
+    "uptime_s": 3600,
+    "reset": 3,
+    "boots": 1,
+    "crashes": 9,
+    "panics": 8,
+    "heap_bytes": 25600,
+    "largest_bytes": 18432,
+    "psram_known": false,
+    "psram_bytes": 0,
+    "if_present": 14,
+    "if_up": 10,
+    "ble_peers": 1,
+    "espnow_peers": 1,
+    "paths": 23,
+    "nodes": 5,
+    "relaying": true,
+    "relay_expected": true,
+    "time_current": false,
+    "battery_known": false,
+    "battery_mv": 0,
+    "battery_pct": 0
+   }
+  },
+  {
+   "name": "truncated_before_battery",
+   "hex": "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f",
+   "telemetry": null
+  },
+  {
+   "name": "version_2_refused",
+   "hex": "02030a0b0c0d00000e1003000100090008001900120e0a010100170005",
+   "telemetry": null
+  },
+  {
+   "name": "shorter_than_base",
+   "hex": "01030a0b0c0d00000e1003000100090008001900120e0a0101001700",
+   "telemetry": null
+  }
+ ]
+}
