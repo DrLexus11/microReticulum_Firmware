@@ -1822,7 +1822,17 @@ reads what it produces. Each step is its own pull request.
    twin in `tools/`, as `tak_native_v1.json` pins the TAK formats.
 3. **F3 / R3 -- the `IService` contract** around today's modules, each
    reporting its own health and telemetry; the telemetry service is its first
-   client. Poll timing measured.
+   client. Poll timing measured. **F3a** (merged, #33): `IService.h` and
+   `ServiceRunner.h`, host-tested. **F3b**: the loop's first ten phases,
+   `heap_watch` through `reticulum.loop`, as services under the runner in the
+   same order (`LoopServicesImpl.h`), the TASK_WDT breadcrumb set by the
+   runner's hook, a `[svc]` line beside `[mem]` and a `services` category on
+   `/page/device.mu`. The radio I/O block, serial, peripherals and memory
+   handling stay in `loop()` until R5. **Open:** `reticulum.loop` is not
+   bounded -- one call processes every waiting inbound packet; 3086 ms at
+   startup on Rev 2 -- so the TASK_WDT exposure F3b measures is unchanged.
+   Bounding it is library work (a per-call packet or time budget in
+   `Transport`), scheduled with R5.
 4. **F4 -- the board emitter and the gateway.** Boards send the report at a
    budgeted interval (`position_budget.py`); a node with an uplink announces a
    telemetry-uplink destination and publishes to MQTT. The **backend
@@ -1830,8 +1840,62 @@ reads what it produces. Each step is its own pull request.
    visibility to be decided by the operator.
 5. **F5 -- device logs off-device**: the bounded spool, boot and crash records
    first, rate-limited on LoRa.
-6. **F6+ -- the plugin** in `reticulum-atak`, once its two blocking decisions
-   are made.
+6. **F6+ -- the plugin** in `reticulum-atak`. Its two blocking decisions are
+   made, and its scaffold and release path were proven early, on 2026-10-02:
+   built against SDK 5.5.1.8, loaded in the developer ATAK on the bench phone,
+   and a TAK.gov pipeline build targeting 5.8.0 loaded in the store ATAK
+   5.8.0.4. **Features agreed 2026-10-02** (`reticulum-atak`'s `Roadmap.md`
+   and `OpenDecisions.md`). In PR F: Columba's bound service (read surface,
+   caller allow-list, an "allow ATAK control" gate, the announce command),
+   then the mesh panel -- peers, hops, carrier, command post reachability,
+   locate on the map, open ATAK's GeoChat to a peer, announce -- and the
+   propagation node's status. After Outdoor Test 1: interface switching, the
+   propagation node pinned to the command post with fleet fallback, NomadNet
+   pages then data feeds, delivery state and queues, cost before fetching,
+   and team rooms over RRC.
+
+## Online in ATAK means a fresh position -- decided 2026-10-02
+
+Raised on the bench: a member the mesh can see should be online in ATAK, with
+everything that comes with it -- a contact, GeoChat, a marker. Checked, and it
+holds through position reports, which every kind of node now sends: a phone's
+Columba reports its own position with ATAK closed and states the interval, so
+receivers keep it fresh for twice that; a command post reports its site
+(`cot_bridge.py --site`, firmware #35) whenever its ATAK does not.
+
+**Not done: online status from announces.** Columba re-announces membership
+every 30 minutes, so announce-driven presence would keep a member online for
+about an hour after they were gone. A responder shown online for an hour after
+they vanished is worse than one shown stale; the position cadence is the
+liveness signal. If a shorter presence signal is ever wanted, it should come
+from any traffic heard from the member, not from announces alone.
+
+**The remaining gap is configuration:** a node with no position at all -- no
+GPS, no network location, no site -- cannot be an ATAK contact, because ATAK
+draws a contact at a point. Give it a site.
+
+## After Outdoor Test 1: Eridanus merges into Columba -- decided 2026-10-02
+
+**A full merge**, UI included, so rooms are usable in Columba itself as well
+as from ATAK. Eridanus (`~/projects/eridanus`) is RRC chatrooms on Android, by
+Columba's original author, on the same Reticulum layers (`rns-api`, Kotlin
+and Python backends) and the same licence (MPL-2.0). Sizes as of today: the RRC
+client and codec about 640 lines, the hub about 1,600, the app and UI about
+8,000.
+
+- **Why:** ATAK team chat today is a Reticulum group broadcast (`TakGroups`),
+  with no backlog -- a member out of range loses those lines for good (G4).
+  RRC rooms are hosted on hubs with a roster and backfill, and the boards
+  already host RRC hubs (`RRCHub`, `RRCBridge`). One app gives one Reticulum
+  host and one identity, and an RRC interface beside Columba's others for the
+  plugin (`TAKNative.md`, *RRC first needs Eridanus and Columba to be one
+  app*).
+- **Codec discipline applies:** the Kotlin RRC codec and the firmware's
+  `RRCProtocol` pinned by shared fixtures, as `tak_native_v1.json` pins TAK.
+- **Then:** ATAK team chat carried by hub rooms; the plugin's team-room
+  feature.
+- **Before starting:** ask upstream whether a merge is already planned, so
+  the work is not done twice.
 
 ## Later: RF characterisation -- when the bench has the tools
 

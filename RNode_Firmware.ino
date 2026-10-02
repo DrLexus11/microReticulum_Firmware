@@ -22,6 +22,7 @@
 #endif
 #include "Provisioning.h"
 #include "LoopPhase.h"
+#include "LoopServices.h"
 #include "RadioPresets.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
@@ -1891,6 +1892,7 @@ printf("[init] op_mode: %U\n", op_mode);
     ERRORF("RNS startup failed: %s", e.what());
   }
 #endif  // HAS_RNS
+  loop_services_start();
 }
 
 void lora_receive() {
@@ -4105,53 +4107,6 @@ static void wifi_liveness_watch() {}
 #endif
 
 void loop() {
-#if defined(ESP32) && defined(HAS_RNS)
-  loop_phase(LOOP_PHASE_HEAP);
-  heap_watch();
-#endif
-#if defined(HAS_RNS) && defined(URTN_STATS_PAGES)
-  loop_phase(LOOP_PHASE_NOMAD_ANN);
-  nomadnet_announce_watch();
-#endif
-#if defined(HAS_RNS) && defined(RRC_HUB)
-  loop_phase(LOOP_PHASE_RRC);
-  rrc_hub_loop();
-#endif
-#if defined(BLE_PEER_TRANSPORT)
-  // Started lazily rather than at init: the GATT server does not exist until
-  // Bluetooth has come up, and the transport identity is not loaded until
-  // Reticulum has. Waiting for both here avoids ordering assumptions that
-  // would fail silently.
-  #if defined(NIMBLE_PEER_TRANSPORT)
-  if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
-      RNS::Transport::identity()) {
-    ble_peer_impl->begin(RNS::Transport::identity().hash());
-  }
-  #else
-  if (ble_peer_impl != nullptr && !ble_peer_impl->started() &&
-      bt_state != BT_STATE_OFF && bt_state != BT_STATE_NA &&
-      SerialBT.ble_server != nullptr && RNS::Transport::identity()) {
-    ble_peer_impl->begin(SerialBT.ble_server, RNS::Transport::identity().hash());
-  }
-  #endif
-  loop_phase(LOOP_PHASE_BLE_PEER);
-  if (ble_peer_impl != nullptr) ble_peer_impl->loop();
-#endif
-#if defined(HAS_RNS) && defined(LORA_TRANSPORT)
-  loop_phase(LOOP_PHASE_RADIO_WD);
-  radio_rx_watchdog();
-  loop_phase(LOOP_PHASE_LORA_CFG);
-  lora_config_consistency_watch();
-  loop_phase(LOOP_PHASE_RADIO_CMT);
-  radio_commit_confirm_watch();
-#if defined(LXMF_PROPAGATION_NODE)
-  loop_phase(LOOP_PHASE_LXMF_ANN);
-  lxmf_propagation_announce_watch();
-  loop_phase(LOOP_PHASE_LXMF_SYNC);
-  lxmf_peer_sync_watch();
-#endif
-#endif
-
   #if MCU_VARIANT == MCU_NATIVE
     // Deferred-reboot hook: a KISS-driven property change or CMD_RESET in
     // a prior iteration called hard_reset() → native_request_reboot(), which
@@ -4163,21 +4118,10 @@ void loop() {
     if (native_reboot_pending()) native_reboot_perform();
   #endif
 
-#ifdef HAS_RNS
-  // CBA
-  loop_phase(LOOP_PHASE_RETICULUM);
-  if (reticulum) {
-    try {
-      reticulum.loop();
-    }
-    catch (const std::bad_alloc&) {
-      ERROR("RNS loop failed: bad_alloc - out of memory");
-    }
-    catch (std::exception& e) {
-      ERRORF("RNS loop failed: %s", e.what());
-    }
-  }
-#endif
+  // heap_watch through reticulum.loop, in their old order, as services
+  // (LoopServicesImpl.h). Each sets its own TASK_WDT breadcrumb.
+  loop_services_poll();
+  loop_phase(LOOP_PHASE_RADIO_ON);
 
   if (radio_online) {
     #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NATIVE
@@ -4534,3 +4478,7 @@ void serial_interrupt_init() {
 #if MCU_VARIANT == MCU_1284P || MCU_VARIANT == MCU_2560
   ISR(TIMER3_CAPT_vect) { buffer_serial(); }
 #endif
+
+// The loop's services. Last, because the adapters call the file-static
+// functions above and read their state.
+#include "LoopServicesImpl.h"

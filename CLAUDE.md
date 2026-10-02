@@ -18,10 +18,13 @@ Sibling repositories, developed together:
 - `~/projects/reticulum-atak` — **PR F's ATAK plugin** (delivery state, queues,
   reachability, cost), `DrLexus11/reticulum-atak`, **public**. It does not
   belong in `urban-tak`, which must stay free of Reticulum, nor here, which is
-  firmware; Android plugin work goes there, never here. Its code is blocked on
-  two decisions recorded in its `docs/OpenDecisions.md`: how it reads Columba's
-  Reticulum state, and the ATAK-CIV SDK. See *The second plugin repo* in
-  `docs/TAKDeliveryPlan.md`.
+  firmware; Android plugin work goes there, never here. Its two blocking
+  decisions are settled (its `docs/OpenDecisions.md`): Columba exports a
+  read-only bound service behind a caller allow-list, and the plugin builds
+  against ATAK-CIV SDK 5.5.1.8 on the bench while releases go through TAK.gov's
+  third-party pipeline at the phones' ATAK version. Scaffold merged and the
+  release path proven 2026-10-02 (`docs/Setup.md` there). See *The second
+  plugin repo* in `docs/TAKDeliveryPlan.md`.
 
 ## Read this before planning work
 

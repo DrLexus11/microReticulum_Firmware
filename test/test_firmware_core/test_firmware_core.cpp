@@ -550,6 +550,18 @@ void test_runner_stops_in_reverse_order() {
 	TEST_ASSERT_FALSE(runner.running(0));
 }
 
+// Every state has a name a person can read in a [svc] line or on the services
+// page, and "unmeasured" is its own state: never reported as healthy.
+void test_every_service_state_has_a_name() {
+	TEST_ASSERT_EQUAL_STRING("starting",   service_state_name(ServiceState::Starting));
+	TEST_ASSERT_EQUAL_STRING("healthy",    service_state_name(ServiceState::Healthy));
+	TEST_ASSERT_EQUAL_STRING("degraded",   service_state_name(ServiceState::Degraded));
+	TEST_ASSERT_EQUAL_STRING("failed",     service_state_name(ServiceState::Failed));
+	TEST_ASSERT_EQUAL_STRING("disabled",   service_state_name(ServiceState::Disabled));
+	TEST_ASSERT_EQUAL_STRING("unmeasured", service_state_name(ServiceState::Unmeasured));
+	TEST_ASSERT_NOT_EQUAL((int)ServiceState::Healthy, (int)ServiceState::Unmeasured);
+}
+
 void test_runner_refuses_past_its_capacity() {
 	reset_runner_logs();
 	FakeService a('a', 0);
@@ -596,5 +608,6 @@ int main() {
 	RUN_TEST(test_runner_collects_telemetry_from_running_services_only);
 	RUN_TEST(test_runner_stops_in_reverse_order);
 	RUN_TEST(test_runner_refuses_past_its_capacity);
+	RUN_TEST(test_every_service_state_has_a_name);
 	return UNITY_END();
 }

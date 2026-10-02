@@ -41,7 +41,8 @@
 #define LOOP_PHASE_TX_QUEUE   12
 #define LOOP_PHASE_PERIPH     13
 #define LOOP_PHASE_MEMORY     14
-#define LOOP_PHASE_COUNT      15
+#define LOOP_PHASE_SVC_REPORT 15
+#define LOOP_PHASE_COUNT      16
 
 inline const char* loop_phase_name(uint8_t phase) {
 	switch (phase) {
@@ -59,6 +60,7 @@ inline const char* loop_phase_name(uint8_t phase) {
 		case LOOP_PHASE_TX_QUEUE:  return "tx_queue_handler";
 		case LOOP_PHASE_PERIPH:    return "peripherals (display/pmu/bt/wifi/input)";
 		case LOOP_PHASE_MEMORY:    return "memory_low handling";
+		case LOOP_PHASE_SVC_REPORT: return "service_report";
 		default:                   return "none";
 	}
 }

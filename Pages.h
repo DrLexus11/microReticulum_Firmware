@@ -27,6 +27,7 @@
 #include "TimeSync.h"
 #include "TimeBeacon.h"
 #include "PositionReport.h"
+#include "LoopServices.h"
 #if defined(RRC_HUB)
 #include "RRCHub.h"
 #include "NodeStatus.h"
@@ -605,6 +606,27 @@ RNS::Bytes serve_page(
         content << "  \"crashes\": " << std::to_string(s.crashes) << ",\n";
         content << "  \"panics\": " << std::to_string(s.panics) << "\n";
         content << "}";
+      }
+      else if (category == "services") {
+        // The loop's services (F3b): what each says of itself, and what the
+        // runner measured of it. Worst and last poll in ms; overruns are polls
+        // past the service's own budget.
+        const ServiceRunner& runner = loop_services();
+        content = "{\n  \"services\": [\n";
+        for (size_t i = 0; i < runner.count(); ++i) {
+          const Health h = runner.health(i);
+          const ServiceTiming* t = runner.timing(i);
+          content << "    {\"name\": \"" << runner.service(i)->name()
+                  << "\", \"state\": \"" << service_state_name(h.state)
+                  << "\", \"reason\": \"" << (h.reason ? h.reason : "")
+                  << "\", \"polls\": " << std::to_string(t ? t->polls : 0)
+                  << ", \"overruns\": " << std::to_string(t ? t->overruns : 0)
+                  << ", \"worst_ms\": " << std::to_string(t ? t->worst_ms : 0)
+                  << ", \"last_ms\": " << std::to_string(t ? t->last_ms : 0)
+                  << ", \"budget_ms\": " << std::to_string(runner.service(i)->budget_ms())
+                  << "}" << (i + 1 < runner.count() ? ",\n" : "\n");
+        }
+        content << "  ]\n}";
       }
       else if (category == "interfaces") {
         content = "{\n";
