@@ -34,6 +34,7 @@
 
 #include <string.h>
 #include "NodeStatus.h"
+#include "PositionCodec.h"
 
 // Sources are registered once at startup and never removed, so a fixed array
 // costs nothing and cannot fragment the heap. Four is more than a node has:
@@ -63,68 +64,8 @@
 #define NODE_POSITION_MAX_CLOCK_SKEW_MS 30000ULL
 #endif
 
-enum class NodePositionKind : uint8_t {
-  NONE  = 0,
-  PHONE = 1,   // Columba, over the mesh
-  GNSS  = 2,   // a receiver wired to this board
-  FIXED = 3,   // surveyed once and stored: a mast, a base station
-};
-
-// Scaled integers rather than floats, because this struct becomes a wire format
-// in step 2 and a float on the wire is a portability question nobody needs.
-// 1e-7 degrees is about 1.1 cm at the equator, well past what any of these
-// receivers can actually resolve.
-struct NodePositionFix {
-  bool valid = false;
-
-  int32_t lat_e7 = 0;          // degrees x 1e7, positive north
-  int32_t lon_e7 = 0;          // degrees x 1e7, positive east
-
-  // Altitude is separately flagged because zero is a real altitude and a
-  // receiver without an altitude solution must not be read as reporting sea
-  // level. The same reasoning as reporting an unknown clock as unknown rather
-  // than as the epoch.
-  bool alt_known = false;
-  int16_t alt_m = 0;           // metres, height above ellipsoid
-
-  // Zero means "not reported". A CoT event without a circular error is
-  // legitimate; one claiming zero error is not.
-  uint16_t accuracy_m = 0;
-
-  bool course_known = false;
-  uint16_t course_ddeg = 0;    // tenths of a degree, 0..3599
-  uint16_t speed_cms = 0;      // cm/s
-
-  uint8_t sats = 0;            // 0 when the source does not report it
-
-  // Who this fix is about. Four bytes of the reporting node's identity hash,
-  // zero when unknown.
-  //
-  // It has to travel with the fix because nothing else carries it: a Reticulum
-  // packet to a SINGLE destination is anonymous by construction, so a receiver
-  // has no way to tell two senders apart. Without this every report is a new
-  // track, and a map fills with one person's ghosts -- which is exactly what
-  // the first two live reports did on 2026-09-06.
-  //
-  // An identifier, not an authentication. These packets are unsigned, so this
-  // says which track a report belongs to and nothing about who wrote it.
-  uint32_t sender_id = 0;
-
-  // When the fix was taken, by the source's own clock. Zero means the source
-  // had no clock -- which is a real case for a bare GNSS module before its
-  // first time solution, and for this node generally. Never substitute our
-  // clock here: a fix stamped with the time we *received* it is a different
-  // measurement wearing the same field.
-  uint64_t fix_unix_ms = 0;
-
-  // Always set, from millis() at the moment the fix was accepted. This is what
-  // ages a fix, because it works whether or not anybody involved knows the
-  // wall time -- and a node with no clock still must not report a stale
-  // position as current.
-  uint32_t received_ms = 0;
-
-  NodePositionKind kind = NodePositionKind::NONE;
-};
+// NodePositionKind and NodePositionFix live in PositionCodec.h: the fix is a
+// wire format, and the protocol layer must build with no Arduino in it.
 
 // A source is polled; it does not push. Pull keeps ownership of the buffer here
 // and means a source that has stopped answering simply stops producing fixes,

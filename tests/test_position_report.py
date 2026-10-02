@@ -24,6 +24,12 @@ def source(name):
         return handle.read()
 
 
+def with_codec(name):
+    # The fix type and the wire format moved into PositionCodec.h (PR F step
+    # F2), unchanged; checks written against this header read both.
+    return source(name) + "\n" + source("PositionCodec.h")
+
+
 def code_only(text):
     return "\n".join(line.split("//")[0] for line in text.splitlines())
 
@@ -49,7 +55,7 @@ class WireAgreementTests(unittest.TestCase):
     the map -- and it will look like a receiver fault, not a codec fault."""
 
     def setUp(self):
-        self.header = source("PositionReport.h")
+        self.header = with_codec("PositionReport.h")
         self.codec = load_codec()
 
     def test_the_version_matches(self):
@@ -169,7 +175,7 @@ class RoundTripTests(unittest.TestCase):
         back = self.codec.decode(self.codec.encode(fix))
         self.assertEqual(back.course_ddeg, 0)
         # And all three implementations normalise the same way.
-        self.assertIn("% 3600", source("PositionReport.h"))
+        self.assertIn("% 3600", with_codec("PositionReport.h"))
 
     def test_a_truncated_report_decodes_to_nothing(self):
         # These bytes come off a radio. A short frame is a thing that happens.
@@ -189,7 +195,7 @@ class RoundTripTests(unittest.TestCase):
     def test_the_firmware_layout_matches_the_python_struct(self):
         # Read the firmware's own encoder order and confirm it writes the
         # fields the Python format string expects, big-endian.
-        header = source("PositionReport.h")
+        header = with_codec("PositionReport.h")
         enc = header[header.index("inline size_t position_report_encode("):]
         enc = enc[:enc.index("\n}")]
         # lat then lon then time then accuracy, each MSB first.
@@ -205,7 +211,7 @@ class SenderIdentityTests(unittest.TestCase):
 
     def setUp(self):
         self.codec = load_codec()
-        self.header = source("PositionReport.h")
+        self.header = with_codec("PositionReport.h")
 
     def test_the_sender_survives_the_round_trip(self):
         fix = self.codec.PositionFix(sender_id=0xDEADBEEF, lat_e7=1, lon_e7=1)
@@ -252,7 +258,7 @@ class SenderIdentityTests(unittest.TestCase):
 
 class SendPathTests(unittest.TestCase):
     def setUp(self):
-        self.header = source("PositionReport.h")
+        self.header = with_codec("PositionReport.h")
 
     def test_a_report_is_a_packet_not_a_link(self):
         # Link establishment measured about eight kilobytes of transient heap
@@ -356,7 +362,7 @@ class WiringTests(unittest.TestCase):
         self.assertIn("position_report_loop();", sketch)
 
     def test_it_compiles_out_without_reticulum(self):
-        header = source("PositionReport.h")
+        header = with_codec("PositionReport.h")
         self.assertIn("inline void position_report_loop() {}", header)
 
 

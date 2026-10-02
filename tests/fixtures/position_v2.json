@@ -1,0 +1,95 @@
+{
+ "note": "Position report wire format v2 (PositionCodec.h, tools/position_codec.py). Synthetic values only. 'encode': fixes the firmware produces and their exact bytes. 'decode': bytes and what they must decode to, or null when they must be refused. The firmware never sets FLAG_INTERVAL and its decoder ignores that byte.",
+ "version": 2,
+ "encode": [
+  {
+   "name": "minimal",
+   "fix": {
+    "sender_id": 168496141,
+    "lat_e7": 123456789,
+    "lon_e7": -98765432,
+    "fix_unix_s": 1790000000,
+    "accuracy_m": 12,
+    "alt_known": false,
+    "alt_m": 0,
+    "course_known": false,
+    "course_ddeg": 0,
+    "speed_cms": 0,
+    "sats": 0,
+    "interval_min": 0
+   },
+   "hex": "02000a0b0c0d075bcd15fa1cf5886ab13b800c"
+  },
+  {
+   "name": "all_fields_saturating",
+   "fix": {
+    "sender_id": 4275878552,
+    "lat_e7": -123456789,
+    "lon_e7": 98765432,
+    "fix_unix_s": 1790000123,
+    "accuracy_m": 400,
+    "alt_known": true,
+    "alt_m": -12,
+    "course_known": true,
+    "course_ddeg": 3600,
+    "speed_cms": 20000,
+    "sats": 9,
+    "interval_min": 0
+   },
+   "hex": "020ffedcba98f8a432eb05e30a786ab13bfbfffff400ff09"
+  },
+  {
+   "name": "course_and_speed_scale",
+   "fix": {
+    "sender_id": 1,
+    "lat_e7": 1,
+    "lon_e7": -1,
+    "fix_unix_s": 0,
+    "accuracy_m": 254,
+    "alt_known": false,
+    "alt_m": 0,
+    "course_known": true,
+    "course_ddeg": 1795,
+    "speed_cms": 149,
+    "sats": 0,
+    "interval_min": 0
+   },
+   "hex": "02060000000100000001ffffffff00000000fe5902"
+  }
+ ],
+ "decode": [
+  {
+   "name": "interval_byte_trailing",
+   "hex": "0218000000070000000a000000140000001e05040a",
+   "fix": {
+    "sender_id": 7,
+    "lat_e7": 10,
+    "lon_e7": 20,
+    "fix_unix_s": 30,
+    "accuracy_m": 5,
+    "alt_known": false,
+    "alt_m": 0,
+    "course_known": false,
+    "course_ddeg": 0,
+    "speed_cms": 0,
+    "sats": 4,
+    "interval_min": 10
+   }
+  },
+  {
+   "name": "truncated_before_altitude",
+   "hex": "020ffedcba98f8a432eb05e30a786ab13bfbffff",
+   "fix": null
+  },
+  {
+   "name": "version_1_refused",
+   "hex": "010ffedcba98f8a432eb05e30a786ab13bfbfffff400ff09",
+   "fix": null
+  },
+  {
+   "name": "shorter_than_base",
+   "hex": "020ffedcba98f8a432eb05e30a786ab13bfb",
+   "fix": null
+  }
+ ]
+}
