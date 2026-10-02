@@ -1874,10 +1874,23 @@ from any traffic heard from the member, not from announces alone.
 GPS, no network location, no site -- cannot be an ATAK contact, because ATAK
 draws a contact at a point. Give it a site.
 
-## After Outdoor Test 1: Eridanus merges into Columba -- decided 2026-10-02
+## Eridanus merges into Columba -- decided 2026-10-02, started the same day
 
 **A full merge**, UI included, so rooms are usable in Columba itself as well
-as from ATAK. Eridanus (`~/projects/eridanus`) is RRC chatrooms on Android, by
+as from ATAK. **Started 2026-10-02, alongside PR F rather than after Outdoor
+Test 1** (operator): it runs on its own Columba branch and gates nothing in
+PR F. **Shape: co-located** (operator, same day) -- Eridanus's modules come into
+Columba's repository nearly unchanged, imported with `git subtree` so its
+history and layout survive and its later fixes still apply; they run in their
+own process as a client of Columba's own Reticulum (its shared instance), on
+the Kotlin backend, under Columba's identity. One APK, one host, one identity.
+Folding it into Columba's Reticulum process stays possible later. The plan is
+`docs/EridanusMerge.md` in Columba.
+
+**Upstream has answered** (torlando-tech/columba #1083, 2026-08-11): RRC will
+not come to upstream Columba -- Eridanus is separate by design. So this merge
+is ours alone, and our Columba diverges from upstream here for good: every
+upstream Columba update taken in carries the merge forward. Eridanus (`~/projects/eridanus`) is RRC chatrooms on Android, by
 Columba's original author, on the same Reticulum layers (`rns-api`, Kotlin
 and Python backends) and the same licence (MPL-2.0). Sizes as of today: the RRC
 client and codec about 640 lines, the hub about 1,600, the app and UI about
@@ -1894,8 +1907,7 @@ client and codec about 640 lines, the hub about 1,600, the app and UI about
   `RRCProtocol` pinned by shared fixtures, as `tak_native_v1.json` pins TAK.
 - **Then:** ATAK team chat carried by hub rooms; the plugin's team-room
   feature.
-- **Before starting:** ask upstream whether a merge is already planned, so
-  the work is not done twice.
+- **Asked and answered:** no upstream merge is planned (#1083 above).
 
 ## Later: RF characterisation -- when the bench has the tools
 
