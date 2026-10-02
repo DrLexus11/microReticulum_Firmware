@@ -1806,6 +1806,33 @@ health and telemetry -- the telemetry feature is its first client). R4-R6
 platform track after PR F, R6 together with the Arduino-core / ESP-IDF 5
 upgrade. Linux compatibility is kept at every step for IMPR-Vox.
 
+### PR F's order of work -- set 2026-10-02
+
+The firmware half first; it is not blocked, and the plugin's mesh-health view
+reads what it produces. Each step is its own pull request.
+
+1. **F1 / R1 -- host unit tests for the firmware.** A native PlatformIO + Unity
+   environment, like `rrc-native`, compiling only pure headers and running them
+   under AddressSanitizer and UBSan: `BootLog.h`, `ESPNowProtocol.h`,
+   `BLEPeerProtocol.h` first.
+2. **F2 / R2 -- the codecs as a protocol layer.** The position codec out of
+   `PositionReport.h` (it mixes encoding with Arduino and Reticulum calls) into
+   a pure module, then the **telemetry codec**: a fixed binary report with a
+   version byte, pinned by a shared fixture (`telemetry_v1.json`) and a Python
+   twin in `tools/`, as `tak_native_v1.json` pins the TAK formats.
+3. **F3 / R3 -- the `IService` contract** around today's modules, each
+   reporting its own health and telemetry; the telemetry service is its first
+   client. Poll timing measured.
+4. **F4 -- the board emitter and the gateway.** Boards send the report at a
+   budgeted interval (`position_budget.py`); a node with an uplink announces a
+   telemetry-uplink destination and publishes to MQTT. The **backend
+   repository** (Go, Prometheus, Grafana) is created here -- name and
+   visibility to be decided by the operator.
+5. **F5 -- device logs off-device**: the bounded spool, boot and crash records
+   first, rate-limited on LoRa.
+6. **F6+ -- the plugin** in `reticulum-atak`, once its two blocking decisions
+   are made.
+
 ## Later: RF characterisation -- when the bench has the tools
 
 Measurements that need equipment we do not have yet (a USB current breakout or
@@ -1965,9 +1992,10 @@ a signed APK. The only thing the two share is the wire format, and a wire format
 is a contract between repositories, not a reason to merge them — the same
 argument already keeps Columba separate.
 
-**Recommended name: `mesh-tak`** — parallel to `urban-tak`, says what it does,
-carries no operational detail. Confirm or replace before the repo is created;
-the naming call is not the agent's.
+**Named `reticulum-atak`** (operator, 2026-10-02): `DrLexus11/reticulum-atak`,
+public, cloned at `~/projects/reticulum-atak` and scaffolded the same day --
+its purpose, roadmap, and the decisions that block code (how it reads Columba's
+Reticulum state; the ATAK-CIV SDK; the licence) in its `docs/`.
 
 The same public-repo discipline applies as for `urban-tak`: no fleet secrets,
 node hashes, callsigns, IFAC passphrases, exercise coordinates or team details,
