@@ -1854,6 +1854,26 @@ reads what it produces. Each step is its own pull request.
    pages then data feeds, delivery state and queues, cost before fetching,
    and team rooms over RRC.
 
+## Online in ATAK means a fresh position -- decided 2026-10-02
+
+Raised on the bench: a member the mesh can see should be online in ATAK, with
+everything that comes with it -- a contact, GeoChat, a marker. Checked, and it
+holds through position reports, which every kind of node now sends: a phone's
+Columba reports its own position with ATAK closed and states the interval, so
+receivers keep it fresh for twice that; a command post reports its site
+(`cot_bridge.py --site`, firmware #35) whenever its ATAK does not.
+
+**Not done: online status from announces.** Columba re-announces membership
+every 30 minutes, so announce-driven presence would keep a member online for
+about an hour after they were gone. A responder shown online for an hour after
+they vanished is worse than one shown stale; the position cadence is the
+liveness signal. If a shorter presence signal is ever wanted, it should come
+from any traffic heard from the member, not from announces alone.
+
+**The remaining gap is configuration:** a node with no position at all -- no
+GPS, no network location, no site -- cannot be an ATAK contact, because ATAK
+draws a contact at a point. Give it a site.
+
 ## After Outdoor Test 1: Eridanus merges into Columba -- decided 2026-10-02
 
 **A full merge**, UI included, so rooms are usable in Columba itself as well
