@@ -61,15 +61,16 @@ above it.
 One contract for everything that runs:
 
 ```cpp
-class IService {
+class IService {                                   // IService.h
 public:
   virtual const char* name() const = 0;
   virtual bool init(const AppContext&) = 0;   // allocate everything here
   virtual bool start() = 0;
   virtual void poll(uint32_t now_ms) = 0;     // bounded: see time budget
-  virtual Health health() const = 0;          // Starting/Healthy/Degraded/Failed + reason
-  virtual void telemetry(TelemetryWriter&) const = 0;
+  virtual Health health() const = 0;          // Starting/Healthy/Degraded/Failed/Disabled + reason
+  virtual void telemetry(NodeTelemetry&) const = 0;   // its own fields of the report
   virtual void stop() = 0;
+  virtual uint32_t budget_ms() const { return 20; }
 };
 ```
 
@@ -182,7 +183,7 @@ behaviour on its own, and is covered by tests before the next builds on it.
 | R0 | This document; the rules into `CLAUDE.md`; new code follows the layers where they exist | PR E |
 | R1 | **Firmware unit tests on Linux** (PlatformIO native + Unity): the codecs first, then the pieces the next steps move | PR F, first |
 | R2 | **Protocol layer**: move the firmware's codecs (position, telemetry) into pure, host-tested modules | PR F, with telemetry |
-| R3 | **`IService` contract**, wrapped around today's modules and called from today's loop in declared order; poll timing and health measured. No behaviour change | PR F, with telemetry -- each service reports its own |
+| R3 | **`IService` contract**, wrapped around today's modules and called from today's loop in declared order; poll timing and health measured. No behaviour change | PR F, with telemetry -- each service reports its own. **F3a landed**: `IService.h` and `ServiceRunner.h` (ordered polls, per-service timing against its budget, the report as the sum of the services' own, a pre-poll hook for the TASK_WDT breadcrumb), host-tested. F3b wraps the loop's phases. |
 | R4 | **Platform layer** extracted from the ESP32 and native code already in the tree | after PR F, platform track |
 | R5 | **Application layer**: typed config with defaults and validation, start order, restart policy; `RNode_Firmware.ino` reduced to wiring | platform track |
 | R6 | **Core as a library**; the first product firmware built on it | platform track, with the Arduino-core / ESP-IDF 5 upgrade (after R1's tests exist) |

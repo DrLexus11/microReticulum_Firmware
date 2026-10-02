@@ -12,6 +12,7 @@
 #include "ESPNowProtocol.h"
 #include "PositionCodec.h"
 #include "TelemetryCodec.h"
+#include "ServiceRunner.h"
 
 #include <cstdint>
 #include <cstring>
@@ -402,6 +403,136 @@ void test_telemetry_decode_refuses_what_it_cannot_read() {
 	}
 }
 
+// --- IService.h / ServiceRunner.h: the service contract (R3) -----------------
+
+static uint32_t fake_now = 0;
+static uint32_t fake_clock() { return fake_now; }
+
+static char poll_log[64];
+static size_t poll_log_len = 0;
+static size_t hook_log[16];
+static size_t hook_count = 0;
+static void record_hook(size_t index) { if (hook_count < 16) hook_log[hook_count++] = index; }
+
+struct FakeService : IService {
+	char tag;
+	uint32_t cost_ms;
+	uint32_t budget;
+	bool init_ok;
+	int stopped_at = -1;
+	static int stop_sequence;
+	FakeService(char tag_, uint32_t cost, uint32_t budget_ = 20, bool ok = true)
+		: tag(tag_), cost_ms(cost), budget(budget_), init_ok(ok) {}
+	const char* name() const override { return "fake"; }
+	bool init(const AppContext&) override { return init_ok; }
+	bool start() override { return true; }
+	void poll(uint32_t) override {
+		if (poll_log_len < sizeof(poll_log) - 1) poll_log[poll_log_len++] = tag;
+		fake_now += cost_ms;
+	}
+	Health health() const override { return Health{ServiceState::Healthy, "ok"}; }
+	void telemetry(NodeTelemetry& report) const override { report.paths += 1; report.if_up |= (uint8_t)(1u << (tag - 'a')); }
+	void stop() override { stopped_at = stop_sequence++; }
+	uint32_t budget_ms() const override { return budget; }
+};
+int FakeService::stop_sequence = 0;
+
+static void reset_runner_logs() {
+	fake_now = 0; poll_log_len = 0; hook_count = 0;
+	memset(poll_log, 0, sizeof(poll_log));
+	FakeService::stop_sequence = 0;
+}
+
+void test_runner_polls_in_declared_order_with_the_hook_first() {
+	reset_runner_logs();
+	FakeService a('a', 1), b('b', 1), c('c', 1);
+	ServiceRunner runner(fake_clock, record_hook);
+	TEST_ASSERT_TRUE(runner.add(&a) && runner.add(&b) && runner.add(&c));
+	TEST_ASSERT_EQUAL_size_t(3, runner.start_all(AppContext{}));
+	runner.poll_all();
+	runner.poll_all();
+	TEST_ASSERT_EQUAL_STRING("abcabc", poll_log);
+	TEST_ASSERT_EQUAL_size_t(6, hook_count);
+	TEST_ASSERT_EQUAL_size_t(0, hook_log[0]);
+	TEST_ASSERT_EQUAL_size_t(2, hook_log[2]);
+}
+
+void test_runner_measures_each_poll_against_its_budget() {
+	reset_runner_logs();
+	FakeService quick('a', 5), slow('b', 30), allowed('c', 30, 50);
+	ServiceRunner runner(fake_clock);
+	runner.add(&quick); runner.add(&slow); runner.add(&allowed);
+	runner.start_all(AppContext{});
+	runner.poll_all();
+	slow.cost_ms = 10;
+	runner.poll_all();
+	TEST_ASSERT_EQUAL_UINT32(2, runner.timing(0).polls);
+	TEST_ASSERT_EQUAL_UINT32(0, runner.timing(0).overruns);
+	TEST_ASSERT_EQUAL_UINT32(1, runner.timing(1).overruns);    // 30 ms over 20, then 10 within
+	TEST_ASSERT_EQUAL_UINT32(30, runner.timing(1).worst_ms);
+	TEST_ASSERT_EQUAL_UINT32(10, runner.timing(1).last_ms);
+	TEST_ASSERT_EQUAL_UINT32(0, runner.timing(2).overruns);    // its own 50 ms budget
+}
+
+void test_runner_timing_survives_the_clock_wrapping() {
+	reset_runner_logs();
+	fake_now = 0xFFFFFFF0u;
+	FakeService a('a', 32);
+	ServiceRunner runner(fake_clock);
+	runner.add(&a);
+	runner.start_all(AppContext{});
+	runner.poll_all();
+	TEST_ASSERT_EQUAL_UINT32(32, runner.timing(0).last_ms);
+}
+
+void test_runner_leaves_out_a_service_that_did_not_start() {
+	reset_runner_logs();
+	FakeService a('a', 1), broken('b', 1, 20, false), c('c', 1);
+	ServiceRunner runner(fake_clock);
+	runner.add(&a); runner.add(&broken); runner.add(&c);
+	TEST_ASSERT_EQUAL_size_t(2, runner.start_all(AppContext{}));
+	runner.poll_all();
+	TEST_ASSERT_EQUAL_STRING("ac", poll_log);
+	TEST_ASSERT_FALSE(runner.running(1));
+	TEST_ASSERT_EQUAL(ServiceState::Failed, runner.health(1).state);
+	TEST_ASSERT_EQUAL(ServiceState::Healthy, runner.health(0).state);
+	TEST_ASSERT_EQUAL(ServiceState::Failed, runner.health(99).state);
+}
+
+void test_runner_collects_telemetry_from_running_services_only() {
+	reset_runner_logs();
+	FakeService a('a', 1), broken('b', 1, 20, false), c('c', 1);
+	ServiceRunner runner(fake_clock);
+	runner.add(&a); runner.add(&broken); runner.add(&c);
+	runner.start_all(AppContext{});
+	NodeTelemetry report;
+	runner.collect(report);
+	TEST_ASSERT_EQUAL_UINT32(2, report.paths);
+	TEST_ASSERT_EQUAL_UINT8(0x01 | 0x04, report.if_up);        // a and c, not b
+}
+
+void test_runner_stops_in_reverse_order() {
+	reset_runner_logs();
+	FakeService a('a', 1), b('b', 1);
+	ServiceRunner runner(fake_clock);
+	runner.add(&a); runner.add(&b);
+	runner.start_all(AppContext{});
+	runner.stop_all();
+	TEST_ASSERT_EQUAL_INT(0, b.stopped_at);
+	TEST_ASSERT_EQUAL_INT(1, a.stopped_at);
+	TEST_ASSERT_FALSE(runner.running(0));
+}
+
+void test_runner_refuses_past_its_capacity() {
+	reset_runner_logs();
+	FakeService a('a', 0);
+	ServiceRunner runner(fake_clock);
+	for (int i = 0; i < SERVICE_RUNNER_CAPACITY; ++i) TEST_ASSERT_TRUE(runner.add(&a));
+	TEST_ASSERT_FALSE(runner.add(&a));
+	TEST_ASSERT_FALSE(runner.add(nullptr));
+	TEST_ASSERT_EQUAL_size_t(SERVICE_RUNNER_CAPACITY, runner.count());
+}
+
 int main() {
 	UNITY_BEGIN();
 	RUN_TEST(test_bootlog_that_fits_is_kept_whole);
@@ -430,5 +561,12 @@ int main() {
 	RUN_TEST(test_telemetry_decode_ignores_appended_bytes);
 	RUN_TEST(test_telemetry_round_trips_the_full_report);
 	RUN_TEST(test_telemetry_decode_refuses_what_it_cannot_read);
+	RUN_TEST(test_runner_polls_in_declared_order_with_the_hook_first);
+	RUN_TEST(test_runner_measures_each_poll_against_its_budget);
+	RUN_TEST(test_runner_timing_survives_the_clock_wrapping);
+	RUN_TEST(test_runner_leaves_out_a_service_that_did_not_start);
+	RUN_TEST(test_runner_collects_telemetry_from_running_services_only);
+	RUN_TEST(test_runner_stops_in_reverse_order);
+	RUN_TEST(test_runner_refuses_past_its_capacity);
 	return UNITY_END();
 }
