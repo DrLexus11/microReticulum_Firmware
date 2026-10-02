@@ -38,6 +38,8 @@
 
 #include "LoopServices.h"
 #include "LoopPhase.h"
+#include "TelemetryUplink.h"
+#include "TelemetryCodec.h"
 
 // Below these, the heap is short of what the mesh stack needs to keep working.
 // heap8/largest8, not "internal": see the [mem] line in heap_watch().
@@ -314,6 +316,171 @@ private:
   char _line[256] = {};
 };
 
+#ifdef HAS_RNS
+// ---- telemetry uplink (PR F step F4a) ---------------------------------------
+//
+// The board's health report, to the nearest gateway (TelemetryUplink.h). The
+// report is the sum of the node's status and every service's own account: the
+// node-level fields first, then ServiceRunner::collect() for what the services
+// own -- heap, PSRAM, BLE and LoRa state.
+
+static TelemetryGateways& telemetry_gateways() {
+  static TelemetryGateways gateways;
+  return gateways;
+}
+
+class TelemetryUplinkAnnounceHandler : public RNS::AnnounceHandler {
+public:
+  TelemetryUplinkAnnounceHandler() : RNS::AnnounceHandler(TELEMETRY_UPLINK_FILTER) {}
+  void received_announce(const RNS::Bytes& destination_hash,
+                         const RNS::Identity& announced_identity,
+                         const RNS::Bytes& app_data) override {
+    (void)announced_identity; (void)app_data;
+    if (telemetry_gateways().count((uint32_t)millis()) == 0) {
+      printf("[telemetry] gateway heard: <%s>\n", destination_hash.toHex().substr(0, 16).c_str());
+    }
+    telemetry_gateways().heard(destination_hash.data(), destination_hash.size(), (uint32_t)millis());
+  }
+};
+
+static uint8_t telemetry_reset_code() {
+#if defined(ESP32)
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return TELEMETRY_RESET_POWERON;
+    case ESP_RST_SW:       return TELEMETRY_RESET_SOFTWARE;
+    case ESP_RST_PANIC:    return TELEMETRY_RESET_PANIC;
+    case ESP_RST_TASK_WDT: return TELEMETRY_RESET_TASK_WDT;
+    case ESP_RST_INT_WDT:  return TELEMETRY_RESET_INT_WDT;
+    case ESP_RST_BROWNOUT: return TELEMETRY_RESET_BROWNOUT;
+    case ESP_RST_EXT:      return TELEMETRY_RESET_EXTERNAL;
+    case ESP_RST_UNKNOWN:  return TELEMETRY_RESET_UNKNOWN;
+    default:               return TELEMETRY_RESET_OTHER;
+  }
+#else
+  return TELEMETRY_RESET_UNKNOWN;
+#endif
+}
+
+// What no service owns: who this is, how long it has run, why it restarted,
+// which carriers it has, and its battery.
+static void telemetry_fill_node(NodeTelemetry& report) {
+  const NodeStatusView s = node_status();
+  const RNS::Bytes self = RNS::Transport::identity().hash();
+  if (self.size() >= 4) {
+    const uint8_t* h = self.data();
+    report.sender_id = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) |
+                       ((uint32_t)h[2] << 8) | (uint32_t)h[3];
+  }
+  report.uptime_s = s.uptime_s;
+  report.reset = telemetry_reset_code();
+  report.boots = s.boots;
+  report.crashes = s.crashes;
+  report.panics = s.panics;
+  if (s.lora_present)   report.if_present |= TELEMETRY_IF_LORA;
+  if (s.lora_active)    report.if_up      |= TELEMETRY_IF_LORA;
+  if (s.ble_present)    report.if_present |= TELEMETRY_IF_BLE;
+  if (s.ble_active)     report.if_up      |= TELEMETRY_IF_BLE;
+  if (s.wifi_present)   report.if_present |= TELEMETRY_IF_WIFI;
+  if (s.wifi_active)    report.if_up      |= TELEMETRY_IF_WIFI;
+  if (s.espnow_present) report.if_present |= TELEMETRY_IF_ESPNOW;
+  if (s.espnow_active)  report.if_up      |= TELEMETRY_IF_ESPNOW;
+  report.espnow_peers = s.espnow_peers;
+  report.paths = s.paths;
+  report.nodes = s.nodes;
+  report.relaying = s.relaying;
+  report.relay_expected = s.relay_expected;
+  report.time_current = s.time_current;
+  if (battery_installed && battery_ready) {
+    report.battery_known = true;
+    report.battery_mv = (uint16_t)(battery_voltage * 1000.0f);
+    report.battery_pct = (uint8_t)battery_percent;
+  }
+}
+
+class TelemetryUplinkService : public LoopService {
+public:
+  explicit TelemetryUplinkService(const ServiceRunner& runner)
+    : LoopService(LOOP_PHASE_TELEMETRY), _runner(runner), _schedule(0) {}
+
+  bool init(const AppContext& context) override {
+    _schedule = TelemetrySchedule(context.boot_ms);
+    static RNS::HAnnounceHandler handler(new TelemetryUplinkAnnounceHandler());
+    RNS::Transport::register_announce_handler(handler);
+    return true;
+  }
+
+  // One report a minute after boot, then every TELEMETRY_INTERVAL_MS. With no
+  // gateway reachable, ask for a path to the newest heard and retry sooner.
+  void poll(uint32_t now_ms) override {
+    if (!_schedule.due(now_ms)) return;
+    _attempted = true;
+    if (!reticulum || !RNS::Transport::identity()) { _schedule.unreachable(now_ms); return; }
+
+    const TelemetryGateways::Entry* best = telemetry_gateways().best(now_ms, [](const uint8_t* hash) -> uint8_t {
+      const RNS::Bytes h(hash, TELEMETRY_HASH_LEN);
+      if (!RNS::Transport::has_path(h)) return TELEMETRY_HOPS_UNKNOWN;
+      const uint8_t hops = RNS::Transport::hops_to(h);
+      return hops >= TELEMETRY_HOPS_UNKNOWN ? (uint8_t)(TELEMETRY_HOPS_UNKNOWN - 1) : hops;
+    });
+    if (best == nullptr) {
+      const TelemetryGateways::Entry* newest = telemetry_gateways().newest(now_ms);
+      if (newest != nullptr) RNS::Transport::request_path(RNS::Bytes(newest->hash, TELEMETRY_HASH_LEN));
+      _schedule.unreachable(now_ms);
+      return;
+    }
+    const RNS::Bytes gateway_hash(best->hash, TELEMETRY_HASH_LEN);
+    const RNS::Identity gateway_identity = RNS::Identity::recall(gateway_hash);
+    if (!gateway_identity) {
+      RNS::Transport::request_path(gateway_hash);
+      _schedule.unreachable(now_ms);
+      return;
+    }
+
+    NodeTelemetry report;
+    telemetry_fill_node(report);
+    _runner.collect(report);
+    uint8_t wire[TELEMETRY_WIRE_MAX_LEN];
+    const size_t len = telemetry_encode(report, wire, sizeof(wire));
+    if (len == 0) { _schedule.unreachable(now_ms); return; }
+
+    // A single packet, like a position report: a link would cost kilobytes of
+    // heap to deliver thirty bytes, and a health report needs no reply. SINGLE
+    // is already encrypted to the gateway's identity.
+    RNS::Destination gateway(gateway_identity, RNS::Type::Destination::OUT,
+                             RNS::Type::Destination::SINGLE,
+                             RNS::Type::Transport::APP_NAME, TELEMETRY_UPLINK_ASPECT);
+    RNS::Packet packet(gateway, RNS::Bytes(wire, len));
+    packet.send();
+    ++_sent;
+    if (!_schedule.ever_sent()) {
+      printf("[telemetry] first report to <%s>, %u bytes\n",
+             gateway_hash.toHex().substr(0, 16).c_str(), (unsigned)len);
+    }
+    _schedule.sent(now_ms);
+  }
+
+  Health health() const override {
+    const uint32_t now = (uint32_t)millis();
+    if (!_attempted) return Health{ServiceState::Starting, "first report pending"};
+    if (telemetry_gateways().count(now) == 0) return Health{ServiceState::Degraded, "no gateway heard"};
+    if (!_schedule.ever_sent()) return Health{ServiceState::Degraded, "no path to a gateway"};
+    const uint32_t since = now - _schedule.last_sent();
+    if (since > 2u * TELEMETRY_INTERVAL_MS) {
+      snprintf(_reason, sizeof(_reason), "last report %lus ago", (unsigned long)(since / 1000));
+      return Health{ServiceState::Degraded, _reason};
+    }
+    return Health{ServiceState::Healthy, ""};
+  }
+
+private:
+  const ServiceRunner& _runner;
+  TelemetrySchedule _schedule;
+  bool _attempted = false;
+  uint32_t _sent = 0;
+  mutable char _reason[32] = {};
+};
+#endif
+
 static uint32_t loop_services_clock() { return (uint32_t)millis(); }
 
 // The breadcrumb, before every poll: if this poll never returns, the TASK_WDT
@@ -373,6 +540,10 @@ void loop_services_start() {
 #endif
   static ServiceReportService report(runner);
   loop_services_add(runner, &report);
+#ifdef HAS_RNS
+  static TelemetryUplinkService telemetry(runner);
+  loop_services_add(runner, &telemetry);
+#endif
 
   AppContext context;
   context.boot_ms = (uint32_t)millis();
