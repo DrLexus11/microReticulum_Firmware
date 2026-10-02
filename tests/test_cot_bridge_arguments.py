@@ -150,7 +150,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(cot_bridge.parse_site("-33.5,-70.25"), (-335000000, -702500000))
 
     def test_nonsense_is_refused_before_anything_starts(self):
-        for value in ("91,0", "0,181", "40.9", "a,b", "0,0"):
+        for value in ("91,0", "0,181", "40.9", "a,b", "0,0", ""):
             with self.subTest(value=value):
                 result = run(["--site", value])
                 self.assertNotEqual(0, result.returncode)
@@ -169,3 +169,13 @@ class SiteTests(unittest.TestCase):
         # And no more often than the interval.
         self.assertFalse(due(1000.0, None, 1000.0 - interval + 1))
         self.assertTrue(due(1000.0, None, 1000.0 - interval))
+
+    def test_a_fresh_bridge_waits_a_whole_interval(self):
+        """The bridge passes its start time as ATAK's last report, so the site
+        does not speak while ATAK is still connecting."""
+        import cot_bridge
+        due = cot_bridge.site_report_due
+        interval = cot_bridge.SITE_REPORT_INTERVAL_S
+        started = 1000.0
+        self.assertFalse(due(started + 15, started, None))
+        self.assertTrue(due(started + interval, started, None))

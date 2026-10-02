@@ -372,6 +372,11 @@ class CotBridge:
         # (lat_e7, lon_e7) of a fixed site, or None; see SITE_REPORT_INTERVAL_S.
         self.site = site
         self._site_last_report = None
+        # Held while deciding on and sending a position for this node, by both
+        # the ATAK path and the site loop, so a live ATAK report always wins:
+        # without it the site could pass its check, ATAK report, and the site's
+        # frame land second and overwrite the live position.
+        self._own_position_lock = threading.Lock()
         self.bind_host = bind_host
         self.announce_interval = announce_interval
         self.team = team
@@ -712,22 +717,28 @@ class CotBridge:
     def _site_forever(self):
         """Report the site's position while ATAK is not reporting one."""
         said = False
+        # The bridge starting counts as ATAK last heard: a just-started ATAK is
+        # still connecting, and the site waits a whole interval for it like for
+        # any other silence.
+        started = time.time()
         while True:
             time.sleep(15)
-            now = time.time()
-            if not site_report_due(now, self.__dict__.get("_atak_last_report"),
-                                   self._site_last_report):
-                continue
-            fix = position_codec.PositionFix(
-                lat_e7=self.site[0], lon_e7=self.site[1], fix_unix_s=int(now),
-                accuracy_m=SITE_ACCURACY_M, sender_id=self.sender_id,
-                interval_min=SITE_REPORT_INTERVAL_S // 60)
-            try:
-                self.positions_sent += self._fan_out(position_codec.encode(fix))
-            except Exception as error:                      # noqa: BLE001
-                print("[bridge] site report failed: %s" % error, flush=True)
-                continue
-            self._site_last_report = now
+            with self._own_position_lock:
+                now = time.time()
+                last_atak = self.__dict__.get("_atak_last_report")
+                if not site_report_due(now, last_atak if last_atak is not None else started,
+                                       self._site_last_report):
+                    continue
+                fix = position_codec.PositionFix(
+                    lat_e7=self.site[0], lon_e7=self.site[1], fix_unix_s=int(now),
+                    accuracy_m=SITE_ACCURACY_M, sender_id=self.sender_id,
+                    interval_min=SITE_REPORT_INTERVAL_S // 60)
+                try:
+                    self.positions_sent += self._fan_out(position_codec.encode(fix))
+                except Exception as error:                  # noqa: BLE001
+                    print("[bridge] site report failed: %s" % error, flush=True)
+                    continue
+                self._site_last_report = now
             if not said:
                 print("[bridge] ATAK not reporting a position: reporting the site "
                       "(%.5f, %.5f) every %d min" % (self.site[0] / 1e7, self.site[1] / 1e7,
@@ -1538,15 +1549,16 @@ class CotBridge:
             return False
         # ATAK reporting at all is what the cadence measures, whether or not
         # this report goes on the air.
-        now = time.time()
-        last = self.__dict__.get("_atak_last_report")
-        if last is not None:
-            self._atak_last_gap = now - last
-        self._atak_last_report = now
-        if not self.position_gate.allows(fix, now):
-            return True
-        fix.interval_min = cot_position.stated_interval_minutes(self.__dict__.get("_atak_last_gap", 0))
-        self.positions_sent += self._fan_out(position_codec.encode(fix))
+        with self.__dict__.setdefault("_own_position_lock", threading.Lock()):
+            now = time.time()
+            last = self.__dict__.get("_atak_last_report")
+            if last is not None:
+                self._atak_last_gap = now - last
+            self._atak_last_report = now
+            if not self.position_gate.allows(fix, now):
+                return True
+            fix.interval_min = cot_position.stated_interval_minutes(self.__dict__.get("_atak_last_gap", 0))
+            self.positions_sent += self._fan_out(position_codec.encode(fix))
         return True
 
     def _chat_from_atak(self, xml):
@@ -2323,7 +2335,7 @@ def main():
     bind_host = checked_bind_host(args.bind)
 
     site = None
-    if args.site:
+    if args.site is not None:      # '' from an unset variable is refused, not ignored
         try:
             site = parse_site(args.site)
         except ValueError as error:
