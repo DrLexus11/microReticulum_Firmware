@@ -1828,7 +1828,11 @@ reads what it produces. Each step is its own pull request.
    same order (`LoopServicesImpl.h`), the TASK_WDT breadcrumb set by the
    runner's hook, a `[svc]` line beside `[mem]` and a `services` category on
    `/page/device.mu`. The radio I/O block, serial, peripherals and memory
-   handling stay in `loop()` until R5.
+   handling stay in `loop()` until R5. **Open:** `reticulum.loop` is not
+   bounded -- one call processes every waiting inbound packet; 3086 ms at
+   startup on Rev 2 -- so the TASK_WDT exposure F3b measures is unchanged.
+   Bounding it is library work (a per-call packet or time budget in
+   `Transport`), scheduled with R5.
 4. **F4 -- the board emitter and the gateway.** Boards send the report at a
    budgeted interval (`position_budget.py`); a node with an uplink announces a
    telemetry-uplink destination and publishes to MQTT. The **backend

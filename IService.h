@@ -38,6 +38,10 @@ enum class ServiceState : uint8_t {
   Degraded = 2,   // working, short of what it should be doing
   Failed   = 3,   // not working; the application may restart it
   Disabled = 4,   // off by configuration, not by fault
+  // Running, with nothing yet that shows whether it works: not a claim of
+  // health, and not a fault. A wrapped phase with no measure of its own says
+  // this until it gains one (F3b).
+  Unmeasured = 5,
 };
 
 inline const char* service_state_name(ServiceState state) {
@@ -47,6 +51,7 @@ inline const char* service_state_name(ServiceState state) {
     case ServiceState::Degraded: return "degraded";
     case ServiceState::Failed:   return "failed";
     case ServiceState::Disabled: return "disabled";
+    case ServiceState::Unmeasured: return "unmeasured";
   }
   return "unknown";
 }

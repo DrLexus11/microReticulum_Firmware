@@ -25,8 +25,16 @@
 // services is R5 (the application layer), one service at a time.
 //
 // Health comes from something measured, never from a flag the service set
-// (IService.h). A service with nothing to measure yet says "unmeasured" rather
+// (IService.h). A service with nothing to measure yet reports Unmeasured rather
 // than claiming to be healthy: the runner's timing still covers it.
+//
+// Budgets. The default is 20 ms. A service whose slow path is one announce --
+// one Ed25519 signature and a packet, measured at 230-318 ms on Rev 2 --
+// declares ANNOUNCE_BUDGET_MS instead, so an overrun there means more than the
+// signature it cannot avoid. reticulum.loop keeps the default on purpose: one
+// call processes however many inbound packets are waiting, so it is not bounded
+// at all today, and its overruns are the measurement of that. Bounding it is
+// library work, not this file's.
 
 #include "LoopServices.h"
 #include "LoopPhase.h"
@@ -40,6 +48,9 @@
 #define SERVICE_LARGEST8_LOW   (8u * 1024u)
 #endif
 // An exception out of reticulum.loop() within this window marks it degraded.
+#ifndef ANNOUNCE_BUDGET_MS
+#define ANNOUNCE_BUDGET_MS 500u
+#endif
 #ifndef SERVICE_RNS_ERROR_WINDOW_MS
 #define SERVICE_RNS_ERROR_WINDOW_MS 60000u
 #endif
@@ -54,7 +65,7 @@ public:
   const char* name() const override { return loop_phase_name(_phase); }
   bool init(const AppContext&) override { return true; }
   bool start() override { return true; }
-  Health health() const override { return Health{ServiceState::Healthy, "unmeasured"}; }
+  Health health() const override { return Health{ServiceState::Unmeasured, ""}; }
   void telemetry(NodeTelemetry&) const override {}
   void stop() override {}
 private:
@@ -89,6 +100,7 @@ class NomadAnnounceService : public LoopService {
 public:
   NomadAnnounceService() : LoopService(LOOP_PHASE_NOMAD_ANN) {}
   void poll(uint32_t) override { nomadnet_announce_watch(); }
+  uint32_t budget_ms() const override { return ANNOUNCE_BUDGET_MS; }
   Health health() const override {
     if (!nomadnet_enabled) return Health{ServiceState::Disabled, "nomadnet off"};
     return LoopService::health();
@@ -101,6 +113,7 @@ class RrcHubService : public LoopService {
 public:
   RrcHubService() : LoopService(LOOP_PHASE_RRC) {}
   void poll(uint32_t) override { rrc_hub_loop(); }
+  uint32_t budget_ms() const override { return ANNOUNCE_BUDGET_MS; }
 };
 #endif
 
@@ -149,6 +162,14 @@ public:
 #endif
 
 #if defined(HAS_RNS) && defined(LORA_TRANSPORT)
+// A build can carry LoRa transport on a board with no radio (the OZD ESP-NOW
+// fixture): startRadio() treats that as deliberate, and so do these.
+#if defined(NO_LORA_HARDWARE)
+static constexpr bool loop_services_lora_absent = true;
+#else
+static constexpr bool loop_services_lora_absent = false;
+#endif
+
 class RadioRxWatchService : public LoopService {
 public:
   RadioRxWatchService() : LoopService(LOOP_PHASE_RADIO_WD) {}
@@ -157,6 +178,7 @@ public:
   // on the whole of it. A quiet channel and a deaf receiver look the same from
   // here (see radio_rx_watchdog()); the reason says which was measured.
   Health health() const override {
+    if (loop_services_lora_absent) return Health{ServiceState::Disabled, "no LoRa hardware"};
     if (!radio_online) return Health{ServiceState::Degraded, "radio offline"};
   #if RADIO_RX_WATCHDOG_MS > 0
     if (!rx_tracking) return Health{ServiceState::Starting, "no rx yet"};
@@ -171,6 +193,7 @@ public:
   #endif
   }
   void telemetry(NodeTelemetry& report) const override {
+    if (loop_services_lora_absent) return;
     report.if_present |= TELEMETRY_IF_LORA;
     if (radio_online) report.if_up |= TELEMETRY_IF_LORA;
   }
@@ -182,6 +205,10 @@ class LoraConfigService : public LoopService {
 public:
   LoraConfigService() : LoopService(LOOP_PHASE_LORA_CFG) {}
   void poll(uint32_t) override { lora_config_consistency_watch(); }
+  Health health() const override {
+    if (loop_services_lora_absent) return Health{ServiceState::Disabled, "no LoRa hardware"};
+    return LoopService::health();
+  }
 };
 
 class RadioCommitService : public LoopService {
@@ -190,6 +217,7 @@ public:
   void poll(uint32_t) override { radio_commit_confirm_watch(); }
   // A PHY change waiting for its first packet: working, not yet proven.
   Health health() const override {
+    if (loop_services_lora_absent) return Health{ServiceState::Disabled, "no LoRa hardware"};
     if (rb_armed) return Health{ServiceState::Degraded, "config unconfirmed"};
     return Health{ServiceState::Healthy, ""};
   }
@@ -200,6 +228,7 @@ class LxmfAnnounceService : public LoopService {
 public:
   LxmfAnnounceService() : LoopService(LOOP_PHASE_LXMF_ANN) {}
   void poll(uint32_t) override { lxmf_propagation_announce_watch(); }
+  uint32_t budget_ms() const override { return ANNOUNCE_BUDGET_MS; }
 };
 
 class LxmfSyncService : public LoopService {
@@ -246,9 +275,9 @@ private:
 #endif
 
 // Reports on the others: one line per HEAP_REPORT_INTERVAL_MS, beside [mem], so
-// a soak log shows a service going wrong without anyone asking. Healthy and
-// unmeasured services are counted, not listed; anything else is named with its
-// reason. Registered last, so its own poll is measured like the rest.
+// a soak log shows a service going wrong without anyone asking. Unmeasured
+// services are counted, healthy ones are not listed; anything else is named
+// with its state and reason. Registered last, so its own poll is measured like the rest.
 class ServiceReportService : public LoopService {
 public:
   explicit ServiceReportService(const ServiceRunner& runner)
@@ -256,22 +285,23 @@ public:
   void poll(uint32_t now_ms) override {
     if (_last != 0 && now_ms - _last < HEAP_REPORT_INTERVAL_MS) return;
     _last = now_ms == 0 ? 1 : now_ms;
-    size_t running = 0, slowest = 0;
+    size_t running = 0, slowest = 0, unmeasured = 0;
     uint32_t overruns = 0, slowest_ms = 0;
     for (size_t i = 0; i < _runner.count(); ++i) {
       if (_runner.running(i)) ++running;
+      if (_runner.health(i).state == ServiceState::Unmeasured) ++unmeasured;
       const ServiceTiming* t = _runner.timing(i);
       if (t == nullptr) continue;
       overruns += t->overruns;
       if (t->worst_ms > slowest_ms) { slowest_ms = t->worst_ms; slowest = i; }
     }
     // Built whole and printed once, so other output cannot split the line.
-    size_t at = (size_t)snprintf(_line, sizeof(_line), "[svc] running=%u/%u overruns=%lu slowest=%s:%lums",
-        (unsigned)running, (unsigned)_runner.count(), (unsigned long)overruns,
+    size_t at = (size_t)snprintf(_line, sizeof(_line), "[svc] running=%u/%u unmeasured=%u overruns=%lu slowest=%s:%lums",
+        (unsigned)running, (unsigned)_runner.count(), (unsigned)unmeasured, (unsigned long)overruns,
         _runner.service(slowest)->name(), (unsigned long)slowest_ms);
     for (size_t i = 0; i < _runner.count() && at < sizeof(_line); ++i) {
       const Health h = _runner.health(i);
-      if (h.state == ServiceState::Healthy) continue;
+      if (h.state == ServiceState::Healthy || h.state == ServiceState::Unmeasured) continue;
       at += (size_t)snprintf(_line + at, sizeof(_line) - at, " | %s %s%s%s",
           _runner.service(i)->name(), service_state_name(h.state),
           h.reason[0] ? ": " : "", h.reason);
