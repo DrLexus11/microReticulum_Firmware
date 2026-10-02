@@ -1635,8 +1635,9 @@ mid-test poisons every range and reconnection reading taken.
 2. **Rev 1's TASK_WDT** (CarriedIssues #1): eight in its bootlog before the
    2026-09-29 reflash. Its soak on the no-ESP-NOW build (running since
    2026-09-29) is the baseline arm; item 1 is the peer arm.
-3. **The in-service Rev 2 onto the fixed library** and the multi-peer build
-   (`impr-rad01-rev2-ble-peers`). It needs to be on the deck's USB.
+3. ~~The in-service Rev 2 onto the fixed library~~ -- moved to Outdoor Test 1's
+   preparation, 2026-10-02: operations, not something E2 has to prove. Flash
+   `impr-rad01-rev2-ble-peers` with a backup first, as Rev 1 was.
 4. ~~SX1262 over-current, before and after~~ -- **deferred 2026-10-01**
    (operator). No USB breakout or RF bench to measure supply current and RSSI
    properly. We follow upstream's 140 mA (`OCP_TUNED 0x38`, in since
@@ -1649,6 +1650,22 @@ trigger is found and fixed. The OZD was dropped from this gate 2026-10-01: on
 a board with no PSRAM it aborts when a traffic burst exhausts its ~26 KB of
 usable heap (CarriedIssues #1); it is re-evaluated after the ESP-IDF 5 /
 Arduino 3 upgrade, which allows trimming the Wi-Fi and NimBLE buffers.
+
+**Closed 2026-10-02.** Rev 1 ran 24.1 h -- 39.9 h by the close -- with a live
+ESP-NOW peer and no restart (its `boot` page polled every 30 min: same boot,
+crash and panic totals unchanged at 9/8). Against its history (eight TASK_WDT
+restarts after 0.9-93 h) and the 23 h no-ESP-NOW baseline, a live ESP-NOW
+peer does not trigger Rev 1's watchdog restarts on the current firmware. A
+message crossed the chain both ways at the start (2026-10-01 morning) and at
+the end (2026-10-01 evening). Moved out: the in-service Rev 2's reflash to
+the multi-peer build to Outdoor Test 1's preparation (operations, the build is
+ready); Rev 1's bootlog read, a confirmation of what its counters already show,
+to the next time it is on USB.
+
+The OZD, measured as a fixture: about one out-of-memory abort an hour under
+load with a phone attached (PANIC, never TASK_WDT), and it cannot host a link
+to itself in that state -- 48 of 50 deck-to-OZD links failed to establish --
+while relaying traffic through itself works. Re-evaluated after the IDF upgrade.
 
 **2026-10-01: a message each way through the chain; soak started.** A54 ->
 Nexus at 4 hops with the A54's BLE off, and the reply back -- each phone had

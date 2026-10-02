@@ -336,6 +336,17 @@ PSRAM. An abort reads PANIC with this backtrace, so it cannot be mistaken for
 the TASK_WDT the E2 soak is looking for. A memory budget pass on the OZD (Wi-Fi
 driver buffers, NimBLE msys) is possible and not scheduled.
 
+### Rev 1 with a live ESP-NOW peer, 2026-10-01/02: no restart in 39.9 h
+
+PR E2's soak. Rev 1 on `impr-rad01-rev1-espnow` (LoRa + ESP-NOW), the OZD
+pinned to it as its ESP-NOW parent, both carrying the chain's traffic. Rev 1's
+`boot` page over the mesh, every 30 min: one boot from 2026-09-30 18:02 to
+past 39.9 h, crash and panic totals unchanged (9/8, lifetime). With the 23 h
+no-ESP-NOW baseline before it, a live ESP-NOW peer is not Rev 1's watchdog
+trigger on the current firmware. Its old TASK_WDT restarts (0.9-93 h) predate
+the library's link watchdog and lock fixes; whether those removed the cause or
+only the conditions is not proven.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
