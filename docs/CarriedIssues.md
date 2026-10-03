@@ -378,6 +378,31 @@ server still declares no bitrate, on purpose: declared bitrates are guesses
 **Next:** the soak restarts on the fixed build. The link table should stay
 level overnight and the heap should stop falling.
 
+### Found, 2026-10-03: a panic when a held announce was reinserted -- fixed
+
+Thirty minutes into the restarted soak (09:31), the spare panicked and
+restarted itself. The decoded backtrace: `std::_Rb_tree_increment`, while
+iterating `_announce_table` in `Transport::jobs()` (Transport.cpp:616). The
+last line before the panic was "Reinserting held announce into table".
+
+**Cause:** inside the loop over the announce table, a held announce (one
+stashed while a path request was served) was put back by erasing and
+reinserting the entry being iterated, followed by a cull of the table. The
+loop's next step started from a freed node. Python assigns the value in place
+and leaves the keys alone; `AnnounceEntry`'s const members rule that out in
+C++.
+
+**Fixed** in the library (DrLexus11/microReticulum#10, pinned at `17701cd`):
+the reinsertions are applied after the loop, with one cull. No host test: the
+path needs an announce and a path request for the same destination inside the
+retransmission window, which the suites have no fixture for. The soak on the
+spare is the proof.
+
+**Noticed, not changed:** where an announce is held for a path response, the
+new entry is `insert`ed, which never overwrites in a `std::map`. Python's
+assignment does, so the path response may not replace the pending announce.
+That gets its own PR.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
