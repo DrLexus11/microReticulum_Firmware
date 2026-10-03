@@ -38,24 +38,32 @@ class OwnPositionTests(unittest.TestCase):
 
     def test_a_report_holds_for_twice_its_stated_cadence(self):
         own = OwnPosition()
-        own.record(b"x", interval_min=3, now=0)
+        own.record(b"x", interval_min=3, fix_s=0, now=0)
         self.assertEqual(b"x", own.current(360))
         self.assertIsNone(own.current(360.001))
 
     def test_an_unstated_cadence_holds_for_twice_the_default(self):
         own = OwnPosition()
-        own.record(b"x", interval_min=0, now=0)
+        own.record(b"x", interval_min=0, fix_s=0, now=0)
         self.assertEqual(b"x", own.current(2 * cot_position.DEFAULT_INTERVAL_SECONDS))
         self.assertIsNone(own.current(2 * cot_position.DEFAULT_INTERVAL_SECONDS + 0.001))
 
-    def test_each_member_is_answered_at_most_once_per_window(self):
-        own = OwnPosition(answer_every_s=600)
-        own.record(b"x", interval_min=10, now=0)
-        self.assertEqual(b"x", own.answer_to("a", 0))
-        self.assertIsNone(own.answer_to("a", 599))
-        self.assertEqual(b"x", own.answer_to("b", 1))
-        self.assertEqual(b"x", own.answer_to("a", 600))
+    def test_an_older_fix_finishing_later_does_not_replace_a_newer_one(self):
+        own = OwnPosition()
+        own.record(b"new", interval_min=1, fix_s=2, now=2)
+        own.record(b"old", interval_min=1, fix_s=1, now=2.1)
+        self.assertEqual(b"new", own.current(2.2))
 
+    def test_each_member_is_answered_once_per_window_counted_only_once_sent(self):
+        own = OwnPosition(answer_every_s=600)
+        own.record(b"x", interval_min=10, fix_s=0, now=0)
+        self.assertEqual(b"x", own.offer_for("a", 0))
+        # The send failed: nothing was counted, so the next announce is answered.
+        self.assertEqual(b"x", own.offer_for("a", 1))
+        own.answered("a", 1)
+        self.assertIsNone(own.offer_for("a", 600))
+        self.assertEqual(b"x", own.offer_for("b", 2))
+        self.assertEqual(b"x", own.offer_for("a", 601))
 
 if __name__ == "__main__":
     unittest.main()

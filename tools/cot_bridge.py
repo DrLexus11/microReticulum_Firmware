@@ -231,7 +231,8 @@ class OwnPosition:
     members announce on their own cadence, and answering every announce on LoRa
     would grow with the square of the team. Only while the report holds, twice
     its stated cadence, because a receiver draws what it is given as current.
-    The Python half of Columba's OwnPosition.
+    An answer counts only once it has been sent. The Python half of Columba's
+    OwnPosition.
     """
 
     def __init__(self, answer_every_s=OWN_POSITION_ANSWER_EVERY_SECONDS):
@@ -240,31 +241,40 @@ class OwnPosition:
         self._answered = collections.OrderedDict()
         self._lock = threading.Lock()
 
-    def record(self, frame, interval_min, now):
+    def record(self, frame, interval_min, fix_s, now):
+        """A report that went out. Reports leave from ATAK's path and the site
+        loop on different threads: an older fix never replaces a newer one."""
         cadence_s = interval_min * 60 if interval_min > 0 else cot_position.DEFAULT_INTERVAL_SECONDS
         with self._lock:
-            self._last = (frame, now, 2 * cadence_s)
+            if self._last is not None and fix_s < self._last[1]:
+                return
+            self._last = (frame, fix_s, now, 2 * cadence_s)
+
+    def _holding(self, now):
+        if self._last is None:
+            return None
+        frame, _, at, holds_s = self._last
+        return frame if now - at <= holds_s else None
 
     def current(self, now):
         with self._lock:
-            if self._last is None:
-                return None
-            frame, at, holds_s = self._last
-            return frame if now - at <= holds_s else None
+            return self._holding(now)
 
-    def answer_to(self, member, now):
-        frame = self.current(now)
-        if frame is None:
-            return None
+    def offer_for(self, member, now):
+        """The report to send `member`, or None. Counts nothing: see answered()."""
         with self._lock:
             before = self._answered.get(member)
             if before is not None and now - before < self.answer_every_s:
                 return None
+            return self._holding(now)
+
+    def answered(self, member, now):
+        """`member` was sent the report: its allowance starts now."""
+        with self._lock:
             self._answered.pop(member, None)
             self._answered[member] = now
             while len(self._answered) > LAST_POSITION_MAX_PEERS:
                 self._answered.popitem(last=False)
-        return frame
 
 
 def site_report_due(now, atak_last_report, site_last_report, interval_s=SITE_REPORT_INTERVAL_S):
@@ -764,10 +774,13 @@ class CotBridge:
                 print("[bridge] greeting announce failed: %s" % error, flush=True)
         # And where we are, to that member alone, limited per member rather than
         # with the greeting (OwnPosition).
-        frame = self._own_position().answer_to(destination_hash.hex(), time.time())
+        member, answered_at = destination_hash.hex(), time.time()
+        frame = self._own_position().offer_for(member, answered_at)
         if frame is not None:
             try:
-                self._send_to(destination_hash, frame)
+                if self._send_to(destination_hash, frame):
+                    self._own_position().answered(member, answered_at)
+                    self.positions_sent += 1
             except Exception as error:                      # noqa: BLE001
                 print("[bridge] position answer failed: %s" % error, flush=True)
         # Somebody is back, so ask what was held while they were away.
@@ -831,7 +844,7 @@ class CotBridge:
                 except Exception as error:                  # noqa: BLE001
                     print("[bridge] site report failed: %s" % error, flush=True)
                     continue
-                self._own_position().record(frame, fix.interval_min, now)
+                self._own_position().record(frame, fix.interval_min, fix.fix_unix_s or now, now)
                 self._site_last_report = now
             if not said:
                 print("[bridge] ATAK not reporting a position: reporting the site "
@@ -1669,7 +1682,7 @@ class CotBridge:
             fix.interval_min = cot_position.stated_interval_minutes(self.__dict__.get("_atak_last_gap", 0))
             frame = position_codec.encode(fix)
             self.positions_sent += self._fan_out(frame)
-            self._own_position().record(frame, fix.interval_min, now)
+            self._own_position().record(frame, fix.interval_min, fix.fix_unix_s or now, now)
         return True
 
     def _chat_from_atak(self, xml):
