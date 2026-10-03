@@ -2014,7 +2014,28 @@ quiet for 5 minutes, and printed nothing in five hours of a quiet ATAK. Why is
 not yet known; next step is a bridge run with `--capture` to see exactly what
 the deck's ATAK sends, then a test that reproduces it.
 
-**The fix, in both places that speak for ATAK:**
+**Measured 2026-10-03, and the fix that was built** (Columba #17, firmware
+#36). A bridge capture (`--capture`) of the deck's ATAK 5.8 with a manual
+location: it reports `how="h-e"` (human-entered), `geopointsrc="USER"`, every
+3 minutes, valid for 6 min 15 s. So a stationary ATAK with a manual location is
+not silent, and the site loop stayed quiet the day before because ATAK was
+reporting. The failure is on the receiving side: a restarted ATAK has forgotten
+every contact and waits up to a whole cadence for each peer. Two fixes, in
+Columba and in the bridge alike:
+
+- **On connect, ATAK gets every peer's last drawn position** (`LastPositions`),
+  replayed after the held chat. Replayed as drawn, with its time and stale
+  stamps, so a fix gone stale arrives stale, not posing as current. It is held
+  an hour past stale. Nothing goes on the air.
+- **A member that announces gets our last position report**, to it alone,
+  while that report still holds (`OwnPosition`). At most one answer per member
+  every 10 minutes, because answering every announce on LoRa grows with the
+  square of the team. A phone that restarted, Columba included, sees us at once.
+
+A phone with no position at all (no GPS fix, no manual location) still cannot
+be an ATAK contact; give it a manual location.
+
+**The fix as first proposed, superseded by the above:**
 
 - **Columba and the bridge re-send ATAK's last own position on a cadence while
   ATAK is connected but quiet**, stating the interval, so receivers keep it
