@@ -266,7 +266,8 @@ public:
     return Health{ServiceState::Healthy, ""};
   }
   void telemetry(NodeTelemetry& report) const override {
-    report.paths = RNS::Transport::path_table().size();
+    // The live table; path_table() is the retired one, empty since microStore.
+    report.paths = RNS::Transport::new_path_table().size();
     report.nodes = RNS::Identity::known_destinations().size();
   }
 private:
