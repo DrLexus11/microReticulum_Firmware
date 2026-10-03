@@ -347,6 +347,37 @@ trigger on the current firmware. Its old TASK_WDT restarts (0.9-93 h) predate
 the library's link watchdog and lock fixes; whether those removed the cause or
 only the conditions is not proven.
 
+### Found, 2026-10-03: relayed links over TCP that were never culled -- fixed
+
+The spare (Rev 2, 20:6E), on F3b's soak from 2026-10-02 13:19: no restart in
+19 h, but internal heap fell from 86 KB to 51 KB between 21:00 and 08:40.
+`[tables]` named the table. `links` (Transport's link table, the links the
+board relays) held at 0-4 all day, then rose by one every ~8 minutes from 21:00:
+12 by 21:46, then 91-96 the next morning. The rate was the same before, during
+and after the deck's overnight suspend (21:55-08:00), so the sleeping lxmd was
+not the cause.
+
+**Cause:** `Transport::extra_link_proof_timeout()` divided by the receiving
+interface's bitrate. `TCPServerInterface` declares none (0, the library
+default), so a relayed link request arriving over TCP got a proof timeout of
++inf. If its proof never passed back through the board, the entry was never
+culled. Python divides too, but every Python interface declares a bitrate.
+
+- **Not identified:** the requester, about one every 8 minutes. The board does
+  not log link requests at soak level.
+- **The likely shape:** a phone reaching the deck's lxmd through the board while
+  the proof returns by another route.
+- **The fix does not depend on who it was.**
+
+**Fixed** in the library (DrLexus11/microReticulum#9, pinned at `676982d`).
+A zero bitrate now adds no extra proof time, as the library's other bitrate
+paths already treated it. A host test fails without the fix. The firmware's TCP
+server still declares no bitrate, on purpose: declared bitrates are guesses
+(CLAUDE.md, interface completeness), and nothing should key on one.
+
+**Next:** the soak restarts on the fixed build. The link table should stay
+level overnight and the heap should stop falling.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
