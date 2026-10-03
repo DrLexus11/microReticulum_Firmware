@@ -1832,12 +1832,23 @@ reads what it produces. Each step is its own pull request.
    bounded -- one call processes every waiting inbound packet; 3086 ms at
    startup on Rev 2 -- so the TASK_WDT exposure F3b measures is unchanged.
    Bounding it is library work (a per-call packet or time budget in
-   `Transport`), scheduled with R5.
+   `Transport`), scheduled with R5. **Soak (the merge gate, #34):** the first
+   run had no restart in 19 h, but it lost 35 KB of heap to a library leak:
+   relayed links over TCP were never culled (CarriedIssues #1, fixed in
+   microReticulum#9, pinned on F3b). Restarted 2026-10-03 09:01 on the
+   fixed build, together with F4a; #34 merges when it passes.
 4. **F4 -- the board emitter and the gateway.** Boards send the report at a
    budgeted interval (`position_budget.py`); a node with an uplink announces a
    telemetry-uplink destination and publishes to MQTT. The **backend
    repository** (Go, Prometheus, Grafana) is created here -- name and
-   visibility to be decided by the operator.
+   visibility to be decided by the operator. **F4a** (board emitter, branch
+   `feature/tak-f4a-telemetry-uplink`, on F3b): the first real report, from
+   the spare over Wi-Fi, reached the deck's gateway, MQTT and the backend's
+   `/metrics` on 2026-10-03. That report showed paths 0, read from the
+   retired path table; fixed, and paths now matches the board's `[tables]`
+   line. A board waits up to one gateway announce interval (10 min) after
+   boot before its first report. Proven on Wi-Fi/TCP only; LoRa, BLE and
+   HaLow are untested.
 5. **F5 -- device logs off-device**: the bounded spool, boot and crash records
    first, rate-limited on LoRa.
 6. **F6+ -- the plugin** in `reticulum-atak`. Its two blocking decisions are
