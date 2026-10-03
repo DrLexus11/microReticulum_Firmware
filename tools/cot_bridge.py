@@ -183,6 +183,100 @@ def parse_site(text):
     return int(round(lat * 1e7)), int(round(lon * 1e7))
 
 
+# How long past its stale time a peer's last position is still replayed, greyed,
+# to an ATAK that attaches; and how many peers are kept. See LastPositions.
+LAST_POSITION_HOLD_SECONDS = 60 * 60
+LAST_POSITION_MAX_PEERS = 256
+# At most one answer with our own position per member this often. See OwnPosition.
+OWN_POSITION_ANSWER_EVERY_SECONDS = 10 * 60
+
+
+class LastPositions:
+    """Each peer's latest position, as drawn, for an ATAK that attaches afterwards.
+
+    ATAK forgets every contact when it restarts, and a peer whose position does
+    not change may not report again for minutes, so it was on nobody's map until
+    someone moved its marker by hand (bench, 2026-10-02). Replayed exactly as
+    drawn, with the time and stale stamps it had then: a fix gone stale arrives
+    stale, never posing as current. Latest wins; nothing goes on the air. The
+    Python half of Columba's LastPositions.
+    """
+
+    def __init__(self, hold_s=LAST_POSITION_HOLD_SECONDS, max_peers=LAST_POSITION_MAX_PEERS):
+        self.hold_s = hold_s
+        self.max_peers = max_peers
+        self._latest = collections.OrderedDict()
+        self._lock = threading.Lock()
+
+    def remember(self, uid, payload, stale_at):
+        with self._lock:
+            self._latest.pop(uid, None)
+            self._latest[uid] = (payload, stale_at)
+            while len(self._latest) > self.max_peers:
+                self._latest.popitem(last=False)
+
+    def for_replay(self, now):
+        with self._lock:
+            for uid in [u for u, (_, stale_at) in self._latest.items() if now > stale_at + self.hold_s]:
+                del self._latest[uid]
+            return [payload for payload, _ in self._latest.values()]
+
+
+class OwnPosition:
+    """The last position report this node put on the air, while it still holds.
+
+    Sent to a member that has just announced -- a phone that restarted has
+    forgotten us, and a node that is not moving may not report for minutes --
+    to that member alone, at most once per OWN_POSITION_ANSWER_EVERY_SECONDS:
+    members announce on their own cadence, and answering every announce on LoRa
+    would grow with the square of the team. Only while the report holds, twice
+    its stated cadence, because a receiver draws what it is given as current.
+    An answer counts only once it has been sent. The Python half of Columba's
+    OwnPosition.
+    """
+
+    def __init__(self, answer_every_s=OWN_POSITION_ANSWER_EVERY_SECONDS):
+        self.answer_every_s = answer_every_s
+        self._last = None
+        self._answered = collections.OrderedDict()
+        self._lock = threading.Lock()
+
+    def record(self, frame, interval_min, fix_s, now):
+        """A report that went out. Reports leave from ATAK's path and the site
+        loop on different threads: an older fix never replaces a newer one."""
+        cadence_s = interval_min * 60 if interval_min > 0 else cot_position.DEFAULT_INTERVAL_SECONDS
+        with self._lock:
+            if self._last is not None and fix_s < self._last[1]:
+                return
+            self._last = (frame, fix_s, now, 2 * cadence_s)
+
+    def _holding(self, now):
+        if self._last is None:
+            return None
+        frame, _, at, holds_s = self._last
+        return frame if now - at <= holds_s else None
+
+    def current(self, now):
+        with self._lock:
+            return self._holding(now)
+
+    def offer_for(self, member, now):
+        """The report to send `member`, or None. Counts nothing: see answered()."""
+        with self._lock:
+            before = self._answered.get(member)
+            if before is not None and now - before < self.answer_every_s:
+                return None
+            return self._holding(now)
+
+    def answered(self, member, now):
+        """`member` was sent the report: its allowance starts now."""
+        with self._lock:
+            self._answered.pop(member, None)
+            self._answered[member] = now
+            while len(self._answered) > LAST_POSITION_MAX_PEERS:
+                self._answered.popitem(last=False)
+
+
 def site_report_due(now, atak_last_report, site_last_report, interval_s=SITE_REPORT_INTERVAL_S):
     """Whether the site should report for this node now.
 
@@ -678,6 +772,17 @@ class CotBridge:
                 self.announce(greeting=True)
             except Exception as error:                      # noqa: BLE001
                 print("[bridge] greeting announce failed: %s" % error, flush=True)
+        # And where we are, to that member alone, limited per member rather than
+        # with the greeting (OwnPosition).
+        member, answered_at = destination_hash.hex(), time.time()
+        frame = self._own_position().offer_for(member, answered_at)
+        if frame is not None:
+            try:
+                if self._send_to(destination_hash, frame):
+                    self._own_position().answered(member, answered_at)
+                    self.positions_sent += 1
+            except Exception as error:                      # noqa: BLE001
+                print("[bridge] position answer failed: %s" % error, flush=True)
         # Somebody is back, so ask what was held while they were away.
         #
         # Escalation only ever put messages *into* the store; nothing took them
@@ -733,11 +838,13 @@ class CotBridge:
                     lat_e7=self.site[0], lon_e7=self.site[1], fix_unix_s=int(now),
                     accuracy_m=SITE_ACCURACY_M, sender_id=self.sender_id,
                     interval_min=SITE_REPORT_INTERVAL_S // 60)
+                frame = position_codec.encode(fix)
                 try:
-                    self.positions_sent += self._fan_out(position_codec.encode(fix))
+                    self.positions_sent += self._fan_out(frame)
                 except Exception as error:                  # noqa: BLE001
                     print("[bridge] site report failed: %s" % error, flush=True)
                     continue
+                self._own_position().record(frame, fix.interval_min, fix.fix_unix_s or now, now)
                 self._site_last_report = now
             if not said:
                 print("[bridge] ATAK not reporting a position: reporting the site "
@@ -956,11 +1063,22 @@ class CotBridge:
             return True
         self._last_fix[fix.sender_id] = fix.fix_unix_s
         claims = self.registry.describe(sender) or {}
-        self._to_clients(cot_gateway.build_cot(
-            fix, tak_identity.uid_for(sender), claims.get("callsign", "UNKNOWN"),
-            position_stale_seconds(fix), team=self.team))
+        uid = tak_identity.uid_for(sender)
+        stale_s = position_stale_seconds(fix)
+        now = time.time()
+        payload = cot_gateway.build_cot(
+            fix, uid, claims.get("callsign", "UNKNOWN"), stale_s, team=self.team)
+        # Kept for an ATAK that attaches later (LastPositions).
+        self._kept_positions().remember(uid, payload, now + stale_s)
+        self._to_clients(payload)
         self.positions_received += 1
         return True
+
+    def _kept_positions(self):
+        return self.__dict__.setdefault("_last_positions", LastPositions())
+
+    def _own_position(self):
+        return self.__dict__.setdefault("_own_position_sent", OwnPosition())
 
     def _replay_to(self, client):
         """Hand a newly attached client what it missed.
@@ -974,10 +1092,14 @@ class CotBridge:
         with self._replay_lock:
             pending = [payload for stamp, payload in self._replay
                        if now - stamp <= REPLAY_MAX_AGE_SECONDS]
+        # Then where every peer was last drawn: a restarted ATAK has forgotten
+        # them all (LastPositions). As drawn, so an old one arrives stale.
+        positions = self._kept_positions().for_replay(now)
+        pending = pending + positions
         if not pending:
             return
-        print("[bridge] replaying %d held event(s) to a new client" % len(pending),
-              flush=True)
+        print("[bridge] replaying %d held event(s) and %d position(s) to a new client"
+              % (len(pending) - len(positions), len(positions)), flush=True)
         for payload in pending:
             try:
                 client.sendall(payload)
@@ -1558,7 +1680,9 @@ class CotBridge:
             if not self.position_gate.allows(fix, now):
                 return True
             fix.interval_min = cot_position.stated_interval_minutes(self.__dict__.get("_atak_last_gap", 0))
-            self.positions_sent += self._fan_out(position_codec.encode(fix))
+            frame = position_codec.encode(fix)
+            self.positions_sent += self._fan_out(frame)
+            self._own_position().record(frame, fix.interval_min, fix.fix_unix_s or now, now)
         return True
 
     def _chat_from_atak(self, xml):
