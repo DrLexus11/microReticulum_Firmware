@@ -1881,6 +1881,101 @@ reads what it produces. Each step is its own pull request.
    it deliberate (Columba `feature/main-process-anchor`). Hardening, not a
    live failure.
 
+## Direction after PR F -- agreed 2026-10-03
+
+A review of where the project stands, with the operator. **PR F's scope is
+frozen:** anything new goes to the list after Outdoor Test 1 unless it blocks
+the field test. The plugin side of PR F is closed. The plugin grows from what
+the field shows, not to have something to build.
+
+### Milestones
+
+1. **The firmware half of PR F closes:** the announce-table panic and the TCP
+   link-table leak fixed in the library (both found by soaks, 2026-10-03), a
+   clean 48 h soak, #34 (F3b) merged, then F4a. F4 closes with telemetry
+   reports over LoRa and BLE, not only Wi-Fi; more than one board reporting;
+   and the MQTT topic layout documented.
+2. **The plugin half closes:** Columba #16 (the MeshService leak), and a
+   stationary ATAK made visible after a restart (in Columba and the bridge,
+   see below).
+3. **Outdoor Test 1 is ready:** casings, the in-service Rev 2 reflashed, a
+   written test plan (range, disconnect and reconnect, a mission at the far
+   end), and the interface checks this plan requires.
+4. **Outdoor Test 1** runs, when the weather allows. It does not wait for
+   field configuration.
+5. **The private pivot** (below).
+
+**F5 (device logs off the board) leaves PR F** and joins the control-plane
+track: it rides the same uplink and the same command path.
+
+### After Outdoor Test 1: the tracks
+
+- **The node control plane, carrying R4 and R5.** One authenticated command
+  path into a node, built once, with three front-ends:
+  - **Field configuration:** from Columba first, over BLE (Columba already
+    talks to boards), then remotely, and later from the plugin. The
+    provisioning engine already exists (`docs/Provisioning.md`: typed
+    namespaces, staged commits, live or reboot-required fields, local and
+    remote transports with an allow-list). What is missing:
+    - a front-end in the apps;
+    - **radio changes with automatic rollback** (the board reverts unless it
+      hears a confirmation within N minutes; today the docs say never to
+      change radio settings remotely);
+    - **fleet-wide changes at a scheduled time** (all nodes switch plan at T,
+      using the fleet time sync, so the mesh does not split);
+    - the settings not yet exposed: carrier preference, propagation node
+      role, time authority.
+  - **Duplex MQTT for IoT:** commands from an MQTT topic to a gateway node,
+    carried over LXMF (store-and-forward reaches a node that is offline),
+    executed by the node, the reply back to MQTT.
+  - **F5:** device logs to the gateway.
+
+  **The architecture's acceptance test:** a sample client service (a sensor)
+  that reports through telemetry to MQTT and takes commands back, written
+  without touching the core. R6 (the core as a library, ESP-IDF 5, Linux)
+  follows, and is what Vox needs.
+
+  Note: Meshtastic uses protobuf messages ("AdminMessage") over BLE, serial
+  and TCP, not gRPC. gRPC needs HTTP/2, which does not fit BLE or a
+  microcontroller. Our provisioning codec is already the compact binary
+  equivalent. What to copy is the experience: the app talks to a board the
+  same way whether it is local or several hops away.
+- **LoRa discovery across channel plans:** one radio listens on one channel.
+  Once teams are split across frequency plans, nodes visit a fleet-wide
+  rendezvous channel at time-synced slots to announce which plan they are on.
+  Default settings stay as they are until then. Designed after field
+  configuration, because channel plans are what make it necessary.
+- **Owning the protocol:**
+  1. Fork and pin the Python RNS and LXMF that Columba runs, under DrLexus11
+     (today another author's fork).
+  2. Decide Columba's backend: the Python one is benched, Kotlin is
+     Columba's default and switches interfaces live.
+  3. Specialise the protocol through versioned extensions, with shared
+     fixtures across the C++, Kotlin and Python implementations. Keep base
+     wire compatibility where it costs nothing (NomadNet and rnstatus stay
+     useful for diagnosis); break it where it buys something measured, such
+     as airtime.
+- **One app for operators:** near term, Columba becomes a headless companion
+  (installed by device management, never opened; ATAK is the interface).
+  After Outdoor Test 1, a time-boxed spike of Reticulum hosted inside the
+  plugin on Columba's Kotlin stack. Its known costs: the mesh stops with ATAK;
+  every release goes through the TAK pipeline; BLE moves into ATAK's process;
+  a plugin crash takes ATAK down.
+- **Plugin features that earn their place**, each from another track: boards
+  on the map with health from telemetry; a team's channel plan changed from
+  ATAK (control plane); delivery state in GeoChat.
+
+### Measurable goals
+
+- Seven days unattended with no unexplained restart, and every node's
+  telemetry visible in Grafana.
+- Store-and-forward proven end to end with no manual trigger (PR C is only
+  partly proven).
+- Chat, position, files and telemetry each checked on LoRa, BLE (both kinds)
+  and Wi-Fi/IP, from hardware runs.
+- Further out: Vox on HaLow through the Linux build, then a multi-apartment
+  exercise with several responders.
+
 ## Online in ATAK means a fresh position -- decided 2026-10-02
 
 Raised on the bench: a member the mesh can see should be online in ATAK, with
