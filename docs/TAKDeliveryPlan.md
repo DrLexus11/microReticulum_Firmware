@@ -1849,7 +1849,10 @@ reads what it produces. Each step is its own pull request.
    caller allow-list, an "allow ATAK control" gate, the announce command),
    then the mesh panel -- peers, hops, carrier, command post reachability,
    locate on the map, open ATAK's GeoChat to a peer, announce -- and the
-   propagation node's status. After Outdoor Test 1: interface switching, the
+   propagation node's status. **Moved into PR F on 2026-10-03 (operator):**
+   the favourites map overlay, and the **Interfaces page** with switches, as
+   a diagnosis tool for the outdoor test (Columba mesh interface v2;
+   reticulum-atak `docs/ColumbaInterface.md`). After Outdoor Test 1: the
    propagation node pinned to the command post with fleet fallback, NomadNet
    pages then data feeds, delivery state and queues, cost before fetching,
    and team rooms over RRC. **Also, found 2026-10-02:** Columba's main
