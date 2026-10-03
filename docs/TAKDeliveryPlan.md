@@ -1847,8 +1847,15 @@ reads what it produces. Each step is its own pull request.
    `/metrics` on 2026-10-03. That report showed paths 0, read from the
    retired path table; fixed, and paths now matches the board's `[tables]`
    line. A board waits up to one gateway announce interval (10 min) after
-   boot before its first report. Proven on Wi-Fi/TCP only; LoRa, BLE and
-   HaLow are untested.
+   boot before its first report. **Over LoRa, proven 2026-10-03:** Rev 1
+   (80:B5) on F4a with its Wi-Fi switched off for the test sent a report
+   whose own `interfaces_up` was `["lora"]`; it reached the deck's gateway,
+   MQTT and the backend. Hop counts do not tell the carriers apart here (the
+   deck's daemons are chained), so the report's interface set is the evidence.
+   **BLE is deferred**: the OZD stays a BLE and ESP-NOW node (operator,
+   2026-10-03), not a full tactical node, so it does not carry the telemetry
+   test; a Rev 2 reporting through a phone over BLE does, after the spare's
+   soak. HaLow is untested.
 5. **F5 -- device logs off-device**: the bounded spool, boot and crash records
    first, rate-limited on LoRa.
 6. **F6+ -- the plugin** in `reticulum-atak`. Its two blocking decisions are
