@@ -1863,7 +1863,14 @@ reads what it produces. Each step is its own pull request.
    propagation node's status. **Moved into PR F on 2026-10-03 (operator):**
    the favourites map overlay, and the **Interfaces page** with switches, as
    a diagnosis tool for the outdoor test (Columba mesh interface v2;
-   reticulum-atak `docs/ColumbaInterface.md`). After Outdoor Test 1: the
+   reticulum-atak `docs/ColumbaInterface.md`). **Merged 2026-10-03:**
+   reticulum-atak #9 (panel v2, overlay) and #10 (Interfaces page), Columba
+   #14 (interfaces capability) and #15 (Columba's CI green again: its gates
+   had failed on every run since our first PR, so its tests never ran).
+   Proven on the Nexus (developer ATAK) and on Lexus (store ATAK 5.6.0 via
+   the pipeline). The overlay's pagination and a small announce button come
+   later. Open: Columba #16 (a leak of MeshService through binders). After
+   Outdoor Test 1: the
    propagation node pinned to the command post with fleet fallback, NomadNet
    pages then data feeds, delivery state and queues, cost before fetching,
    and team rooms over RRC. **Also, found 2026-10-02:** Columba's main
