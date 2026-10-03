@@ -117,6 +117,34 @@
    }
   },
   {
+   "name": "valid_with_psram_and_battery",
+   "hex": "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864",
+   "telemetry": {
+    "sender_id": 4275878552,
+    "uptime_s": 143512,
+    "reset": 1,
+    "boots": 1,
+    "crashes": 65535,
+    "panics": 0,
+    "heap_bytes": 242688,
+    "largest_bytes": 232448,
+    "psram_known": true,
+    "psram_bytes": 8229888,
+    "if_present": 13,
+    "if_up": 13,
+    "ble_peers": 255,
+    "espnow_peers": 2,
+    "paths": 65535,
+    "nodes": 12,
+    "relaying": true,
+    "relay_expected": true,
+    "time_current": true,
+    "battery_known": true,
+    "battery_mv": 3912,
+    "battery_pct": 100
+   }
+  },
+  {
    "name": "truncated_before_battery",
    "hex": "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f",
    "telemetry": null

@@ -1832,12 +1832,30 @@ reads what it produces. Each step is its own pull request.
    bounded -- one call processes every waiting inbound packet; 3086 ms at
    startup on Rev 2 -- so the TASK_WDT exposure F3b measures is unchanged.
    Bounding it is library work (a per-call packet or time budget in
-   `Transport`), scheduled with R5.
+   `Transport`), scheduled with R5. **Soak (the merge gate, #34):** the first
+   run had no restart in 19 h, but it lost 35 KB of heap to a library leak:
+   relayed links over TCP were never culled (CarriedIssues #1, fixed in
+   microReticulum#9, pinned on F3b). Restarted 2026-10-03 09:01 on the
+   fixed build, together with F4a; #34 merges when it passes.
 4. **F4 -- the board emitter and the gateway.** Boards send the report at a
    budgeted interval (`position_budget.py`); a node with an uplink announces a
    telemetry-uplink destination and publishes to MQTT. The **backend
    repository** (Go, Prometheus, Grafana) is created here -- name and
-   visibility to be decided by the operator.
+   visibility to be decided by the operator. **F4a** (board emitter, branch
+   `feature/tak-f4a-telemetry-uplink`, on F3b): the first real report, from
+   the spare over Wi-Fi, reached the deck's gateway, MQTT and the backend's
+   `/metrics` on 2026-10-03. That report showed paths 0, read from the
+   retired path table; fixed, and paths now matches the board's `[tables]`
+   line. A board waits up to one gateway announce interval (10 min) after
+   boot before its first report. **Over LoRa, proven 2026-10-03:** Rev 1
+   (80:B5) on F4a with its Wi-Fi switched off for the test sent a report
+   whose own `interfaces_up` was `["lora"]`; it reached the deck's gateway,
+   MQTT and the backend. Hop counts do not tell the carriers apart here (the
+   deck's daemons are chained), so the report's interface set is the evidence.
+   **BLE is deferred**: the OZD stays a BLE and ESP-NOW node (operator,
+   2026-10-03), not a full tactical node, so it does not carry the telemetry
+   test; a Rev 2 reporting through a phone over BLE does, after the spare's
+   soak. HaLow is untested.
 5. **F5 -- device logs off-device**: the bounded spool, boot and crash records
    first, rate-limited on LoRa.
 6. **F6+ -- the plugin** in `reticulum-atak`. Its two blocking decisions are
@@ -1849,10 +1867,121 @@ reads what it produces. Each step is its own pull request.
    caller allow-list, an "allow ATAK control" gate, the announce command),
    then the mesh panel -- peers, hops, carrier, command post reachability,
    locate on the map, open ATAK's GeoChat to a peer, announce -- and the
-   propagation node's status. After Outdoor Test 1: interface switching, the
+   propagation node's status. **Moved into PR F on 2026-10-03 (operator):**
+   the favourites map overlay, and the **Interfaces page** with switches, as
+   a diagnosis tool for the outdoor test (Columba mesh interface v2;
+   reticulum-atak `docs/ColumbaInterface.md`). **Merged 2026-10-03:**
+   reticulum-atak #9 (panel v2, overlay) and #10 (Interfaces page), Columba
+   #14 (interfaces capability) and #15 (Columba's CI green again: its gates
+   had failed on every run since our first PR, so its tests never ran).
+   Proven on the Nexus (developer ATAK) and on Lexus (store ATAK 5.6.0 via
+   the pipeline). The overlay's pagination and a small announce button come
+   later. Open: Columba #16 (a leak of MeshService through binders). After
+   Outdoor Test 1: the
    propagation node pinned to the command post with fleet fallback, NomadNet
    pages then data feeds, delivery state and queues, cost before fetching,
-   and team rooms over RRC.
+   and team rooms over RRC. **Also, found 2026-10-02:** Columba's main
+   process -- the TAK endpoint, the mesh service -- has no foreground service
+   of its own (only `:reticulum` does). It is protected today by accident:
+   `:reticulum` binds Room's `MultiInstanceInvalidationService`, which lives
+   there. An anchor service bound from `:reticulum` with `BIND_IMPORTANT` makes
+   it deliberate (Columba `feature/main-process-anchor`). Hardening, not a
+   live failure.
+
+## Direction after PR F -- agreed 2026-10-03
+
+A review of where the project stands, with the operator. **PR F's scope is
+frozen:** anything new goes to the list after Outdoor Test 1 unless it blocks
+the field test. The plugin side of PR F is closed. The plugin grows from what
+the field shows, not to have something to build.
+
+### Milestones
+
+1. **The firmware half of PR F closes:** the announce-table panic and the TCP
+   link-table leak fixed in the library (both found by soaks, 2026-10-03), a
+   clean 48 h soak, #34 (F3b) merged, then F4a. F4 closes with telemetry
+   reports over LoRa and BLE, not only Wi-Fi; more than one board reporting;
+   and the MQTT topic layout documented.
+2. **The plugin half closes:** Columba #16 (the MeshService leak), and a
+   stationary ATAK made visible after a restart (in Columba and the bridge,
+   see below).
+3. **Outdoor Test 1 is ready:** casings, the in-service Rev 2 reflashed, a
+   written test plan (range, disconnect and reconnect, a mission at the far
+   end), and the interface checks this plan requires.
+4. **Outdoor Test 1** runs, when the weather allows. It does not wait for
+   field configuration.
+5. **The private pivot** (below).
+
+**F5 (device logs off the board) leaves PR F** and joins the control-plane
+track: it rides the same uplink and the same command path.
+
+### After Outdoor Test 1: the tracks
+
+- **The node control plane, carrying R4 and R5.** One authenticated command
+  path into a node, built once, with three front-ends:
+  - **Field configuration:** from Columba first, over BLE (Columba already
+    talks to boards), then remotely, and later from the plugin. The
+    provisioning engine already exists (`docs/Provisioning.md`: typed
+    namespaces, staged commits, live or reboot-required fields, local and
+    remote transports with an allow-list). What is missing:
+    - a front-end in the apps;
+    - **radio changes with automatic rollback** (the board reverts unless it
+      hears a confirmation within N minutes; today the docs say never to
+      change radio settings remotely);
+    - **fleet-wide changes at a scheduled time** (all nodes switch plan at T,
+      using the fleet time sync, so the mesh does not split);
+    - the settings not yet exposed: carrier preference, propagation node
+      role, time authority.
+  - **Duplex MQTT for IoT:** commands from an MQTT topic to a gateway node,
+    carried over LXMF (store-and-forward reaches a node that is offline),
+    executed by the node, the reply back to MQTT.
+  - **F5:** device logs to the gateway.
+
+  **The architecture's acceptance test:** a sample client service (a sensor)
+  that reports through telemetry to MQTT and takes commands back, written
+  without touching the core. R6 (the core as a library, ESP-IDF 5, Linux)
+  follows, and is what Vox needs.
+
+  Note: Meshtastic uses protobuf messages ("AdminMessage") over BLE, serial
+  and TCP, not gRPC. gRPC needs HTTP/2, which does not fit BLE or a
+  microcontroller. Our provisioning codec is already the compact binary
+  equivalent. What to copy is the experience: the app talks to a board the
+  same way whether it is local or several hops away.
+- **LoRa discovery across channel plans:** one radio listens on one channel.
+  Once teams are split across frequency plans, nodes visit a fleet-wide
+  rendezvous channel at time-synced slots to announce which plan they are on.
+  Default settings stay as they are until then. Designed after field
+  configuration, because channel plans are what make it necessary.
+- **Owning the protocol:**
+  1. Fork and pin the Python RNS and LXMF that Columba runs, under DrLexus11
+     (today another author's fork).
+  2. Decide Columba's backend: the Python one is benched, Kotlin is
+     Columba's default and switches interfaces live.
+  3. Specialise the protocol through versioned extensions, with shared
+     fixtures across the C++, Kotlin and Python implementations. Keep base
+     wire compatibility where it costs nothing (NomadNet and rnstatus stay
+     useful for diagnosis); break it where it buys something measured, such
+     as airtime.
+- **One app for operators:** near term, Columba becomes a headless companion
+  (installed by device management, never opened; ATAK is the interface).
+  After Outdoor Test 1, a time-boxed spike of Reticulum hosted inside the
+  plugin on Columba's Kotlin stack. Its known costs: the mesh stops with ATAK;
+  every release goes through the TAK pipeline; BLE moves into ATAK's process;
+  a plugin crash takes ATAK down.
+- **Plugin features that earn their place**, each from another track: boards
+  on the map with health from telemetry; a team's channel plan changed from
+  ATAK (control plane); delivery state in GeoChat.
+
+### Measurable goals
+
+- Seven days unattended with no unexplained restart, and every node's
+  telemetry visible in Grafana.
+- Store-and-forward proven end to end with no manual trigger (PR C is only
+  partly proven).
+- Chat, position, files and telemetry each checked on LoRa, BLE (both kinds)
+  and Wi-Fi/IP, from hardware runs.
+- Further out: Vox on HaLow through the Linux build, then a multi-apartment
+  exercise with several responders.
 
 ## Online in ATAK means a fresh position -- decided 2026-10-02
 
@@ -1874,10 +2003,73 @@ from any traffic heard from the member, not from announces alone.
 GPS, no network location, no site -- cannot be an ATAK contact, because ATAK
 draws a contact at a point. Give it a site.
 
-## After Outdoor Test 1: Eridanus merges into Columba -- decided 2026-10-02
+## Open before Outdoor Test 1: a stationary ATAK is invisible after a restart -- found 2026-10-02
+
+**Observed on the bench (operator):** after ATAK starts, every side has to
+receive a position update from every other before it shows them online -- and
+an ATAK with a manual location, or with no GPS fix, sends its own position only
+when it changes. So after any restart such a node is on nobody's map and in
+nobody's contact list, GeoChat cannot address it, and it stays that way until
+someone moves its marker by hand. Reproduced on the deck (Waydroid, manual
+location) and on the Nexus (indoors, no fix); moving each marker once at ATAK
+start made everything work, messaging included. In the field that cannot be a
+procedure: nobody will know to do it, on every device, after every restart.
+
+**What should have covered the deck did not:** the bridge's site fallback
+(`--site`, firmware #35) is meant to report the site whenever ATAK has been
+quiet for 5 minutes, and printed nothing in five hours of a quiet ATAK. Why is
+not yet known; next step is a bridge run with `--capture` to see exactly what
+the deck's ATAK sends, then a test that reproduces it.
+
+**Measured 2026-10-03, and the fix that was built** (Columba #17, firmware
+#36). A bridge capture (`--capture`) of the deck's ATAK 5.8 with a manual
+location: it reports `how="h-e"` (human-entered), `geopointsrc="USER"`, every
+3 minutes, valid for 6 min 15 s. So a stationary ATAK with a manual location is
+not silent, and the site loop stayed quiet the day before because ATAK was
+reporting. The failure is on the receiving side: a restarted ATAK has forgotten
+every contact and waits up to a whole cadence for each peer. Two fixes, in
+Columba and in the bridge alike:
+
+- **On connect, ATAK gets every peer's last drawn position** (`LastPositions`),
+  replayed after the held chat. Replayed as drawn, with its time and stale
+  stamps, so a fix gone stale arrives stale, not posing as current. It is held
+  an hour past stale. Nothing goes on the air.
+- **A member that announces gets our last position report**, to it alone,
+  while that report still holds (`OwnPosition`). At most one answer per member
+  every 10 minutes, because answering every announce on LoRa grows with the
+  square of the team. A phone that restarted, Columba included, sees us at once.
+
+A phone with no position at all (no GPS fix, no manual location) still cannot
+be an ATAK contact; give it a manual location.
+
+**The fix as first proposed, superseded by the above:**
+
+- **Columba and the bridge re-send ATAK's last own position on a cadence while
+  ATAK is connected but quiet**, stating the interval, so receivers keep it
+  fresh -- a manual location counts as a position. Columba already reports the
+  phone's own fix while ATAK is closed (`reportOwnPosition`); this covers ATAK
+  open and silent, and a phone with no fix at all.
+- **A newly heard member is answered with this node's position**, as the
+  membership greeting already answers with an announce, so two nodes that start
+  apart see each other at once instead of at the next movement.
+
+## Eridanus merges into Columba -- decided 2026-10-02, started the same day
 
 **A full merge**, UI included, so rooms are usable in Columba itself as well
-as from ATAK. Eridanus (`~/projects/eridanus`) is RRC chatrooms on Android, by
+as from ATAK. **Started 2026-10-02, alongside PR F rather than after Outdoor
+Test 1** (operator): it runs on its own Columba branch and gates nothing in
+PR F. **Shape: co-located** (operator, same day) -- Eridanus's modules come into
+Columba's repository nearly unchanged, imported with `git subtree` so its
+history and layout survive and its later fixes still apply; they run in their
+own process as a client of Columba's own Reticulum (its shared instance), on
+the Kotlin backend, under Columba's identity. One APK, one host, one identity.
+Folding it into Columba's Reticulum process stays possible later. The plan is
+`docs/EridanusMerge.md` in Columba.
+
+**Upstream has answered** (torlando-tech/columba #1083, 2026-08-11): RRC will
+not come to upstream Columba -- Eridanus is separate by design. So this merge
+is ours alone, and our Columba diverges from upstream here for good: every
+upstream Columba update taken in carries the merge forward. Eridanus (`~/projects/eridanus`) is RRC chatrooms on Android, by
 Columba's original author, on the same Reticulum layers (`rns-api`, Kotlin
 and Python backends) and the same licence (MPL-2.0). Sizes as of today: the RRC
 client and codec about 640 lines, the hub about 1,600, the app and UI about
@@ -1894,8 +2086,7 @@ client and codec about 640 lines, the hub about 1,600, the app and UI about
   `RRCProtocol` pinned by shared fixtures, as `tak_native_v1.json` pins TAK.
 - **Then:** ATAK team chat carried by hub rooms; the plugin's team-room
   feature.
-- **Before starting:** ask upstream whether a merge is already planned, so
-  the work is not done twice.
+- **Asked and answered:** no upstream merge is planned (#1083 above).
 
 ## Later: RF characterisation -- when the bench has the tools
 
@@ -1915,8 +2106,9 @@ for anything seen outside, as it is Mark Qvist's project name). Scheduled
 after PR F, once no PR is mid-review.
 
 - **How:** leave the fork network, then set private and rename -- issues and
-  PR history stay in place. The original remains a fetch-only remote, and
-  `UpstreamReview.md` becomes a periodic review.
+  PR history stay in place. No original repository is kept as a remote (removed
+  2026-10-02); `UpstreamReview.md` becomes a periodic review, reading upstream
+  on GitHub or from a throwaway clone, never through a remote here.
 - **One pass of references:** remotes, the library URLs in `platformio.ini`
   (builds then need credentials), the sibling-repo notes and the push rule in
   `CLAUDE.md`, fixture paths, memory.
@@ -2086,7 +2278,7 @@ here.
   protocol politeness by default.
 - Scope: microReticulum, its library, Columba, and the sibling ATAK repo. Other
   people's projects are not ours to fix.
-- Push to `origin` (DrLexus11) only. `attermann` and `upstream` are
-  push-disabled deliberately.
+- DrLexus11 remotes only: the original projects' remotes were removed
+  2026-10-02, and `gh`'s default is pinned to DrLexus11 in every repository.
 - Fleet secrets and IFAC passphrases are prompted on the terminal, never passed
   as command-line arguments.

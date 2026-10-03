@@ -42,7 +42,8 @@
 #define LOOP_PHASE_PERIPH     13
 #define LOOP_PHASE_MEMORY     14
 #define LOOP_PHASE_SVC_REPORT 15
-#define LOOP_PHASE_COUNT      16
+#define LOOP_PHASE_TELEMETRY  16
+#define LOOP_PHASE_COUNT      17
 
 inline const char* loop_phase_name(uint8_t phase) {
 	switch (phase) {
@@ -61,6 +62,7 @@ inline const char* loop_phase_name(uint8_t phase) {
 		case LOOP_PHASE_PERIPH:    return "peripherals (display/pmu/bt/wifi/input)";
 		case LOOP_PHASE_MEMORY:    return "memory_low handling";
 		case LOOP_PHASE_SVC_REPORT: return "service_report";
+		case LOOP_PHASE_TELEMETRY:  return "telemetry_uplink";
 		default:                   return "none";
 	}
 }
