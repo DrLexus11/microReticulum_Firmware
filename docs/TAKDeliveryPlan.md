@@ -1962,7 +1962,7 @@ the field shows, not to have something to build.
      (2026-10-04): the image hash and build environment now in the report
      close that gap.
    - **T4, what topology still needs:** neighbours proven on TCP, BLE
-     and ESP-NOW (only LoRa is proven), every board reporting (T3), and
+     and ESP-NOW (LoRa and UDP are proven), every board reporting (T3), and
      phones and the deck shown as nodes by the boards that hear them --
      Reticulum keeps no topology database, so the map stays assembled from
      each board's own view. After T2.
