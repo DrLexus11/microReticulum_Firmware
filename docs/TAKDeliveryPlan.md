@@ -1945,9 +1945,10 @@ the field shows, not to have something to build.
      entries; the hook measured 44 us at worst over 92 announces (Rev 1).
      **Proven** on Rev 1 end to end, neighbours heard over LoRa. **Reasoned,
      untested:** neighbours over UDP, TCP, BLE and ESP-NOW (the same callback
-     sees every interface). **Open:** the deck was not in Rev 1's neighbour
-     list although Rev 1 counts UDP bytes -- to be explained before the
-     matrix is trusted for IP carriers. Not yet carried: packet counts, link
+     sees every interface). The deck is rightly absent from Rev 1's
+     neighbours: the deck's UDP interface to Rev 1 is disabled, so it reaches
+     Rev 1 through the in-service Rev 2 and LoRa (the source of Rev 1's few
+     UDP bytes is not yet identified). Not yet carried: packet counts, link
      table, announce queue, system and power fields (T5 items 3-6), git hash.
    - **T5, more telemetry, scheduled with T4:** a separate, less frequent
      **detail report** (one new message type with a version byte, pinned by a
