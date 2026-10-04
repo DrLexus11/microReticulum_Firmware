@@ -1907,6 +1907,11 @@ the field shows, not to have something to build.
      and backend as user services), fleet alert rules in Grafana that tell a
      board's silence from the sleeping host's, and Prometheus accepting late
      samples (reticulum-telemetry #3).
+   - **Two environments (2026-10-04, reticulum-telemetry #4):** dev stays
+     on the deck; production runs under docker compose on the `ubuntudb` host
+     (Grafana on the tailnet), fed through an SSH tunnel and an MQTT bridge
+     that queues while the deck sleeps. A Kubernetes phase on that host comes
+     later.
    - **T2, LXMF reach, developing on Rev 1:** with no gateway reachable, a
      board stores its reports as an hourly LXMF message to the gateway in its
      own propagation store (the RRC bridge's `LXMFCompose` pattern). The
