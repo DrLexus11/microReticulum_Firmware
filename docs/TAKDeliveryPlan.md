@@ -1950,27 +1950,21 @@ the field shows, not to have something to build.
      Rev 1 through the in-service Rev 2 and LoRa (the source of Rev 1's few
      UDP bytes is not yet identified). Not yet carried: packet counts, link
      table, announce queue, system and power fields (T5 items 3-6), git hash.
-   - **T5, more telemetry, scheduled with T4:** a separate, less frequent
-     **detail report** (one new message type with a version byte, pinned by a
-     fixture), so the 29-34 byte health report stays small on LoRa. Fields,
-     in order of value:
-     1. **Firmware identity:** version, build environment, git hash. Rev 1 ran
-        PR E2's stripped chain-test build for days unnoticed (2026-10-04).
-     2. **Radio:** last RSSI and SNR, noise floor, channel utilisation and
-        airtime, packets received and sent.
-     3. **Traffic per carrier:** packets and bytes, in and out.
-     4. **Reticulum:** link table, active links, announce queue, path
-        requests, and the LXMF store's messages and bytes.
-     5. **System:** chip temperature, free flash, Wi-Fi RSSI, time-sync source
-        and age, the slowest service poll (the unbounded `reticulum.loop`).
-     6. **Power:** supply voltage, where the board can measure it.
-   - **T4, topology, scheduled after T2:** each board reports its one-hop
-     neighbours and the carrier it hears each on, in a separate, less
-     frequent report (a new message type with a version byte and a
-     fixture). The backend builds the edges, and Grafana's Node Graph draws
-     the mesh. Reticulum keeps no topology database, so the map is assembled
-     from each board's own view: boards as full nodes, phones and the deck as
-     their neighbours.
+   - **T5, what the detail report does not carry yet**, added to it in
+     order of value (version byte unchanged while fields are only appended
+     behind flags): the git hash beside the image hash; packet counts per
+     carrier; Reticulum's link table, active links, announce queue and path
+     requests; system (chip temperature, free flash, Wi-Fi RSSI, time-sync
+     source and age, the slowest service poll -- the unbounded
+     `reticulum.loop`); power (supply voltage, where the board can measure
+     it). Rev 1 ran PR E2's stripped chain-test build for days unnoticed
+     (2026-10-04): the image hash and build environment now in the report
+     close that gap.
+   - **T4, what topology still needs:** neighbours proven on UDP, TCP, BLE
+     and ESP-NOW (only LoRa is proven), every board reporting (T3), and
+     phones and the deck shown as nodes by the boards that hear them --
+     Reticulum keeps no topology database, so the map stays assembled from
+     each board's own view. After T2.
 2. **The plugin half closes:** Columba #16 (the MeshService leak), and a
    stationary ATAK made visible after a restart (in Columba and the bridge,
    see below).

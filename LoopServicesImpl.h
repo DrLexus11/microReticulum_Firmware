@@ -400,6 +400,10 @@ static void telemetry_fill_node(NodeTelemetry& report) {
   }
 }
 
+#ifndef TELEMETRY_SEND_BUDGET_MS
+#define TELEMETRY_SEND_BUDGET_MS 250
+#endif
+
 #ifndef TELEMETRY_DETAIL_INTERVAL_MS
 // The detail report's cadence: who this board hears and what it runs change
 // slowly, and on LoRa its ~100-300 bytes are shared airtime.
@@ -444,6 +448,11 @@ void telemetry_neighbour_heard(const RNS::Bytes& raw, const RNS::Interface& inte
     if (hash.size() < 4) return;
     id = neighbour_id_of(hash.data());
   }
+  // Our own announce, looped back, is not a neighbour: kept out of the table,
+  // where it would take a slot and could evict a real one.
+  static uint32_t self_id = 0;
+  if (self_id == 0 && RNS::Transport::identity()) self_id = neighbour_id_of(RNS::Transport::identity().hash().data());
+  if (id == self_id) return;
   int8_t rssi = DETAIL_RSSI_UNKNOWN;
 #if defined(LORA_TRANSPORT) && !defined(NO_LORA_HARDWARE)
   if (kind == DETAIL_IF_LORA) rssi = detail_dbm((float)last_rssi);   // this packet's, the radio's last
@@ -499,18 +508,17 @@ static void telemetry_fill_detail(NodeDetail& d, uint32_t sender_id, uint32_t up
   d.last_sync_s = sync.any_ok ? ((uint32_t)millis() - sync.last_ok_ms) / 1000u : DETAIL_NEVER;
 #endif
   telemetry_neighbours().fill(d, (uint32_t)millis());
-  for (uint8_t i = 0; i < d.nb_count; ++i) {
-    if (d.neighbours[i].id != d.sender_id) continue;   // our own announce, looped back
-    memmove(&d.neighbours[i], &d.neighbours[i + 1], (d.nb_count - i - 1) * sizeof(DetailNeighbour));
-    --d.nb_count;
-    break;
-  }
 }
 
 class TelemetryUplinkService : public LoopService {
 public:
   explicit TelemetryUplinkService(const ServiceRunner& runner)
     : LoopService(LOOP_PHASE_TELEMETRY), _runner(runner), _schedule(0) {}
+
+  // A poll that sends encrypts one packet to the gateway: 167 ms measured on
+  // Rev 1 (2026-10-04), once per health report and once per detail report,
+  // never both in one poll. Every other poll returns at once.
+  uint32_t budget_ms() const override { return TELEMETRY_SEND_BUDGET_MS; }
 
   bool init(const AppContext& context) override {
     _schedule = TelemetrySchedule(context.boot_ms);
