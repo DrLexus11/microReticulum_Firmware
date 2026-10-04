@@ -776,6 +776,16 @@ void test_detail_round_trips_the_full_report() {
 	TEST_ASSERT_FALSE(d.neighbours_truncated);
 }
 
+void test_detail_kinds_follow_the_firmware_interface_names() {
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_LORA, detail_kind_of("LoRaInterface"));
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_BLE_PEER, detail_kind_of("BLEPeerInterface"));
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_ESPNOW, detail_kind_of("ESPNowInterface"));
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_TCP_SERVER, detail_kind_of("TCPServerInterface"));
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_UDP, detail_kind_of("UDPInterface"));
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_OTHER, detail_kind_of("Mystery"));
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_OTHER, detail_kind_of(nullptr));
+}
+
 void test_detail_decode_refuses_what_it_cannot_read() {
 	const char* refused[] = {
 		"01030a0b0c0d00000e1003000100090008001900120e0a010100170005",
@@ -843,5 +853,6 @@ int main() {
 	RUN_TEST(test_detail_cuts_neighbours_to_fit_and_flags_it);
 	RUN_TEST(test_detail_round_trips_the_full_report);
 	RUN_TEST(test_detail_decode_refuses_what_it_cannot_read);
+	RUN_TEST(test_detail_kinds_follow_the_firmware_interface_names);
 	return UNITY_END();
 }

@@ -122,6 +122,24 @@ struct NodeDetail {
   bool neighbours_truncated = false;
 };
 
+// An interface's kind from its name, as the firmware names them
+// ("LoRaInterface", "TCPServerInterface", ...). Pure, so it is host-tested.
+inline uint8_t detail_kind_of(const char* name) {
+  if (name == nullptr) return DETAIL_IF_OTHER;
+  struct Rule { const char* fragment; uint8_t kind; };
+  static const Rule rules[] = {
+    {"LoRa", DETAIL_IF_LORA},       {"BLEPeer", DETAIL_IF_BLE_PEER},
+    {"ESPNow", DETAIL_IF_ESPNOW},   {"TCPServer", DETAIL_IF_TCP_SERVER},
+    {"TCPClient", DETAIL_IF_TCP_CLIENT}, {"UDP", DETAIL_IF_UDP},
+    {"Auto", DETAIL_IF_AUTO},       {"Serial", DETAIL_IF_SERIAL},
+    {"KISS", DETAIL_IF_SERIAL},     {"HaLow", DETAIL_IF_HALOW},
+  };
+  for (const Rule& r : rules) {
+    if (strstr(name, r.fragment) != nullptr) return r.kind;
+  }
+  return DETAIL_IF_OTHER;
+}
+
 inline uint16_t detail_sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : (uint16_t)v; }
 inline uint8_t detail_sat8(uint32_t v) { return v > 0xFFu ? 0xFFu : (uint8_t)v; }
 inline uint8_t detail_pct(uint32_t v) { return v > 100u ? 100u : (uint8_t)v; }

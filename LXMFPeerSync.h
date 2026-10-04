@@ -99,6 +99,16 @@ inline uint32_t& lxmf_sync_error_byte() { static uint32_t n = 0; return n; }
 // from outside; these separate them without needing a console.
 inline uint32_t& lxmf_sync_resp_size() { static uint32_t n = 0; return n; }
 inline uint32_t& lxmf_sync_outcome()   { static uint32_t n = 0; return n; }
+
+// What syncs have come to, for the detail report (TelemetryDetailCodec.h):
+// counted where a sync ends, from the outcome it ended with.
+struct LXMFSyncStats {
+	uint32_t ok = 0;
+	uint32_t failed = 0;
+	bool     any_ok = false;
+	uint32_t last_ok_ms = 0;
+};
+inline LXMFSyncStats& lxmf_sync_stats() { static LXMFSyncStats stats; return stats; }
 #define LXMF_SYNC_OUT_EMPTY      1
 #define LXMF_SYNC_OUT_WANTNONE   2
 #define LXMF_SYNC_OUT_UNPARSED   3
@@ -162,6 +172,16 @@ inline void lxmf_peer_sync_finish(const char* why) {
 
 	printf("[lxmf-peer] sync with <%s> ended: %s\n",
 	       peer.toHex().substr(0, 16).c_str(), why);
+	// Delivered, or nothing to deliver, is a sync that worked; a peer that did
+	// not answer, answered nonsense or dropped the link is one that did not.
+	// "Nothing to offer" never started one: it returns above, uncounted.
+	LXMFSyncStats& stats = lxmf_sync_stats();
+	switch (lxmf_sync_outcome()) {
+		case LXMF_SYNC_OUT_SENT: case LXMF_SYNC_OUT_WANTNONE: case LXMF_SYNC_OUT_NOTHINGSND:
+			++stats.ok; stats.any_ok = true; stats.last_ok_ms = millis(); break;
+		default:   // empty, unparsed, timed out, closed -- or ended with no outcome at all
+			++stats.failed; break;
+	}
 	if (link) {
 		try { link.teardown(); } catch (...) {}
 	}
@@ -544,6 +564,7 @@ inline void lxmf_peer_sync_watch() {
 
 		lxmf_sync_attempts()++;
 		st.active  = true;
+		lxmf_sync_outcome() = 0;   // this sync's outcome, not the last one's
 		st.offered = false;
 		st.started = now;
 		st.peer    = p.destination_hash;
