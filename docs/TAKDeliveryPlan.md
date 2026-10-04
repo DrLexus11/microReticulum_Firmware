@@ -1909,7 +1909,10 @@ the field shows, not to have something to build.
    written test plan (range, disconnect and reconnect, a mission at the far
    end), and the interface checks this plan requires.
 4. **Outdoor Test 1** runs, when the weather allows. It does not wait for
-   field configuration.
+   field configuration. **Deferred to mid-week at the earliest** (operator,
+   2026-10-04): heavy rain until mid-week, and the IMPR-RADs have no casings.
+   It runs only in good conditions; water damage to the boards is not a risk
+   worth taking.
 5. **The private pivot** (below).
 
 **F5 (device logs off the board) leaves PR F** and joins the control-plane
@@ -1953,8 +1956,15 @@ track: it rides the same uplink and the same command path.
   Default settings stay as they are until then. Designed after field
   configuration, because channel plans are what make it necessary.
 - **Owning the protocol:**
-  1. Fork and pin the Python RNS and LXMF that Columba runs, under DrLexus11
-     (today another author's fork).
+  1. Fork and pin the Python RNS and LXMF that Columba runs, under DrLexus11.
+     **Done 2026-10-04** (Columba #18, same commits), and the middle man cut:
+     our branches now sit on markqvist's releases (`docs/PythonStack.md`).
+     **Scheduled PR, after Outdoor Test 1:** Columba onto
+     `drlexus11/rns-1.5.5` and `drlexus11/lxmf-1.2.0`, gated on an interop run
+     against the boards, the deck's bridge and lxmd, and both phones -- nothing
+     in the fleet has run RNS 1.5.x yet. Not before the field test: the stack
+     under it must not change. LXMF 1.2.0's propagation-node backoff fix may be
+     pulled forward if outbound peering still fails.
   2. Decide Columba's backend: the Python one is benched, Kotlin is
      Columba's default and switches interfaces live.
   3. Specialise the protocol through versioned extensions, with shared
