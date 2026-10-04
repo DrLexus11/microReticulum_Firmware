@@ -41,6 +41,7 @@
 #include "TelemetryUplink.h"
 #include "TelemetryCodec.h"
 #include "TelemetryDetailCodec.h"
+#include "TelemetryNeighbours.h"
 
 // Below these, the heap is short of what the mesh stack needs to keep working.
 // heap8/largest8, not "internal": see the [mem] line in heap_watch().
@@ -411,52 +412,48 @@ static int8_t detail_dbm(float v) {
   return (int8_t)v;
 }
 
-// One-hop neighbours from the path table: destinations one hop away, folded
-// into the identities behind them (a board's NomadNet node, propagation node
-// and TAK node are one neighbour), most recently heard first. Every half hour,
-// so walking the table -- which decodes each entry -- is affordable.
-static void telemetry_fill_neighbours(NodeDetail& d, uint32_t self_id) {
-  const double now = RNS::Utilities::OS::time();
-  auto& table = const_cast<RNS::Persistence::NewPathTable&>(RNS::Transport::new_path_table());
-  for (auto& entry : table) {
-    RNS::Persistence::DestinationEntry& e = entry.value;
-    if (e._hops > 1) continue;
-    const RNS::Identity identity = RNS::Identity::recall(entry.key);
-    if (!identity || identity.hash().size() < 4) continue;
-    const uint8_t* h = identity.hash().data();
-    const uint32_t id = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) | ((uint32_t)h[2] << 8) | (uint32_t)h[3];
-    if (id == self_id) continue;
-    const double age = now - e._timestamp;
-    const uint32_t heard_s = age > 0 ? (uint32_t)age : 0;
-    const uint8_t kind = e._receiving_interface ? detail_kind_of(e._receiving_interface.name().c_str())
-                                                : (uint8_t)DETAIL_IF_OTHER;
-    const int8_t rssi = e._announce_packet ? detail_dbm(e._announce_packet.rssi()) : (int8_t)DETAIL_RSSI_UNKNOWN;
-    DetailNeighbour* slot = nullptr;
-    for (uint8_t i = 0; i < d.nb_count; ++i) {
-      if (d.neighbours[i].id == id) { slot = &d.neighbours[i]; break; }
-    }
-    if (slot == nullptr) {
-      if (d.nb_count >= DETAIL_MAX_NEIGHBOURS) { d.neighbours_truncated = true; continue; }
-      slot = &d.neighbours[d.nb_count++];
-      *slot = DetailNeighbour{id, kind, rssi, heard_s};
-    } else if (heard_s < slot->heard_s) {
-      slot->heard_s = heard_s;
-      slot->kind = kind;
-      if (rssi != DETAIL_RSSI_UNKNOWN) slot->rssi = rssi;
+// Who this board hears directly, recorded by the receive callback as announces
+// arrive (TelemetryNeighbours.h). Interface kinds are cached by interface, so a
+// received announce costs no string copy; only its identity hash allocates.
+static NeighbourTable& telemetry_neighbours() { static NeighbourTable table; return table; }
+
+void telemetry_neighbour_heard(const RNS::Bytes& raw, const RNS::Interface& interface) {
+  size_t at = 0;
+  const AnnounceSource source = announce_neighbour(raw.data(), raw.size(), at);
+  if (source == AnnounceSource::None) return;
+
+  static struct { const void* impl; uint8_t kind; } kinds[DETAIL_MAX_INTERFACES] = {};
+  const void* impl = const_cast<RNS::Interface&>(interface).get();
+  uint8_t kind = DETAIL_IF_OTHER;
+  bool cached = false;
+  for (auto& k : kinds) {
+    if (k.impl == impl) { kind = k.kind; cached = true; break; }
+  }
+  if (!cached) {
+    kind = detail_kind_of(interface.name().c_str());
+    for (auto& k : kinds) {
+      if (k.impl == nullptr) { k.impl = impl; k.kind = kind; break; }
     }
   }
-  // Most recent first, so a report cut to fit drops the stalest.
-  for (uint8_t i = 1; i < d.nb_count; ++i) {
-    const DetailNeighbour n = d.neighbours[i];
-    uint8_t j = i;
-    while (j > 0 && d.neighbours[j - 1].heard_s > n.heard_s) { d.neighbours[j] = d.neighbours[j - 1]; --j; }
-    d.neighbours[j] = n;
+
+  uint32_t id;
+  if (source == AnnounceSource::TransportId) {
+    id = neighbour_id_of(raw.data() + at);
+  } else {
+    const RNS::Bytes hash = RNS::Identity::full_hash(raw.mid(at, NEIGHBOUR_PUBKEY_LEN));
+    if (hash.size() < 4) return;
+    id = neighbour_id_of(hash.data());
   }
+  int8_t rssi = DETAIL_RSSI_UNKNOWN;
+#if defined(LORA_TRANSPORT) && !defined(NO_LORA_HARDWARE)
+  if (kind == DETAIL_IF_LORA) rssi = detail_dbm((float)last_rssi);   // this packet's, the radio's last
+#endif
+  telemetry_neighbours().heard(id, kind, rssi, (uint32_t)millis());
 }
 
 // The detail report: what this board runs, its interfaces, its radio, its
 // propagation store and who it hears (TelemetryDetailCodec.h).
-static void telemetry_fill_detail(NodeDetail& d, const NodeTelemetry& health) {
+static void telemetry_fill_detail(NodeDetail& d, uint32_t sender_id, uint32_t uptime_s) {
   // Reset field by field: `d = NodeDetail{}` may build an 800-byte temporary
   // on the loop task's stack.
   d.env[0] = 0;
@@ -465,8 +462,8 @@ static void telemetry_fill_detail(NodeDetail& d, const NodeTelemetry& health) {
   d.propagation_known = false;
   d.nb_count = 0;
   d.neighbours_truncated = false;
-  d.sender_id = health.sender_id;
-  d.uptime_s = health.uptime_s;
+  d.sender_id = sender_id;
+  d.uptime_s = uptime_s;
   memcpy(d.fw_hash, dev_firmware_hash, 4);
   d.fw_version = (uint16_t)((MAJ_VERS << 8) | MIN_VERS);
 #ifdef FW_BUILD_ENV
@@ -501,7 +498,13 @@ static void telemetry_fill_detail(NodeDetail& d, const NodeTelemetry& health) {
   d.sync_fail = sync.failed;
   d.last_sync_s = sync.any_ok ? ((uint32_t)millis() - sync.last_ok_ms) / 1000u : DETAIL_NEVER;
 #endif
-  telemetry_fill_neighbours(d, health.sender_id);
+  telemetry_neighbours().fill(d, (uint32_t)millis());
+  for (uint8_t i = 0; i < d.nb_count; ++i) {
+    if (d.neighbours[i].id != d.sender_id) continue;   // our own announce, looped back
+    memmove(&d.neighbours[i], &d.neighbours[i + 1], (d.nb_count - i - 1) * sizeof(DetailNeighbour));
+    --d.nb_count;
+    break;
+  }
 }
 
 class TelemetryUplinkService : public LoopService {
@@ -519,6 +522,7 @@ public:
   // One report a minute after boot, then every TELEMETRY_INTERVAL_MS. With no
   // gateway reachable, ask for a path to the newest heard and retry sooner.
   void poll(uint32_t now_ms) override {
+    if (_detail_gateway) { send_detail(now_ms); return; }
     if (!_schedule.due(now_ms)) return;
     _attempted = true;
     if (!reticulum || !RNS::Transport::identity()) { _schedule.unreachable(now_ms); return; }
@@ -565,24 +569,13 @@ public:
     }
     _schedule.sent(now_ms);
 
-    // The detail report rides on the health report's success: same gateway,
-    // first with the first health report, then every half hour. Statics, so
-    // nothing this size is allocated per report.
+    // The detail report follows on the next poll -- same gateway, first with
+    // the first health report, then every half hour. A poll apart, so the two
+    // encryptions (~170 ms each on Rev 1) never share one.
     if (!_detail_sent || now_ms - _detail_last >= TELEMETRY_DETAIL_INTERVAL_MS) {
-      static NodeDetail detail;
-      static uint8_t detail_wire[TELEMETRY_DETAIL_WIRE_MAX_LEN];
-      telemetry_fill_detail(detail, report);
-      const size_t detail_len = telemetry_detail_encode(detail, detail_wire, sizeof(detail_wire));
-      if (detail_len > 0) {
-        RNS::Packet detail_packet(gateway, RNS::Bytes(detail_wire, detail_len));
-        detail_packet.send();
-        if (!_detail_sent) {
-          printf("[telemetry] first detail report, %u bytes: %u interface(s), %u neighbour(s)\n",
-                 (unsigned)detail_len, (unsigned)detail.if_count, (unsigned)detail.nb_count);
-        }
-        _detail_sent = true;
-        _detail_last = now_ms;
-      }
+      _detail_gateway = gateway_identity;
+      _detail_sender = report.sender_id;
+      _detail_uptime = report.uptime_s;
     }
   }
 
@@ -600,12 +593,38 @@ public:
   }
 
 private:
+  // Statics for the report and its wire bytes: nothing this size is
+  // allocated per report.
+  void send_detail(uint32_t now_ms) {
+    static NodeDetail detail;
+    static uint8_t wire[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+    const RNS::Identity gateway_identity = _detail_gateway;
+    _detail_gateway = {RNS::Type::NONE};
+    telemetry_fill_detail(detail, _detail_sender, _detail_uptime);
+    const size_t len = telemetry_detail_encode(detail, wire, sizeof(wire));
+    if (len == 0) return;
+    RNS::Destination gateway(gateway_identity, RNS::Type::Destination::OUT,
+                             RNS::Type::Destination::SINGLE,
+                             RNS::Type::Transport::APP_NAME, TELEMETRY_UPLINK_ASPECT);
+    RNS::Packet packet(gateway, RNS::Bytes(wire, len));
+    packet.send();
+    if (!_detail_sent) {
+      printf("[telemetry] first detail report, %u bytes: %u interface(s), %u neighbour(s)\n",
+             (unsigned)len, (unsigned)detail.if_count, (unsigned)detail.nb_count);
+    }
+    _detail_sent = true;
+    _detail_last = now_ms;
+  }
+
   const ServiceRunner& _runner;
   TelemetrySchedule _schedule;
   bool _attempted = false;
   uint32_t _sent = 0;
   bool _detail_sent = false;
   uint32_t _detail_last = 0;
+  RNS::Identity _detail_gateway{RNS::Type::NONE};
+  uint32_t _detail_sender = 0;
+  uint32_t _detail_uptime = 0;
   mutable char _reason[32] = {};
 };
 #endif

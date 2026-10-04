@@ -1925,6 +1925,30 @@ the field shows, not to have something to build.
      NomadNet announce; the 4-byte sender id is the start of the same
      identity's hash), one table row per board with every column filled,
      headline stats, carriers as a state timeline.
+   - **T4 + T5, first cut, 2026-10-04 (firmware `feature/tak-t45-detail-report`,
+     reticulum-telemetry `feature/detail-report`):** the **detail report**
+     (wire 0x21, `TelemetryDetailCodec.h`, fixture `telemetry_detail_v1.json`),
+     sent with a board's first health report and then every 30 minutes:
+     firmware hash, version and build environment; per-interface online state
+     and bytes in and out since boot; LoRa RSSI, SNR, noise floor,
+     utilisation and airtime; the propagation store's messages, size, peers
+     and sync results; one-hop neighbours with carrier, RSSI and age. The
+     gateway names neighbours (NomadNet for boards, LXMF display names for
+     people); the backend exports `mesh_board_firmware_info`, per-interface
+     byte counters, radio and store gauges, `mesh_link_*{sender,neighbour}`
+     and `mesh_node_info`; Grafana gains a who-hears-whom matrix, a Node
+     Graph topology, the link list, a propagation-node table and carrier
+     throughput. Neighbours are recorded **as announces arrive** (the
+     receive callback: a rebroadcast names its transport identity, a hops-0
+     announce its originator's key), not by walking the path table, which on
+     the boards lives on flash -- the walk cost 819 ms of the loop for 27
+     entries; the hook measured 44 us at worst over 92 announces (Rev 1).
+     **Proven** on Rev 1 end to end, neighbours heard over LoRa. **Reasoned,
+     untested:** neighbours over UDP, TCP, BLE and ESP-NOW (the same callback
+     sees every interface). **Open:** the deck was not in Rev 1's neighbour
+     list although Rev 1 counts UDP bytes -- to be explained before the
+     matrix is trusted for IP carriers. Not yet carried: packet counts, link
+     table, announce queue, system and power fields (T5 items 3-6), git hash.
    - **T5, more telemetry, scheduled with T4:** a separate, less frequent
      **detail report** (one new message type with a version byte, pinned by a
      fixture), so the 29-34 byte health report stays small on LoRa. Fields,

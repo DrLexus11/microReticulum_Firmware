@@ -13,6 +13,7 @@
 #include "PositionCodec.h"
 #include "TelemetryCodec.h"
 #include "TelemetryDetailCodec.h"
+#include "TelemetryNeighbours.h"
 #include "ServiceRunner.h"
 #include "TelemetryUplink.h"
 
@@ -786,6 +787,64 @@ void test_detail_kinds_follow_the_firmware_interface_names() {
 	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_OTHER, detail_kind_of(nullptr));
 }
 
+void test_announces_name_the_neighbour_that_sent_them() {
+	uint8_t raw[2 + 16 + 1 + 64 + 10] = {0};
+	size_t at = 99;
+	// Heard from its originator: HEADER_1, hops 0 -- the public key follows the
+	// destination hash and the context byte.
+	raw[0] = 0x01; raw[1] = 0;
+	TEST_ASSERT_TRUE(announce_neighbour(raw, sizeof(raw), at) == AnnounceSource::PublicKey);
+	TEST_ASSERT_EQUAL_UINT32(19, at);
+	// The same announce relayed under HEADER_1 says nothing about who sent it.
+	raw[1] = 2;
+	TEST_ASSERT_TRUE(announce_neighbour(raw, sizeof(raw), at) == AnnounceSource::None);
+	// Rebroadcast: HEADER_2, the rebroadcaster's transport id comes first.
+	raw[0] = 0x41; raw[1] = 3;
+	TEST_ASSERT_TRUE(announce_neighbour(raw, sizeof(raw), at) == AnnounceSource::TransportId);
+	TEST_ASSERT_EQUAL_UINT32(2, at);
+	// Data packets name nobody; a short announce is refused, not read past.
+	raw[0] = 0x40;
+	TEST_ASSERT_TRUE(announce_neighbour(raw, sizeof(raw), at) == AnnounceSource::None);
+	raw[0] = 0x01; raw[1] = 0;
+	TEST_ASSERT_TRUE(announce_neighbour(raw, 2 + 16 + 1 + 63, at) == AnnounceSource::None);
+	raw[0] = 0x41;
+	TEST_ASSERT_TRUE(announce_neighbour(raw, 2 + 32, at) == AnnounceSource::None);
+	const uint8_t hash[4] = {0xba, 0x03, 0xaa, 0x75};
+	TEST_ASSERT_EQUAL_HEX32(0xba03aa75u, neighbour_id_of(hash));
+}
+
+void test_neighbour_table_keeps_the_freshest_and_expires_the_rest() {
+	static NeighbourTable table;
+	static NodeDetail d;
+	table = NeighbourTable{};
+	table.heard(1, DETAIL_IF_LORA, -90, 1000);
+	table.heard(2, DETAIL_IF_TCP_SERVER, DETAIL_RSSI_UNKNOWN, 5000);
+	table.heard(1, DETAIL_IF_LORA, DETAIL_RSSI_UNKNOWN, 9000);   // RSSI kept on the same carrier
+	table.fill(d, 10000);
+	TEST_ASSERT_EQUAL_UINT8(2, d.nb_count);
+	TEST_ASSERT_EQUAL_UINT32(1, d.neighbours[0].id);
+	TEST_ASSERT_EQUAL_UINT32(1, d.neighbours[0].heard_s);
+	TEST_ASSERT_EQUAL_INT8(-90, d.neighbours[0].rssi);
+	TEST_ASSERT_EQUAL_UINT32(5, d.neighbours[1].heard_s);
+	// Heard over another carrier: that carrier's RSSI, or unknown.
+	table.heard(1, DETAIL_IF_ESPNOW, DETAIL_RSSI_UNKNOWN, 11000);
+	table.fill(d, 11000);
+	TEST_ASSERT_EQUAL_UINT8(DETAIL_IF_ESPNOW, d.neighbours[0].kind);
+	TEST_ASSERT_EQUAL_INT8(DETAIL_RSSI_UNKNOWN, d.neighbours[0].rssi);
+	// Silent past the expiry: dropped.
+	table.fill(d, 5000 + NEIGHBOUR_EXPIRY_MS + 1);
+	TEST_ASSERT_EQUAL_UINT8(1, d.nb_count);
+	TEST_ASSERT_EQUAL_UINT32(1, d.neighbours[0].id);
+	// Full: the stalest gives way, the table never grows.
+	table = NeighbourTable{};
+	for (uint32_t i = 0; i < NEIGHBOUR_TABLE_SIZE; ++i) table.heard(100 + i, DETAIL_IF_LORA, -80, 1000 + i);
+	table.heard(999, DETAIL_IF_LORA, -70, 2000);
+	TEST_ASSERT_EQUAL_UINT32(NEIGHBOUR_TABLE_SIZE, table.size());
+	table.fill(d, 2000);
+	TEST_ASSERT_EQUAL_UINT32(999, d.neighbours[0].id);
+	for (uint8_t i = 0; i < d.nb_count; ++i) TEST_ASSERT_NOT_EQUAL(100, d.neighbours[i].id);
+}
+
 void test_detail_decode_refuses_what_it_cannot_read() {
 	const char* refused[] = {
 		"01030a0b0c0d00000e1003000100090008001900120e0a010100170005",
@@ -854,5 +913,7 @@ int main() {
 	RUN_TEST(test_detail_round_trips_the_full_report);
 	RUN_TEST(test_detail_decode_refuses_what_it_cannot_read);
 	RUN_TEST(test_detail_kinds_follow_the_firmware_interface_names);
+	RUN_TEST(test_announces_name_the_neighbour_that_sent_them);
+	RUN_TEST(test_neighbour_table_keeps_the_freshest_and_expires_the_rest);
 	return UNITY_END();
 }
