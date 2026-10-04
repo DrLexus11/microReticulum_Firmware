@@ -1901,7 +1901,27 @@ the field shows, not to have something to build.
    link-table leak fixed in the library (both found by soaks, 2026-10-03), a
    clean 48 h soak, #34 (F3b) merged, then F4a. F4 closes with telemetry
    reports over LoRa and BLE, not only Wi-Fi; more than one board reporting;
-   and the MQTT topic layout documented.
+   and the MQTT topic layout documented. **Telemetry week (2026-10-04),
+   while the field test waits for weather:**
+   - **T1, done:** the stack survives a reboot (containers restart; gateway
+     and backend as user services), fleet alert rules in Grafana that tell a
+     board's silence from the sleeping host's, and Prometheus accepting late
+     samples (reticulum-telemetry #3).
+   - **T2, LXMF reach, developing on Rev 1:** with no gateway reachable, a
+     board stores its reports as an hourly LXMF message to the gateway in its
+     own propagation store (the RRC bridge's `LXMFCompose` pattern). The
+     gateway downloads them (`/get`) from the propagation nodes it hears, and
+     the backend writes them at the time they were taken. The live
+     single-packet path is unchanged.
+   - **T3:** every board reporting. Rev 1 and the spare report now; the first
+     Rev 2 (UART breadboard) needs a UART flash; the OZDs stay out.
+   - **T4, topology, scheduled after T2:** each board reports its one-hop
+     neighbours and the carrier it hears each on, in a separate, less
+     frequent report (a new message type with a version byte and a
+     fixture). The backend builds the edges, and Grafana's Node Graph draws
+     the mesh. Reticulum keeps no topology database, so the map is assembled
+     from each board's own view: boards as full nodes, phones and the deck as
+     their neighbours.
 2. **The plugin half closes:** Columba #16 (the MeshService leak), and a
    stationary ATAK made visible after a restart (in Columba and the bridge,
    see below).
@@ -1939,6 +1959,29 @@ track: it rides the same uplink and the same command path.
     carried over LXMF (store-and-forward reaches a node that is offline),
     executed by the node, the reply back to MQTT.
   - **F5:** device logs to the gateway.
+
+  **Security model, agreed 2026-10-04.** No private key is ever flashed:
+  an image is copied and shared, and ESP32 flash reads back with esptool
+  unless flash encryption is on. Instead:
+  1. Boards hold only the **fleet admin authority's public key**, set at
+     provisioning, as the time-authority keys are (`provision_node.py`).
+  2. Each phone generates its **own operator key** in Columba, protected by
+     the Android Keystore; it never leaves the phone.
+  3. The authority, offline on the deck beside the time authority, signs an
+     **admin certificate** for that identity: scope (which settings, which
+     team) and expiry. It reaches Columba by QR code or file.
+  4. A board accepts a command only over a link identified as the
+     certificate's subject, signed by the authority, unexpired, and within
+     scope. Short expiries and a signed revocation list cover a lost phone.
+     The authority key gets a backup or a second authority: losing the time
+     authority's key already means re-provisioning every node.
+  It rides on Reticulum (an identified link to
+  `rnstransport.remote.management`), so it works the same on every carrier:
+  BLE phone-to-board first, then Wi-Fi/TCP, LoRa, ESP-NOW, and LXMF
+  store-and-forward for an offline node. USB serial stays the physical
+  recovery path, the only one that needs no certificate. It replaces today's
+  per-board allow-list, which has to be edited on every board to add or
+  remove an operator.
 
   **The architecture's acceptance test:** a sample client service (a sensor)
   that reports through telemetry to MQTT and takes commands back, written
