@@ -12,6 +12,7 @@
 #include "ESPNowProtocol.h"
 #include "PositionCodec.h"
 #include "TelemetryCodec.h"
+#include "TelemetryDetailCodec.h"
 #include "ServiceRunner.h"
 #include "TelemetryUplink.h"
 
@@ -680,6 +681,116 @@ void test_runner_refuses_past_its_capacity() {
 	TEST_ASSERT_EQUAL_size_t(SERVICE_RUNNER_CAPACITY, runner.count());
 }
 
+// --- TelemetryDetailCodec.h: the board detail report, 0x21 -------------------
+// Every hex string below is a case in tests/fixtures/telemetry_detail_v1.json,
+// which tools/telemetry_detail_codec.py is tested against too;
+// tests/test_telemetry_detail_fixture.py checks that each one appears here.
+
+static std::string detail_hex(const NodeDetail& d) {
+	uint8_t out[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+	return hex_of(out, telemetry_detail_encode(d, out, sizeof(out)));
+}
+
+static NodeDetail detail_full() {
+	NodeDetail d;
+	d.sender_id = 0x0a0b0c0d;
+	d.uptime_s = 3600;
+	const uint8_t hash[4] = {0xa1, 0xb2, 0xc3, 0xd4};
+	memcpy(d.fw_hash, hash, 4);
+	d.fw_version = 0x0156;
+	strcpy(d.env, "impr-rad01-rev1");
+	d.if_count = 4;
+	d.interfaces[0] = {DETAIL_IF_LORA, true, 120, 80};
+	d.interfaces[1] = {DETAIL_IF_ESPNOW, false, 0, 0};
+	d.interfaces[2] = {DETAIL_IF_TCP_SERVER, true, 300, 200};
+	d.interfaces[3] = {DETAIL_IF_BLE_PEER, true, 70000, 5};          // rx saturates
+	d.radio_known = true; d.rssi = -97; d.snr_q = -22; d.noise = -110;
+	d.utilisation_pct = 12; d.airtime_pct = 3;
+	d.propagation_known = true; d.store_messages = 8; d.store_bytes = 3300;   // 3 KB
+	d.pn_peers = 2; d.sync_ok = 5; d.sync_fail = 12; d.last_sync_s = 7260;   // 121 min
+	d.nb_count = 3;
+	d.neighbours[0] = {0x0e0f1011, DETAIL_IF_LORA, -88, 120};
+	d.neighbours[1] = {0x12131415, DETAIL_IF_TCP_SERVER, DETAIL_RSSI_UNKNOWN, 30};
+	d.neighbours[2] = {0x16171819, DETAIL_IF_ESPNOW, -70, 70000};    // minutes saturate
+	return d;
+}
+
+void test_detail_full_report_bytes() {
+	TEST_ASSERT_EQUAL_STRING("21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff", detail_hex(detail_full()).c_str());
+}
+
+void test_detail_minimal_report_bytes() {
+	NodeDetail d;
+	d.sender_id = 0x01020304;
+	d.uptime_s = 5;
+	TEST_ASSERT_EQUAL_STRING("21000102030400000005000000000000000000", detail_hex(d).c_str());
+}
+
+void test_detail_never_synced_and_saturated() {
+	NodeDetail d;
+	d.sender_id = 0xfedcba98; d.uptime_s = 86400;
+	const uint8_t hash[4] = {0x00, 0xff, 0x00, 0xff};
+	memcpy(d.fw_hash, hash, 4);
+	d.fw_version = 0x0200;
+	strcpy(d.env, "ozd");
+	d.propagation_known = true; d.store_messages = 70000; d.store_bytes = 80u * 1024u * 1024u;
+	d.sync_fail = 70000; d.last_sync_s = DETAIL_NEVER;
+	TEST_ASSERT_EQUAL_STRING("2102fedcba980001518000ff00ff0200036f7a6400ffffffff000000ffffffff00", detail_hex(d).c_str());
+}
+
+void test_detail_last_sync_saturates() {
+	NodeDetail d;
+	d.sender_id = 0xfedcba99; d.uptime_s = 1;
+	d.propagation_known = true; d.last_sync_s = 4000000;            // 66666 min -> 0xfffe
+	TEST_ASSERT_EQUAL_STRING("2102fedcba99000000010000000000000000000000000000000000fffe00", detail_hex(d).c_str());
+}
+
+void test_detail_cuts_neighbours_to_fit_and_flags_it() {
+	static NodeDetail d;
+	d = NodeDetail{};
+	d.sender_id = 0x0a0b0c0e; d.uptime_s = 60;
+	memset(d.env, 'x', DETAIL_ENV_MAX);
+	d.env[DETAIL_ENV_MAX] = 0;                                       // a 40-character name, cut
+	d.nb_count = DETAIL_MAX_NEIGHBOURS;                              // 60 asked, 48 kept, 47 fit
+	for (uint8_t i = 0; i < DETAIL_MAX_NEIGHBOURS; ++i) d.neighbours[i] = {i, DETAIL_IF_LORA, -100, 60};
+	const std::string hex = detail_hex(d);
+	TEST_ASSERT_EQUAL_size_t(TELEMETRY_DETAIL_WIRE_MAX_LEN * 2, hex.size());
+	TEST_ASSERT_EQUAL_STRING("21040a0b0c0e0000003c000000000000207878787878787878787878787878787878787878787878787878787878787878002f00000000019c0100000001019c0100000002019c0100000003019c0100000004019c0100000005019c0100000006019c0100000007019c0100000008019c0100000009019c010000000a019c010000000b019c010000000c019c010000000d019c010000000e019c010000000f019c0100000010019c0100000011019c0100000012019c0100000013019c0100000014019c0100000015019c0100000016019c0100000017019c0100000018019c0100000019019c010000001a019c010000001b019c010000001c019c010000001d019c010000001e019c010000001f019c0100000020019c0100000021019c0100000022019c0100000023019c0100000024019c0100000025019c0100000026019c0100000027019c0100000028019c0100000029019c010000002a019c010000002b019c010000002c019c010000002d019c010000002e019c01", hex.c_str());
+}
+
+void test_detail_round_trips_the_full_report() {
+	uint8_t in[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+	const size_t n = bytes_of("21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff", in, sizeof(in));
+	static NodeDetail d;
+	TEST_ASSERT_TRUE(telemetry_detail_decode(in, n, d));
+	TEST_ASSERT_EQUAL_STRING("impr-rad01-rev1", d.env);
+	TEST_ASSERT_EQUAL_UINT8(4, d.if_count);
+	TEST_ASSERT_EQUAL_UINT32(0xFFFF, d.interfaces[3].rx_packets);
+	TEST_ASSERT_EQUAL_INT8(-97, d.rssi);
+	TEST_ASSERT_EQUAL_UINT32(3u * 1024u, d.store_bytes);
+	TEST_ASSERT_EQUAL_UINT32(121u * 60u, d.last_sync_s);
+	TEST_ASSERT_EQUAL_UINT8(3, d.nb_count);
+	TEST_ASSERT_EQUAL_INT8(DETAIL_RSSI_UNKNOWN, d.neighbours[1].rssi);
+	TEST_ASSERT_EQUAL_UINT32(255u * 60u, d.neighbours[2].heard_s);
+	TEST_ASSERT_FALSE(d.neighbours_truncated);
+}
+
+void test_detail_decode_refuses_what_it_cannot_read() {
+	const char* refused[] = {
+		"01030a0b0c0d00000e1003000100090008001900120e0a010100170005",
+		"21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903",
+		"21000a0b0c0d00000e10a1b2c3d40156216161616161616161616161616161616161616161616161616161616161616161610000",
+		"21000a0b0c0d00000e10a1b2c3d40156000d01010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000000",
+		"21000a0b0c0d00000e10a1b2c3d401",
+	};
+	for (const char* hex : refused) {
+		uint8_t in[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+		const size_t n = bytes_of(hex, in, sizeof(in));
+		static NodeDetail d;
+		TEST_ASSERT_FALSE_MESSAGE(telemetry_detail_decode(in, n, d), hex);
+	}
+}
+
 int main() {
 	UNITY_BEGIN();
 	RUN_TEST(test_bootlog_that_fits_is_kept_whole);
@@ -724,5 +835,12 @@ int main() {
 	RUN_TEST(test_gateway_table_full_drops_the_oldest_and_refuses_bad_hashes);
 	RUN_TEST(test_telemetry_schedule_first_retry_and_interval);
 	RUN_TEST(test_telemetry_schedule_survives_the_millis_wrap);
+	RUN_TEST(test_detail_full_report_bytes);
+	RUN_TEST(test_detail_minimal_report_bytes);
+	RUN_TEST(test_detail_never_synced_and_saturated);
+	RUN_TEST(test_detail_last_sync_saturates);
+	RUN_TEST(test_detail_cuts_neighbours_to_fit_and_flags_it);
+	RUN_TEST(test_detail_round_trips_the_full_report);
+	RUN_TEST(test_detail_decode_refuses_what_it_cannot_read);
 	return UNITY_END();
 }

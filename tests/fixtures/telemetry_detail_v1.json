@@ -1,0 +1,1008 @@
+{
+ "note": "Board detail report, telemetry wire format 0x21 (TelemetryDetailCodec.h, tools/telemetry_detail_codec.py). Synthetic values only. 'encode': reports and their exact bytes (store size whole KB, ages whole minutes, counts saturate, percentages cap at 100, neighbours cut to fit 380 bytes and flagged). 'decode': bytes and what they decode to, or null when refused; decoded store size is whole KB x 1024, ages whole minutes x 60, last_sync_s null for never.",
+ "version": 33,
+ "encode": [
+  {
+   "name": "rad_full",
+   "detail": {
+    "sender_id": 168496141,
+    "uptime_s": 3600,
+    "fw_hash": "a1b2c3d4",
+    "fw_version": 342,
+    "env": "impr-rad01-rev1",
+    "interfaces": [
+     {
+      "kind": 1,
+      "up": true,
+      "rx_packets": 120,
+      "tx_packets": 80
+     },
+     {
+      "kind": 3,
+      "up": false,
+      "rx_packets": 0,
+      "tx_packets": 0
+     },
+     {
+      "kind": 4,
+      "up": true,
+      "rx_packets": 300,
+      "tx_packets": 200
+     },
+     {
+      "kind": 2,
+      "up": true,
+      "rx_packets": 70000,
+      "tx_packets": 5
+     }
+    ],
+    "radio_known": true,
+    "rssi": -97,
+    "snr_q": -22,
+    "noise": -110,
+    "utilisation_pct": 12,
+    "airtime_pct": 3,
+    "propagation_known": true,
+    "store_messages": 8,
+    "store_bytes": 3300,
+    "pn_peers": 2,
+    "sync_ok": 5,
+    "sync_fail": 12,
+    "last_sync_s": 7260,
+    "neighbours": [
+     {
+      "id": 235868177,
+      "kind": 1,
+      "rssi": -88,
+      "heard_s": 120
+     },
+     {
+      "id": 303240213,
+      "kind": 4,
+      "rssi": -128,
+      "heard_s": 30
+     },
+     {
+      "id": 370612249,
+      "kind": 3,
+      "rssi": -70,
+      "heard_s": 70000
+     }
+    ],
+    "neighbours_truncated": false
+   },
+   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff"
+  },
+  {
+   "name": "minimal",
+   "detail": {
+    "sender_id": 16909060,
+    "uptime_s": 5,
+    "fw_hash": "00000000",
+    "fw_version": 0,
+    "env": "",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": false,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": null,
+    "neighbours": [],
+    "neighbours_truncated": false
+   },
+   "hex": "21000102030400000005000000000000000000"
+  },
+  {
+   "name": "never_synced_and_saturated",
+   "detail": {
+    "sender_id": 4275878552,
+    "uptime_s": 86400,
+    "fw_hash": "00ff00ff",
+    "fw_version": 512,
+    "env": "ozd",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": true,
+    "store_messages": 70000,
+    "store_bytes": 83886080,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 70000,
+    "last_sync_s": null,
+    "neighbours": [],
+    "neighbours_truncated": false
+   },
+   "hex": "2102fedcba980001518000ff00ff0200036f7a6400ffffffff000000ffffffff00"
+  },
+  {
+   "name": "last_sync_saturates",
+   "detail": {
+    "sender_id": 4275878553,
+    "uptime_s": 1,
+    "fw_hash": "00000000",
+    "fw_version": 0,
+    "env": "",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": true,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": 4000000,
+    "neighbours": [],
+    "neighbours_truncated": false
+   },
+   "hex": "2102fedcba99000000010000000000000000000000000000000000fffe00"
+  },
+  {
+   "name": "neighbours_truncated_and_env_cut",
+   "detail": {
+    "sender_id": 168496142,
+    "uptime_s": 60,
+    "fw_hash": "00000000",
+    "fw_version": 0,
+    "env": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": false,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": null,
+    "neighbours": [
+     {
+      "id": 0,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 1,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 2,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 3,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 4,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 5,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 6,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 7,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 8,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 9,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 10,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 11,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 12,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 13,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 14,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 15,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 16,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 17,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 18,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 19,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 20,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 21,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 22,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 23,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 24,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 25,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 26,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 27,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 28,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 29,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 30,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 31,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 32,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 33,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 34,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 35,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 36,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 37,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 38,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 39,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 40,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 41,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 42,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 43,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 44,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 45,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 46,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 47,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 48,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 49,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 50,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 51,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 52,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 53,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 54,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 55,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 56,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 57,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 58,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 59,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     }
+    ],
+    "neighbours_truncated": false
+   },
+   "hex": "21040a0b0c0e0000003c000000000000207878787878787878787878787878787878787878787878787878787878787878002f00000000019c0100000001019c0100000002019c0100000003019c0100000004019c0100000005019c0100000006019c0100000007019c0100000008019c0100000009019c010000000a019c010000000b019c010000000c019c010000000d019c010000000e019c010000000f019c0100000010019c0100000011019c0100000012019c0100000013019c0100000014019c0100000015019c0100000016019c0100000017019c0100000018019c0100000019019c010000001a019c010000001b019c010000001c019c010000001d019c010000001e019c010000001f019c0100000020019c0100000021019c0100000022019c0100000023019c0100000024019c0100000025019c0100000026019c0100000027019c0100000028019c0100000029019c010000002a019c010000002b019c010000002c019c010000002d019c010000002e019c01"
+  }
+ ],
+ "decode": [
+  {
+   "name": "rad_full_decoded",
+   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff",
+   "detail": {
+    "sender_id": 168496141,
+    "uptime_s": 3600,
+    "fw_hash": "a1b2c3d4",
+    "fw_version": 342,
+    "env": "impr-rad01-rev1",
+    "interfaces": [
+     {
+      "kind": 1,
+      "up": true,
+      "rx_packets": 120,
+      "tx_packets": 80
+     },
+     {
+      "kind": 3,
+      "up": false,
+      "rx_packets": 0,
+      "tx_packets": 0
+     },
+     {
+      "kind": 4,
+      "up": true,
+      "rx_packets": 300,
+      "tx_packets": 200
+     },
+     {
+      "kind": 2,
+      "up": true,
+      "rx_packets": 65535,
+      "tx_packets": 5
+     }
+    ],
+    "radio_known": true,
+    "rssi": -97,
+    "snr_q": -22,
+    "noise": -110,
+    "utilisation_pct": 12,
+    "airtime_pct": 3,
+    "propagation_known": true,
+    "store_messages": 8,
+    "store_bytes": 3072,
+    "pn_peers": 2,
+    "sync_ok": 5,
+    "sync_fail": 12,
+    "last_sync_s": 7260,
+    "neighbours": [
+     {
+      "id": 235868177,
+      "kind": 1,
+      "rssi": -88,
+      "heard_s": 120
+     },
+     {
+      "id": 303240213,
+      "kind": 4,
+      "rssi": -128,
+      "heard_s": 0
+     },
+     {
+      "id": 370612249,
+      "kind": 3,
+      "rssi": -70,
+      "heard_s": 15300
+     }
+    ],
+    "neighbours_truncated": false
+   }
+  },
+  {
+   "name": "minimal_decoded",
+   "hex": "21000102030400000005000000000000000000",
+   "detail": {
+    "sender_id": 16909060,
+    "uptime_s": 5,
+    "fw_hash": "00000000",
+    "fw_version": 0,
+    "env": "",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": false,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": null,
+    "neighbours": [],
+    "neighbours_truncated": false
+   }
+  },
+  {
+   "name": "never_synced_and_saturated_decoded",
+   "hex": "2102fedcba980001518000ff00ff0200036f7a6400ffffffff000000ffffffff00",
+   "detail": {
+    "sender_id": 4275878552,
+    "uptime_s": 86400,
+    "fw_hash": "00ff00ff",
+    "fw_version": 512,
+    "env": "ozd",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": true,
+    "store_messages": 65535,
+    "store_bytes": 67107840,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 65535,
+    "last_sync_s": null,
+    "neighbours": [],
+    "neighbours_truncated": false
+   }
+  },
+  {
+   "name": "neighbours_truncated_and_env_cut_decoded",
+   "hex": "21040a0b0c0e0000003c000000000000207878787878787878787878787878787878787878787878787878787878787878002f00000000019c0100000001019c0100000002019c0100000003019c0100000004019c0100000005019c0100000006019c0100000007019c0100000008019c0100000009019c010000000a019c010000000b019c010000000c019c010000000d019c010000000e019c010000000f019c0100000010019c0100000011019c0100000012019c0100000013019c0100000014019c0100000015019c0100000016019c0100000017019c0100000018019c0100000019019c010000001a019c010000001b019c010000001c019c010000001d019c010000001e019c010000001f019c0100000020019c0100000021019c0100000022019c0100000023019c0100000024019c0100000025019c0100000026019c0100000027019c0100000028019c0100000029019c010000002a019c010000002b019c010000002c019c010000002d019c010000002e019c01",
+   "detail": {
+    "sender_id": 168496142,
+    "uptime_s": 60,
+    "fw_hash": "00000000",
+    "fw_version": 0,
+    "env": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": false,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": null,
+    "neighbours": [
+     {
+      "id": 0,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 1,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 2,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 3,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 4,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 5,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 6,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 7,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 8,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 9,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 10,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 11,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 12,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 13,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 14,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 15,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 16,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 17,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 18,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 19,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 20,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 21,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 22,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 23,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 24,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 25,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 26,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 27,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 28,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 29,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 30,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 31,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 32,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 33,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 34,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 35,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 36,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 37,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 38,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 39,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 40,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 41,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 42,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 43,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 44,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 45,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     },
+     {
+      "id": 46,
+      "kind": 1,
+      "rssi": -100,
+      "heard_s": 60
+     }
+    ],
+    "neighbours_truncated": true
+   }
+  },
+  {
+   "name": "health_report_not_detail",
+   "hex": "01030a0b0c0d00000e1003000100090008001900120e0a010100170005",
+   "detail": null
+  },
+  {
+   "name": "ends_inside_a_neighbour",
+   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903",
+   "detail": null
+  },
+  {
+   "name": "env_longer_than_allowed",
+   "hex": "21000a0b0c0d00000e10a1b2c3d40156216161616161616161616161616161616161616161616161616161616161616161610000",
+   "detail": null
+  },
+  {
+   "name": "too_many_interfaces",
+   "hex": "21000a0b0c0d00000e10a1b2c3d40156000d01010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000000",
+   "detail": null
+  },
+  {
+   "name": "shorter_than_the_fixed_part",
+   "hex": "21000a0b0c0d00000e10a1b2c3d401",
+   "detail": null
+  }
+ ]
+}
