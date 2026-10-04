@@ -57,7 +57,7 @@ def encode(d, out_len=WIRE_MAX_LEN):
     limit = min(out_len, WIRE_MAX_LEN)
     env = d["env"].encode("utf-8")[:ENV_MAX]
     ifs = d["interfaces"][:MAX_INTERFACES]
-    fixed = 17 + len(env) + 1 + len(ifs) * 6 + (5 if d["radio_known"] else 0) + \
+    fixed = 17 + len(env) + 1 + len(ifs) * 10 + (5 if d["radio_known"] else 0) + \
         (11 if d["propagation_known"] else 0) + 1
     if fixed > limit:
         return None
@@ -78,8 +78,7 @@ def encode(d, out_len=WIRE_MAX_LEN):
     out += struct.pack(">HB", d["fw_version"], len(env)) + env
     out.append(len(ifs))
     for f in ifs:
-        out += struct.pack(">BBHH", f["kind"], 1 if f["up"] else 0,
-                           _sat16(f["rx_packets"]), _sat16(f["tx_packets"]))
+        out += struct.pack(">BBII", f["kind"], 1 if f["up"] else 0, f["rx_bytes"], f["tx_bytes"])
     if d["radio_known"]:
         out += struct.pack(">bbbBB", d["rssi"], d["snr_q"], d["noise"],
                            _pct(d["utilisation_pct"]), _pct(d["airtime_pct"]))
@@ -114,12 +113,12 @@ def decode(data):
     at += env_len
     count = data[at]
     at += 1
-    if count > MAX_INTERFACES or at + count * 6 > len(data):
+    if count > MAX_INTERFACES or at + count * 10 > len(data):
         return None
     for _ in range(count):
-        kind, state, rx, tx = struct.unpack_from(">BBHH", data, at)
-        d["interfaces"].append({"kind": kind, "up": bool(state & 1), "rx_packets": rx, "tx_packets": tx})
-        at += 6
+        kind, state, rx, tx = struct.unpack_from(">BBII", data, at)
+        d["interfaces"].append({"kind": kind, "up": bool(state & 1), "rx_bytes": rx, "tx_bytes": tx})
+        at += 10
     if flags & FLAG_RADIO:
         if at + 5 > len(data):
             return None

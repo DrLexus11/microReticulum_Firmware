@@ -1,5 +1,5 @@
 {
- "note": "Board detail report, telemetry wire format 0x21 (TelemetryDetailCodec.h, tools/telemetry_detail_codec.py). Synthetic values only. 'encode': reports and their exact bytes (store size whole KB, ages whole minutes, counts saturate, percentages cap at 100, neighbours cut to fit 380 bytes and flagged). 'decode': bytes and what they decode to, or null when refused; decoded store size is whole KB x 1024, ages whole minutes x 60, last_sync_s null for never.",
+ "note": "Board detail report, telemetry wire format 0x21 (TelemetryDetailCodec.h, tools/telemetry_detail_codec.py). Synthetic values only. 'encode': reports and their exact bytes (interface bytes are cumulative since boot, store size whole KB, ages whole minutes, counts saturate, percentages cap at 100, neighbours cut to fit 380 bytes and flagged). 'decode': bytes and what they decode to, or null when refused; decoded store size is whole KB x 1024, ages whole minutes x 60, last_sync_s null for never.",
  "version": 33,
  "encode": [
   {
@@ -14,26 +14,26 @@
      {
       "kind": 1,
       "up": true,
-      "rx_packets": 120,
-      "tx_packets": 80
+      "rx_bytes": 48000,
+      "tx_bytes": 12000
      },
      {
       "kind": 3,
       "up": false,
-      "rx_packets": 0,
-      "tx_packets": 0
+      "rx_bytes": 0,
+      "tx_bytes": 0
      },
      {
       "kind": 4,
       "up": true,
-      "rx_packets": 300,
-      "tx_packets": 200
+      "rx_bytes": 5000000,
+      "tx_bytes": 2000000
      },
      {
       "kind": 2,
       "up": true,
-      "rx_packets": 70000,
-      "tx_packets": 5
+      "rx_bytes": 70000,
+      "tx_bytes": 5
      }
     ],
     "radio_known": true,
@@ -71,7 +71,7 @@
     ],
     "neighbours_truncated": false
    },
-   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff"
+   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff"
   },
   {
    "name": "minimal",
@@ -546,7 +546,7 @@
  "decode": [
   {
    "name": "rad_full_decoded",
-   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff",
+   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff",
    "detail": {
     "sender_id": 168496141,
     "uptime_s": 3600,
@@ -557,26 +557,26 @@
      {
       "kind": 1,
       "up": true,
-      "rx_packets": 120,
-      "tx_packets": 80
+      "rx_bytes": 48000,
+      "tx_bytes": 12000
      },
      {
       "kind": 3,
       "up": false,
-      "rx_packets": 0,
-      "tx_packets": 0
+      "rx_bytes": 0,
+      "tx_bytes": 0
      },
      {
       "kind": 4,
       "up": true,
-      "rx_packets": 300,
-      "tx_packets": 200
+      "rx_bytes": 5000000,
+      "tx_bytes": 2000000
      },
      {
       "kind": 2,
       "up": true,
-      "rx_packets": 65535,
-      "tx_packets": 5
+      "rx_bytes": 70000,
+      "tx_bytes": 5
      }
     ],
     "radio_known": true,
@@ -986,7 +986,7 @@
   },
   {
    "name": "ends_inside_a_neighbour",
-   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d72657631040101007800500300000000000401012c00c80201ffff00059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903",
+   "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903",
    "detail": null
   },
   {
@@ -996,7 +996,7 @@
   },
   {
    "name": "too_many_interfaces",
-   "hex": "21000a0b0c0d00000e10a1b2c3d40156000d01010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000001010000000000",
+   "hex": "21000a0b0c0d00000e10a1b2c3d40156000d0101000000000000000001010000000000000000010100000000000000000101000000000000000001010000000000000000010100000000000000000101000000000000000001010000000000000000010100000000000000000101000000000000000001010000000000000000010100000000000000000101000000000000000000",
    "detail": null
   },
   {

@@ -31,9 +31,11 @@
 //   10   4     fw_hash       first four bytes of the running image's SHA-256
 //   14   2     fw_version    u16  major << 8 | minor
 //   16   1     env_len       u8   then env_len bytes: the build environment's name
-//   --         if_count      u8   then if_count x 6 bytes:
+//   --         if_count      u8   then if_count x 10 bytes:
 //                kind u8 (DETAIL_IF_*), state u8 (bit 0: up),
-//                rx u16, tx u16 -- packets since the previous detail report
+//                rx u32, tx u32 -- bytes since boot, as the interface counts
+//                them (cumulative, so the backend takes rates and a restart
+//                reads as a counter reset)
 //   --         FLAG_RADIO:   rssi i8 dBm, snr i8 (quarter dB), noise i8 dBm,
 //                            utilisation u8 %, airtime u8 %
 //   --         FLAG_PROPAGATION: store_msgs u16, store_kb u16, peers u8,
@@ -79,8 +81,8 @@
 struct DetailInterface {
   uint8_t kind = DETAIL_IF_OTHER;
   bool up = false;
-  uint32_t rx_packets = 0;
-  uint32_t tx_packets = 0;
+  uint32_t rx_bytes = 0;
+  uint32_t tx_bytes = 0;
 };
 
 struct DetailNeighbour {
@@ -143,7 +145,7 @@ inline size_t telemetry_detail_encode(const NodeDetail& d, uint8_t* out, size_t 
   const size_t limit = out_len < TELEMETRY_DETAIL_WIRE_MAX_LEN ? out_len : TELEMETRY_DETAIL_WIRE_MAX_LEN;
   size_t env_len = strnlen(d.env, DETAIL_ENV_MAX);
   const uint8_t ifs = d.if_count > DETAIL_MAX_INTERFACES ? DETAIL_MAX_INTERFACES : d.if_count;
-  size_t fixed = 17 + env_len + 1 + (size_t)ifs * 6 + (d.radio_known ? 5 : 0) +
+  size_t fixed = 17 + env_len + 1 + (size_t)ifs * 10 + (d.radio_known ? 5 : 0) +
                  (d.propagation_known ? 11 : 0) + 1;
   if (out == nullptr || fixed > limit) return 0;
   const uint8_t wanted = d.nb_count > DETAIL_MAX_NEIGHBOURS ? DETAIL_MAX_NEIGHBOURS : d.nb_count;
@@ -169,8 +171,8 @@ inline size_t telemetry_detail_encode(const NodeDetail& d, uint8_t* out, size_t 
     const DetailInterface& f = d.interfaces[i];
     out[at++] = f.kind;
     out[at++] = f.up ? 0x01 : 0x00;
-    detail_put16(out, at, detail_sat16(f.rx_packets));
-    detail_put16(out, at, detail_sat16(f.tx_packets));
+    detail_put32(out, at, f.rx_bytes);
+    detail_put32(out, at, f.tx_bytes);
   }
   if (d.radio_known) {
     out[at++] = (uint8_t)d.rssi;
@@ -217,14 +219,14 @@ inline bool telemetry_detail_decode(const uint8_t* in, size_t len, NodeDetail& o
   out.env[env_len] = 0;
   at += env_len;
   out.if_count = in[at++];
-  if (out.if_count > DETAIL_MAX_INTERFACES || at + (size_t)out.if_count * 6 > len) return false;
+  if (out.if_count > DETAIL_MAX_INTERFACES || at + (size_t)out.if_count * 10 > len) return false;
   for (uint8_t i = 0; i < out.if_count; ++i) {
     DetailInterface& f = out.interfaces[i];
     f.kind = in[at];
     f.up = (in[at + 1] & 0x01) != 0;
-    f.rx_packets = detail_get16(in + at + 2);
-    f.tx_packets = detail_get16(in + at + 4);
-    at += 6;
+    f.rx_bytes = detail_get32(in + at + 2);
+    f.tx_bytes = detail_get32(in + at + 6);
+    at += 10;
   }
   if (flags & DETAIL_FLAG_RADIO) {
     if (at + 5 > len) return false;
