@@ -1920,6 +1920,25 @@ the field shows, not to have something to build.
      single-packet path is unchanged.
    - **T3:** every board reporting. Rev 1 and the spare report now; the first
      Rev 2 (UART breadboard) needs a UART flash; the OZDs stay out.
+   - **Dashboard v2, done 2026-10-04 (reticulum-telemetry #5):** boards by
+     their announced name (the gateway learns it from the board's own
+     NomadNet announce; the 4-byte sender id is the start of the same
+     identity's hash), one table row per board with every column filled,
+     headline stats, carriers as a state timeline.
+   - **T5, more telemetry, scheduled with T4:** a separate, less frequent
+     **detail report** (one new message type with a version byte, pinned by a
+     fixture), so the 29-34 byte health report stays small on LoRa. Fields,
+     in order of value:
+     1. **Firmware identity:** version, build environment, git hash. Rev 1 ran
+        PR E2's stripped chain-test build for days unnoticed (2026-10-04).
+     2. **Radio:** last RSSI and SNR, noise floor, channel utilisation and
+        airtime, packets received and sent.
+     3. **Traffic per carrier:** packets and bytes, in and out.
+     4. **Reticulum:** link table, active links, announce queue, path
+        requests, and the LXMF store's messages and bytes.
+     5. **System:** chip temperature, free flash, Wi-Fi RSSI, time-sync source
+        and age, the slowest service poll (the unbounded `reticulum.loop`).
+     6. **Power:** supply voltage, where the board can measure it.
    - **T4, topology, scheduled after T2:** each board reports its one-hop
      neighbours and the carrier it hears each on, in a separate, less
      frequent report (a new message type with a version byte and a
