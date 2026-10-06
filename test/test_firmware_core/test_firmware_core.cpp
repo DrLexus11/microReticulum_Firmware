@@ -13,6 +13,7 @@
 #include "PositionCodec.h"
 #include "TelemetryCodec.h"
 #include "ServiceRunner.h"
+#include "TelemetryUplink.h"
 
 #include <cstdint>
 #include <cstring>
@@ -552,6 +553,113 @@ void test_runner_stops_in_reverse_order() {
 
 // Every state has a name a person can read in a [svc] line or on the services
 // page, and "unmeasured" is its own state: never reported as healthy.
+// ---- telemetry uplink (F4a) ----
+
+static void gateway_hash(uint8_t* out, uint8_t tag) {
+	for (int i = 0; i < TELEMETRY_HASH_LEN; ++i) out[i] = (uint8_t)(tag + i);
+}
+
+// Hops by the first byte of the hash: a test stand-in for the path table.
+static uint8_t fake_hops_table[256];
+static uint8_t fake_hops(const uint8_t* hash) { return fake_hops_table[hash[0]]; }
+
+static void fake_hops_reset() {
+	for (int i = 0; i < 256; ++i) fake_hops_table[i] = TELEMETRY_HOPS_UNKNOWN;
+}
+
+void test_gateway_nearest_with_a_path_wins() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	uint8_t a[16], b[16], c[16];
+	gateway_hash(a, 0x10); gateway_hash(b, 0x20); gateway_hash(c, 0x30);
+	gateways.heard(a, 16, 1000);
+	gateways.heard(b, 16, 1000);
+	gateways.heard(c, 16, 1000);
+	fake_hops_table[0x10] = 4;
+	fake_hops_table[0x20] = 2;
+	// 0x30: heard, but no path -- never chosen, however near it might be.
+	const TelemetryGateways::Entry* best = gateways.best(2000, fake_hops);
+	TEST_ASSERT_NOT_NULL(best);
+	TEST_ASSERT_EQUAL_UINT8(0x20, best->hash[0]);
+}
+
+void test_gateway_tie_goes_to_the_most_recently_heard() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	uint8_t a[16], b[16];
+	gateway_hash(a, 0x10); gateway_hash(b, 0x20);
+	gateways.heard(a, 16, 1000);
+	gateways.heard(b, 16, 5000);
+	fake_hops_table[0x10] = 3;
+	fake_hops_table[0x20] = 3;
+	TEST_ASSERT_EQUAL_UINT8(0x20, gateways.best(6000, fake_hops)->hash[0]);
+	gateways.heard(a, 16, 7000);   // heard again: now the fresher of two equals
+	TEST_ASSERT_EQUAL_UINT8(0x10, gateways.best(8000, fake_hops)->hash[0]);
+}
+
+void test_gateway_none_reachable_is_null_and_newest_is_asked() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	TEST_ASSERT_NULL(gateways.best(0, fake_hops));
+	TEST_ASSERT_NULL(gateways.newest(0));
+	uint8_t a[16], b[16];
+	gateway_hash(a, 0x10); gateway_hash(b, 0x20);
+	gateways.heard(a, 16, 1000);
+	gateways.heard(b, 16, 2000);
+	TEST_ASSERT_NULL(gateways.best(3000, fake_hops));
+	TEST_ASSERT_EQUAL_UINT8(0x20, gateways.newest(3000)->hash[0]);
+}
+
+void test_gateway_unheard_for_the_expiry_is_forgotten() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	uint8_t a[16];
+	gateway_hash(a, 0x10);
+	fake_hops_table[0x10] = 1;
+	gateways.heard(a, 16, 1000);
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + TELEMETRY_GATEWAY_EXPIRY_MS - 1, fake_hops));
+	TEST_ASSERT_NULL(gateways.best(1000 + TELEMETRY_GATEWAY_EXPIRY_MS, fake_hops));
+	TEST_ASSERT_EQUAL_UINT32(0, gateways.count(1000 + TELEMETRY_GATEWAY_EXPIRY_MS));
+}
+
+void test_gateway_table_full_drops_the_oldest_and_refuses_bad_hashes() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	uint8_t h[16];
+	for (int i = 0; i < TELEMETRY_GATEWAY_CAPACITY; ++i) {
+		gateway_hash(h, (uint8_t)(0x10 * (i + 1)));
+		gateways.heard(h, 16, 1000 + (uint32_t)i);
+	}
+	gateway_hash(h, 0xF0);
+	gateways.heard(h, 16, 9000);   // evicts 0x10, heard first
+	TEST_ASSERT_EQUAL_UINT32(TELEMETRY_GATEWAY_CAPACITY, gateways.count(9000));
+	fake_hops_table[0x10] = 1;
+	TEST_ASSERT_NULL(gateways.best(9000, fake_hops));
+	TEST_ASSERT_FALSE(gateways.heard(h, 15, 9000));
+	TEST_ASSERT_FALSE(gateways.heard(nullptr, 16, 9000));
+}
+
+void test_telemetry_schedule_first_retry_and_interval() {
+	TelemetrySchedule schedule(1000);
+	TEST_ASSERT_FALSE(schedule.due(1000 + TELEMETRY_FIRST_MS - 1));
+	TEST_ASSERT_TRUE(schedule.due(1000 + TELEMETRY_FIRST_MS));
+	const uint32_t t = 1000 + TELEMETRY_FIRST_MS;
+	schedule.unreachable(t);
+	TEST_ASSERT_FALSE(schedule.due(t + TELEMETRY_RETRY_MS - 1));
+	TEST_ASSERT_TRUE(schedule.due(t + TELEMETRY_RETRY_MS));
+	schedule.sent(t + TELEMETRY_RETRY_MS);
+	TEST_ASSERT_TRUE(schedule.ever_sent());
+	TEST_ASSERT_FALSE(schedule.due(t + TELEMETRY_RETRY_MS + TELEMETRY_INTERVAL_MS - 1));
+	TEST_ASSERT_TRUE(schedule.due(t + TELEMETRY_RETRY_MS + TELEMETRY_INTERVAL_MS));
+}
+
+void test_telemetry_schedule_survives_the_millis_wrap() {
+	TelemetrySchedule schedule(0xFFFFFFFFu - 10000u);
+	// The first report falls after the 49.7-day wrap; due() must still agree.
+	TEST_ASSERT_FALSE(schedule.due(0xFFFFFFFFu - 5000u));
+	TEST_ASSERT_TRUE(schedule.due((uint32_t)(0xFFFFFFFFu - 10000u + TELEMETRY_FIRST_MS)));
+}
+
 void test_every_service_state_has_a_name() {
 	TEST_ASSERT_EQUAL_STRING("starting",   service_state_name(ServiceState::Starting));
 	TEST_ASSERT_EQUAL_STRING("healthy",    service_state_name(ServiceState::Healthy));
@@ -609,5 +717,12 @@ int main() {
 	RUN_TEST(test_runner_stops_in_reverse_order);
 	RUN_TEST(test_runner_refuses_past_its_capacity);
 	RUN_TEST(test_every_service_state_has_a_name);
+	RUN_TEST(test_gateway_nearest_with_a_path_wins);
+	RUN_TEST(test_gateway_tie_goes_to_the_most_recently_heard);
+	RUN_TEST(test_gateway_none_reachable_is_null_and_newest_is_asked);
+	RUN_TEST(test_gateway_unheard_for_the_expiry_is_forgotten);
+	RUN_TEST(test_gateway_table_full_drops_the_oldest_and_refuses_bad_hashes);
+	RUN_TEST(test_telemetry_schedule_first_retry_and_interval);
+	RUN_TEST(test_telemetry_schedule_survives_the_millis_wrap);
 	return UNITY_END();
 }

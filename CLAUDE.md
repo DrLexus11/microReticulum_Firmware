@@ -42,8 +42,12 @@ Design rationale and hardware acceptance records are in `docs/TAKNative.md` and
 - **Approved lab conditions: no duty-cycle limiting.** The zero airtime limit is
   intended, not an oversight. Gain (21) is the only legal constraint. Field
   approval for voice and video is sought separately.
-- **Push to `origin` (DrLexus11) only.** `attermann` and `upstream` are
-  push-disabled on purpose. Branch rather than committing to `master`.
+- **DrLexus11 remotes only.** Since 2026-10-02 every repository has only
+  `origin` (and `upstream`, where present) pointing at DrLexus11; the original
+  projects' remotes were removed so nothing can be pushed, branched or PR'd
+  to them by accident. `gh repo set-default` is pinned to DrLexus11 in each,
+  because `gh` targets a fork's parent by default. Never re-add an original
+  repository as a remote. Branch rather than committing to `master`.
 - **Fleet secrets and IFAC passphrases are prompted on the terminal**, never
   accepted as command-line arguments — that keeps them out of shell history and
   process listings.
