@@ -76,11 +76,14 @@ public:
   // path and the fewest hops, the most recently heard breaking a tie. Null
   // when none has a path. `hops` returns TELEMETRY_HOPS_UNKNOWN for no path.
   template <typename HopsFn>
-  const Entry* best(uint32_t now_ms, HopsFn hops) const {
+  // `max_age_ms` narrows it to gateways heard recently. A path outlives the
+  // gateway it leads to by days, so a board that keeps its reports when out
+  // of reach (T2) asks for one heard within a few announce intervals.
+  const Entry* best(uint32_t now_ms, HopsFn hops, uint32_t max_age_ms = TELEMETRY_GATEWAY_EXPIRY_MS) const {
     const Entry* chosen = nullptr;
     uint8_t chosen_hops = TELEMETRY_HOPS_UNKNOWN;
     for (const Entry& e : _entries) {
-      if (!current(e, now_ms)) continue;
+      if (!current(e, now_ms) || now_ms - e.heard_ms >= max_age_ms) continue;
       const uint8_t h = hops(e.hash);
       if (h == TELEMETRY_HOPS_UNKNOWN) continue;
       if (chosen == nullptr || h < chosen_hops ||

@@ -42,6 +42,12 @@
 #include "TelemetryCodec.h"
 #include "TelemetryDetailCodec.h"
 #include "TelemetryNeighbours.h"
+#if defined(LXMF_PROPAGATION_NODE)
+#include <new>
+#include "LXMFCompose.h"
+#include "TelemetryBatchCodec.h"
+#include "TelemetryKept.h"
+#endif
 
 // Below these, the heap is short of what the mesh stack needs to keep working.
 // heap8/largest8, not "internal": see the [mem] line in heap_watch().
@@ -400,8 +406,30 @@ static void telemetry_fill_node(NodeTelemetry& report) {
   }
 }
 
+#ifndef TELEMETRY_BATCH_INTERVAL_MS
+// T2: kept reports leave about hourly while no gateway is in reach -- one LXMF
+// message into this node's own propagation store, collected by the gateway
+// when it next reaches the store.
+#define TELEMETRY_BATCH_INTERVAL_MS (60UL * 60UL * 1000UL)
+#endif
+#define TELEMETRY_BATCH_TITLE "telemetry/batch"
+
+// Live reports go only to a gateway heard this recently. Reticulum keeps a path
+// for days after its far end has gone, so "has a path" cannot tell a board that
+// drove out of range; a gateway announces every 10 minutes, and two and a half
+// of those unheard is the board's cue to keep its reports instead (T2). A false
+// alarm only delays reports into a batch. Without a propagation store there is
+// nothing to keep them in, and a stale gateway is still the best guess.
+#ifndef TELEMETRY_GATEWAY_LIVE_MS
+#if defined(LXMF_PROPAGATION_NODE)
+#define TELEMETRY_GATEWAY_LIVE_MS (25UL * 60UL * 1000UL)
+#else
+#define TELEMETRY_GATEWAY_LIVE_MS TELEMETRY_GATEWAY_EXPIRY_MS
+#endif
+#endif
+
 #ifndef TELEMETRY_SEND_BUDGET_MS
-#define TELEMETRY_SEND_BUDGET_MS 250
+#define TELEMETRY_SEND_BUDGET_MS 300
 #endif
 
 #ifndef TELEMETRY_DETAIL_INTERVAL_MS
@@ -517,11 +545,16 @@ public:
 
   // A poll that sends encrypts one packet to the gateway: 167 ms measured on
   // Rev 1 (2026-10-04), once per health report and once per detail report,
-  // never both in one poll. Every other poll returns at once.
+  // never both in one poll. A T2 batch (sign, encrypt, flash write) measured
+  // 159-237 ms on Rev 1 (2026-10-08), in a poll of its own; its announce in
+  // the next. Every other poll returns at once.
   uint32_t budget_ms() const override { return TELEMETRY_SEND_BUDGET_MS; }
 
   bool init(const AppContext& context) override {
     _schedule = TelemetrySchedule(context.boot_ms);
+#if defined(LXMF_PROPAGATION_NODE)
+    if (!t2_allocate()) printf("[telemetry] T2 off: no memory for kept reports\n");
+#endif
     static RNS::HAnnounceHandler handler(new TelemetryUplinkAnnounceHandler());
     RNS::Transport::register_announce_handler(handler);
     return true;
@@ -531,6 +564,23 @@ public:
   // gateway reachable, ask for a path to the newest heard and retry sooner.
   void poll(uint32_t now_ms) override {
     if (_detail_gateway) { send_detail(now_ms); return; }
+#if defined(LXMF_PROPAGATION_NODE)
+    // The announce that lets the gateway verify a batch: a poll after the
+    // batch, so the two signatures never share one.
+    if (_announce_pending) {
+      _announce_pending = false;
+      announce_delivery();
+      return;
+    }
+    // Back in reach with reports kept: they leave now, a poll after the live
+    // report so the two cryptographic jobs never share one.
+    if (_flush_gateway) {
+      const RNS::Identity gateway = _flush_gateway;
+      _flush_gateway = {RNS::Type::NONE};
+      compose_kept(now_ms, gateway);
+      return;
+    }
+#endif
     if (!_schedule.due(now_ms)) return;
     _attempted = true;
     if (!reticulum || !RNS::Transport::identity()) { _schedule.unreachable(now_ms); return; }
@@ -540,17 +590,22 @@ public:
       if (!RNS::Transport::has_path(h)) return TELEMETRY_HOPS_UNKNOWN;
       const uint8_t hops = RNS::Transport::hops_to(h);
       return hops >= TELEMETRY_HOPS_UNKNOWN ? (uint8_t)(TELEMETRY_HOPS_UNKNOWN - 1) : hops;
-    });
+    }, TELEMETRY_GATEWAY_LIVE_MS);
     if (best == nullptr) {
       const TelemetryGateways::Entry* newest = telemetry_gateways().newest(now_ms);
       if (newest != nullptr) RNS::Transport::request_path(RNS::Bytes(newest->hash, TELEMETRY_HASH_LEN));
+      keep_while_unreachable(now_ms);
       _schedule.unreachable(now_ms);
       return;
     }
     const RNS::Bytes gateway_hash(best->hash, TELEMETRY_HASH_LEN);
     const RNS::Identity gateway_identity = RNS::Identity::recall(gateway_hash);
+#if defined(LXMF_PROPAGATION_NODE)
+    if (gateway_identity) _last_gateway = gateway_identity;
+#endif
     if (!gateway_identity) {
       RNS::Transport::request_path(gateway_hash);
+      keep_while_unreachable(now_ms);
       _schedule.unreachable(now_ms);
       return;
     }
@@ -585,6 +640,9 @@ public:
       _detail_sender = report.sender_id;
       _detail_uptime = report.uptime_s;
     }
+#if defined(LXMF_PROPAGATION_NODE)
+    if (t2() && !t2()->kept.empty()) _flush_gateway = gateway_identity;
+#endif
   }
 
   Health health() const override {
@@ -601,15 +659,154 @@ public:
   }
 
 private:
+#if defined(LXMF_PROPAGATION_NODE)
+  // T2, LXMF reach (TelemetryKept.h, TelemetryBatchCodec.h): the kept reports,
+  // and the batch they leave in, as one block allocated once in init() -- in
+  // PSRAM where the board has it, since internal RAM is what these boards run
+  // short of (about 5 KB).
+  struct T2Buffers {
+    TelemetryKept kept;
+    BatchEntry entries[TELEMETRY_KEPT_MAX_ENTRIES];
+    uint8_t batch[TELEMETRY_BATCH_MAX_LEN];
+  };
+  static T2Buffers*& t2() { static T2Buffers* buffers = nullptr; return buffers; }
+  static bool t2_allocate() {
+    if (t2()) return true;
+    void* mem = nullptr;
+#if defined(ESP32)
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) mem = heap_caps_malloc(sizeof(T2Buffers), MALLOC_CAP_SPIRAM);
+#endif
+    if (mem == nullptr) mem = malloc(sizeof(T2Buffers));
+    if (mem == nullptr) return false;
+    t2() = new (mem) T2Buffers();
+    return true;
+  }
+
+  static uint32_t unix_now() {
+    return RNS::Utilities::OS::wall_time_known() ? (uint32_t)RNS::Utilities::OS::wall_time() : 0u;
+  }
+
+  // While no gateway is in reach: one health report per interval, a detail
+  // report per detail interval, nothing cryptographic; then the batch, once an
+  // hour's worth is kept or the keeper is nearly full.
+  void keep_while_unreachable(uint32_t now_ms) {
+    if (!t2() || !RNS::Transport::identity()) return;
+    TelemetryKept& kept = t2()->kept;
+    if (!_kept_any || now_ms - _kept_last >= TELEMETRY_INTERVAL_MS) {
+      _kept_any = true;
+      _kept_last = now_ms;
+      NodeTelemetry report;
+      telemetry_fill_node(report);
+      _runner.collect(report);
+      uint8_t wire[TELEMETRY_WIRE_MAX_LEN];
+      const size_t len = telemetry_encode(report, wire, sizeof(wire));
+      if (len > 0) kept.keep(wire, len, now_ms, unix_now());
+      if (!_kept_detail_any || now_ms - _kept_detail_last >= TELEMETRY_DETAIL_INTERVAL_MS) {
+        _kept_detail_any = true;
+        _kept_detail_last = now_ms;
+        NodeDetail& detail = detail_scratch();
+        uint8_t* dwire = detail_wire_scratch();
+        telemetry_fill_detail(detail, report.sender_id, report.uptime_s);
+        const size_t dlen = telemetry_detail_encode(detail, dwire, TELEMETRY_DETAIL_WIRE_MAX_LEN);
+        if (dlen > 0) kept.keep(dwire, dlen, now_ms, unix_now());
+      }
+      return;   // compose on a later poll, not beside the reports' filling
+    }
+    if (kept.empty()) return;
+    const bool hour = now_ms - kept.oldest_ms() >= TELEMETRY_BATCH_INTERVAL_MS;
+    const bool nearly_full = kept.encoded_len() + TELEMETRY_BATCH_ENTRY_HEADER + TELEMETRY_DETAIL_WIRE_MAX_LEN
+                             > TELEMETRY_BATCH_MAX_LEN;
+    if (!hour && !nearly_full) return;
+    if (_compose_failed && now_ms - _compose_failed_at < TELEMETRY_INTERVAL_MS) return;
+    // Addressed to the newest gateway heard, or -- in a partition longer than
+    // the gateway list's two-hour expiry -- the last one this node knew.
+    const TelemetryGateways::Entry* newest = telemetry_gateways().newest(now_ms);
+    if (newest != nullptr) {
+      const RNS::Identity heard = RNS::Identity::recall(RNS::Bytes(newest->hash, TELEMETRY_HASH_LEN));
+      if (heard) _last_gateway = heard;
+    }
+    if (!_last_gateway) return;   // no gateway known since boot: nobody to address; keep
+    compose_kept(now_ms, _last_gateway);
+  }
+
+  // The kept reports as one LXMF message to the gateway's delivery
+  // destination, signed by this node, into this node's own propagation store.
+  // On the next poll this node's delivery destination is announced, so the
+  // gateway can verify the signature when it collects the message. One
+  // signature, one encryption and a flash write in this poll: 159-237 ms on
+  // Rev 1, within TELEMETRY_SEND_BUDGET_MS.
+  void compose_kept(uint32_t now_ms, const RNS::Identity& gateway_identity) {
+    if (!t2() || t2()->kept.empty()) return;
+    const uint32_t started = (uint32_t)millis();
+    TelemetryKept& kept = t2()->kept;
+    BatchEntry* entries = t2()->entries;
+    uint8_t* batch = t2()->batch;
+    const RNS::Identity& self = RNS::Transport::identity();
+    const size_t n = kept.entries(entries, TELEMETRY_KEPT_MAX_ENTRIES, now_ms);
+    const RNS::Bytes self_hash = self.hash();
+    const uint8_t* h = self_hash.data();
+    const uint32_t sender = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) | ((uint32_t)h[2] << 8) | (uint32_t)h[3];
+    const size_t len = telemetry_batch_encode(sender, unix_now(), kept.dropped(), entries, n, batch,
+                                              TELEMETRY_BATCH_MAX_LEN);
+
+    RNS::Destination self_delivery(self, RNS::Type::Destination::OUT, RNS::Type::Destination::SINGLE,
+                                   LXMF_APP_NAME, LXMF_DELIVERY_ASPECT);
+    RNS::Destination gateway(gateway_identity, RNS::Type::Destination::OUT, RNS::Type::Destination::SINGLE,
+                             LXMF_APP_NAME, LXMF_DELIVERY_ASPECT);
+    const double timestamp = RNS::Utilities::OS::wall_time_known() ? RNS::Utilities::OS::wall_time() : 0.0;
+    const RNS::Bytes blob = len > 0 ? lxmf_compose_propagated(self, self_delivery.hash(), gateway, timestamp,
+                                                              RNS::Bytes(TELEMETRY_BATCH_TITLE),
+                                                              RNS::Bytes(batch, len))
+                                    : RNS::Bytes();
+    if (!blob || !lxmf_store_put(blob)) {
+      _compose_failed = true;
+      _compose_failed_at = now_ms;
+      printf("[telemetry] could not store a batch of %u kept report(s); kept for later\n", (unsigned)n);
+      return;
+    }
+    _compose_failed = false;
+    printf("[telemetry] %u kept report(s) in a %u-byte batch for <%s>, held in this node's store (%lu ms)\n",
+           (unsigned)n, (unsigned)len, gateway.hash().toHex().substr(0, 16).c_str(),
+           (unsigned long)((uint32_t)millis() - started));
+    kept.clear();
+    _announce_pending = true;
+  }
+
+  // This node's lxmf.delivery, registered once so it answers path requests and
+  // can announce. Registered elsewhere already (the RRC bridge, when built):
+  // that announces it, and nothing is lost here.
+  static void announce_delivery() {
+    static bool tried = false;
+    static RNS::Destination delivery{RNS::Type::NONE};
+    if (!tried) {
+      tried = true;
+      try {
+        delivery = RNS::Destination(RNS::Transport::identity(), RNS::Type::Destination::IN,
+                                    RNS::Type::Destination::SINGLE, LXMF_APP_NAME, LXMF_DELIVERY_ASPECT);
+      } catch (const std::exception&) {
+        delivery = {RNS::Type::NONE};
+      }
+    }
+    if (delivery) delivery.announce();
+  }
+#else
+  void keep_while_unreachable(uint32_t) {}   // T2 needs a propagation store
+#endif
+
+  // One detail report and its wire bytes for the live send and the keeper
+  // alike: static, so nothing this size is allocated per report.
+  static NodeDetail& detail_scratch() { static NodeDetail d; return d; }
+  static uint8_t* detail_wire_scratch() { static uint8_t w[TELEMETRY_DETAIL_WIRE_MAX_LEN]; return w; }
+
   // Statics for the report and its wire bytes: nothing this size is
   // allocated per report.
   void send_detail(uint32_t now_ms) {
-    static NodeDetail detail;
-    static uint8_t wire[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+    NodeDetail& detail = detail_scratch();
+    uint8_t* wire = detail_wire_scratch();
     const RNS::Identity gateway_identity = _detail_gateway;
     _detail_gateway = {RNS::Type::NONE};
     telemetry_fill_detail(detail, _detail_sender, _detail_uptime);
-    const size_t len = telemetry_detail_encode(detail, wire, sizeof(wire));
+    const size_t len = telemetry_detail_encode(detail, wire, TELEMETRY_DETAIL_WIRE_MAX_LEN);
     if (len == 0) return;
     RNS::Destination gateway(gateway_identity, RNS::Type::Destination::OUT,
                              RNS::Type::Destination::SINGLE,
@@ -633,6 +830,19 @@ private:
   RNS::Identity _detail_gateway{RNS::Type::NONE};
   uint32_t _detail_sender = 0;
   uint32_t _detail_uptime = 0;
+#if defined(LXMF_PROPAGATION_NODE)
+  bool _kept_any = false;
+  uint32_t _kept_last = 0;
+  bool _kept_detail_any = false;
+  uint32_t _kept_detail_last = 0;
+  bool _compose_failed = false;
+  uint32_t _compose_failed_at = 0;
+  RNS::Identity _flush_gateway{RNS::Type::NONE};
+  // Batches are addressed to the last gateway this node knew, which does not
+  // expire: live selection needs a recent one, a batch only needs an address.
+  RNS::Identity _last_gateway{RNS::Type::NONE};
+  bool _announce_pending = false;
+#endif
   mutable char _reason[32] = {};
 };
 #endif

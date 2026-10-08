@@ -12,6 +12,8 @@
 #include "ESPNowProtocol.h"
 #include "PositionCodec.h"
 #include "TelemetryCodec.h"
+#include "TelemetryBatchCodec.h"
+#include "TelemetryKept.h"
 #include "TelemetryDetailCodec.h"
 #include "TelemetryNeighbours.h"
 #include "ServiceRunner.h"
@@ -624,6 +626,24 @@ void test_gateway_unheard_for_the_expiry_is_forgotten() {
 	TEST_ASSERT_EQUAL_UINT32(0, gateways.count(1000 + TELEMETRY_GATEWAY_EXPIRY_MS));
 }
 
+// A path outlives its gateway by days: a board keeping reports asks for one
+// heard recently, and is told none when the last announce is too old.
+void test_gateway_live_needs_a_recent_announce() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	uint8_t a[16];
+	gateway_hash(a, 0x10);
+	fake_hops_table[0x10] = 2;   // the path is still there
+	gateways.heard(a, 16, 1000);
+	const uint32_t live = 25u * 60u * 1000u;
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + live - 1, fake_hops, live));
+	TEST_ASSERT_NULL(gateways.best(1000 + live, fake_hops, live));
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + live, fake_hops));          // without the limit: still chosen
+	TEST_ASSERT_EQUAL_UINT8(0x10, gateways.newest(1000 + live)->hash[0]); // and still addressable
+	gateways.heard(a, 16, 1000 + live);                                     // heard again
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + live, fake_hops, live));
+}
+
 void test_gateway_table_full_drops_the_oldest_and_refuses_bad_hashes() {
 	fake_hops_reset();
 	TelemetryGateways gateways;
@@ -861,6 +881,134 @@ void test_detail_decode_refuses_what_it_cannot_read() {
 	}
 }
 
+// The telemetry batch (TelemetryBatchCodec.h), against every case in
+// tests/fixtures/telemetry_batch_v1.json; the Python suite checks that each
+// hex below is the fixture's.
+struct BatchCaseEntry { uint8_t time_kind; uint32_t time; const char* report_hex; };
+struct BatchEncodeCase { const char* name; uint32_t sender_id; uint32_t composed_unix; bool truncated;
+                         size_t out_len; size_t n; BatchCaseEntry entries[3]; const char* hex; };
+static const BatchEncodeCase BATCH_ENCODE_CASES[] = {
+	{"absolute_health_and_detail", 0x0a0b0c0du, 1791100000u, false, 2048, 2, {{1, 1791096400u, "01030a0b0c0d00000e1003000100090008001900120e0a010100170005"}, {1, 1791098200u, "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff"}},
+	 "31000a0b0c0d6ac2046002016ac1f650001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac1fd58006f21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff"},
+	{"relative_clock_not_set", 0xfedcba98u, 0u, false, 2048, 3, {{0, 3600u, "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864"}, {0, 1800u, "2102fedcba980001518000ff00ff0200036f7a6400ffffffff000000ffffffff00"}, {0, 0u, "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864"}},
+	 "3100fedcba9800000000030000000e100022011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864000000070800212102fedcba980001518000ff00ff0200036f7a6400ffffffff000000ffffffff0000000000000022011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864"},
+	{"oldest_dropped_to_fit", 0x0a0b0c0du, 1791100000u, false, 83, 3, {{1, 1791099000u, "01030a0b0c0d00000e1003000100090008001900120e0a010100170005"}, {1, 1791099300u, "01030a0b0c0d00000e1003000100090008001900120e0a010100170005"}, {1, 1791099600u, "01030a0b0c0d00000e1003000100090008001900120e0a010100170005"}},
+	 "31010a0b0c0d6ac2046002016ac201a4001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac202d0001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005"},
+	{"board_already_dropped_some", 0xfedcba98u, 1791100000u, true, 2048, 1, {{1, 1791099600u, "011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864"}},
+	 "3101fedcba986ac2046001016ac202d00022011ffedcba9800023098010001ffff000000ed00e30d0dff02ffff000c1f650f4864"},
+	{"empty", 0x0a0b0c0du, 1791100000u, false, 2048, 0, {{0, 0u, ""}},
+	 "31000a0b0c0d6ac2046000"},
+};
+
+void test_batch_encodes_the_fixture() {
+	for (const BatchEncodeCase& c : BATCH_ENCODE_CASES) {
+		static uint8_t reports[3][TELEMETRY_BATCH_ENTRY_MAX];
+		BatchEntry entries[3];
+		for (size_t i = 0; i < c.n; ++i) {
+			entries[i].time_kind = c.entries[i].time_kind;
+			entries[i].time = c.entries[i].time;
+			entries[i].len = (uint16_t)bytes_of(c.entries[i].report_hex, reports[i], sizeof(reports[i]));
+			entries[i].report = reports[i];
+		}
+		static uint8_t out[TELEMETRY_BATCH_MAX_LEN];
+		const size_t n = telemetry_batch_encode(c.sender_id, c.composed_unix, c.truncated, entries, c.n,
+		                                        out, c.out_len);
+		TEST_ASSERT_EQUAL_STRING_MESSAGE(c.hex, hex_of(out, n).c_str(), c.name);
+	}
+}
+
+void test_batch_decodes_the_fixture_and_refuses_the_rest() {
+	static uint8_t in[TELEMETRY_BATCH_MAX_LEN + 8];
+	// Accepted: header, then every entry, back to the same bytes.
+	for (const BatchEncodeCase& c : BATCH_ENCODE_CASES) {
+		const size_t len = bytes_of(c.hex, in, sizeof(in));
+		BatchHeader h;
+		TEST_ASSERT_TRUE_MESSAGE(telemetry_batch_header(in, len, h), c.name);
+		TEST_ASSERT_EQUAL_UINT32(c.sender_id, h.sender_id);
+		TEST_ASSERT_EQUAL_UINT32(c.composed_unix, h.composed_unix);
+		size_t at = TELEMETRY_BATCH_HEADER_LEN;
+		const size_t first = c.n - h.count;   // the oldest left out to fit
+		for (uint8_t i = 0; i < h.count; ++i) {
+			BatchEntry e;
+			telemetry_batch_next(in, at, e);
+			TEST_ASSERT_EQUAL_UINT32(c.entries[first + i].time, e.time);
+			TEST_ASSERT_EQUAL_STRING(c.entries[first + i].report_hex, hex_of(e.report, e.len).c_str());
+		}
+		TEST_ASSERT_EQUAL_size_t(len, at);
+	}
+	const char* refused[] = {
+		"21000a0b0c0d6ac2046002016ac1f650001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac1fd58006f21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff",  // wrong_kind
+		"31000a0b0c0d6ac2046003016ac1f650001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac1fd58006f21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff",  // count_says_more
+		"31000a0b0c0d6ac2046002016ac1f650001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac1fd58006f21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff00",  // trailing_byte
+		"31000a0b0c0d6ac2046002016ac1f650001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac1fd58006f21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903ba",  // entry_cut_short
+		"31000a0b0c0d6ac2046002026ac1f650001d01030a0b0c0d00000e1003000100090008001900120e0a010100170005016ac1fd58006f21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff",  // bad_time_kind
+		"31000a0b0c0d6ac0d2600100000000000000",  // empty_entry
+		"31000a0b0c0d6ac0d260010100000000017d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  // entry_over_max
+		"31000a0b0c0d6ac20460",  // header_cut_short
+	};
+	for (const char* hex : refused) {
+		const size_t len = bytes_of(hex, in, sizeof(in));
+		BatchHeader h;
+		TEST_ASSERT_FALSE(telemetry_batch_header(in, len, h));
+	}
+}
+
+void test_kept_reports_compose_into_one_batch_with_their_times() {
+	static TelemetryKept kept;
+	kept.clear();
+	uint8_t report[30];
+	for (size_t i = 0; i < sizeof(report); ++i) report[i] = (uint8_t)i;
+	report[0] = 0x01;
+	TEST_ASSERT_TRUE(kept.keep(report, sizeof(report), 1000, 1791100000));   // clock set
+	TEST_ASSERT_TRUE(kept.keep(report, sizeof(report), 61000, 0));           // clock not set
+	BatchEntry entries[TELEMETRY_KEPT_MAX_ENTRIES];
+	const size_t n = kept.entries(entries, TELEMETRY_KEPT_MAX_ENTRIES, 121000);
+	TEST_ASSERT_EQUAL_size_t(2, n);
+	TEST_ASSERT_EQUAL_UINT8(BATCH_TIME_ABSOLUTE, entries[0].time_kind);
+	TEST_ASSERT_EQUAL_UINT32(1791100000, entries[0].time);
+	TEST_ASSERT_EQUAL_UINT8(BATCH_TIME_RELATIVE, entries[1].time_kind);
+	TEST_ASSERT_EQUAL_UINT32(60, entries[1].time);                          // taken 60 s before composing
+	static uint8_t out[TELEMETRY_BATCH_MAX_LEN];
+	const size_t len = telemetry_batch_encode(0x0a0b0c0d, 1791100120, kept.dropped(), entries, n, out, sizeof(out));
+	TEST_ASSERT_EQUAL_size_t(kept.encoded_len(), len);
+	BatchHeader h;
+	TEST_ASSERT_TRUE(telemetry_batch_header(out, len, h));
+	TEST_ASSERT_EQUAL_UINT8(2, h.count);
+	TEST_ASSERT_EQUAL_UINT8(0, h.flags);
+}
+
+void test_kept_reports_always_fit_one_batch_and_the_oldest_give_way() {
+	static TelemetryKept kept;
+	kept.clear();
+	static uint8_t big[TELEMETRY_BATCH_ENTRY_MAX];
+	memset(big, 0x21, sizeof(big));
+	for (uint32_t i = 0; i < 20; ++i) {
+		big[1] = (uint8_t)i;   // tell them apart
+		TEST_ASSERT_TRUE(kept.keep(big, sizeof(big), 1000 * i, 1791100000 + i));
+		TEST_ASSERT_TRUE(kept.encoded_len() <= TELEMETRY_BATCH_MAX_LEN);
+	}
+	TEST_ASSERT_TRUE(kept.dropped());
+	BatchEntry entries[TELEMETRY_KEPT_MAX_ENTRIES];
+	const size_t n = kept.entries(entries, TELEMETRY_KEPT_MAX_ENTRIES, 30000);
+	TEST_ASSERT_EQUAL_UINT8(19, entries[n - 1].report[1]);                 // the newest kept
+	TEST_ASSERT_EQUAL_UINT32(1791100000 + 20 - n, entries[0].time);         // the oldest that fit
+	static uint8_t out[TELEMETRY_BATCH_MAX_LEN];
+	const size_t len = telemetry_batch_encode(1, 1791100030, kept.dropped(), entries, n, out, sizeof(out));
+	BatchHeader h;
+	TEST_ASSERT_TRUE(telemetry_batch_header(out, len, h));
+	TEST_ASSERT_EQUAL_size_t(n, h.count);                                   // nothing more cut by the encoder
+	TEST_ASSERT_EQUAL_UINT8(BATCH_FLAG_TRUNCATED, h.flags);
+	// Small reports: the entry count is the limit, not the bytes.
+	kept.clear();
+	uint8_t small[4] = {0x01, 2, 3, 4};
+	for (uint32_t i = 0; i < TELEMETRY_KEPT_MAX_ENTRIES + 5; ++i) kept.keep(small, sizeof(small), i, 0);
+	TEST_ASSERT_EQUAL_size_t(TELEMETRY_KEPT_MAX_ENTRIES, kept.count());
+	TEST_ASSERT_FALSE(kept.keep(small, 0, 0, 0));
+	kept.clear();
+	TEST_ASSERT_TRUE(kept.empty());
+	TEST_ASSERT_FALSE(kept.dropped());
+}
+
 int main() {
 	UNITY_BEGIN();
 	RUN_TEST(test_bootlog_that_fits_is_kept_whole);
@@ -915,5 +1063,10 @@ int main() {
 	RUN_TEST(test_detail_kinds_follow_the_firmware_interface_names);
 	RUN_TEST(test_announces_name_the_neighbour_that_sent_them);
 	RUN_TEST(test_neighbour_table_keeps_the_freshest_and_expires_the_rest);
+	RUN_TEST(test_batch_encodes_the_fixture);
+	RUN_TEST(test_batch_decodes_the_fixture_and_refuses_the_rest);
+	RUN_TEST(test_kept_reports_compose_into_one_batch_with_their_times);
+	RUN_TEST(test_kept_reports_always_fit_one_batch_and_the_oldest_give_way);
+	RUN_TEST(test_gateway_live_needs_a_recent_announce);
 	return UNITY_END();
 }
