@@ -2067,6 +2067,28 @@ track: it rides the same uplink and the same command path.
   microcontroller. Our provisioning codec is already the compact binary
   equivalent. What to copy is the experience: the app talks to a board the
   same way whether it is local or several hops away.
+- **Over-the-air updates -- scheduled 2026-10-08, after the control plane**
+  (an update is a signed command with a large payload; the control plane
+  builds the signing, operator certificates and command path it rests on).
+  Today there is none: every update is USB or UART (the first Rev 2's dead
+  USB made a reflash an hour's work), and the layout has one application slot
+  (`boards/rad01_8mb.csv`). Conditions, agreed with the operator:
+  1. **Signed images only**, by the deck's authority key; boards hold only
+     the public key (no private keys flashed, as for the control plane).
+  2. **Two slots and rollback:** a new image confirms itself after a good
+     first boot or the bootloader returns to the old one; a factory/rescue
+     path stays (`Rev3Suggestions.md`, its requirements and failure tests --
+     interrupted download, interrupted activation, failed first boot).
+  3. **Fast carriers only:** an image is ~1.4-2 MB -- seconds to minutes over
+     Wi-Fi/IP or HaLow, ~5 min over BLE from a phone, hours of shared airtime
+     over LoRa, so never LoRa. Carried as a Reticulum Resource over a Link,
+     from the deck or from Columba.
+  4. **A one-time repartition per board** over USB/UART, the filesystem (the
+     node's identity) backed up and restored byte for byte. REV2-2 and Rev 1
+     have 16 MB of flash; the first Rev 2's 8 MB just fits two slots. Rev 3
+     ships with the layout.
+  The fleet view exists already: the detail report's firmware hash and build
+  show which boards lag. One to two weeks.
 - **LoRa rendezvous and channel escape -- one PR or two back to back,
   scheduled 2026-10-08, after field configuration** (channel plans and
   fleet-wide commands are what they build on):
