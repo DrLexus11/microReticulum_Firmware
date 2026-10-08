@@ -1944,9 +1944,10 @@ the field shows, not to have something to build.
      the boards lives on flash -- the walk cost 819 ms of the loop for 27
      entries; the hook measured 44 us at worst over 92 announces (Rev 1).
      **Proven** end to end on Rev 1 and the first Rev 2 (reflashed over UART
-     the same day): neighbours heard over LoRa (both boards) and over UDP
-     (Rev 2 hears the deck's side). **Reasoned, untested:** neighbours over
-     TCP, BLE and ESP-NOW (the same callback sees every interface). The deck is rightly absent from Rev 1's
+     the same day): neighbours heard over LoRa (both boards), over UDP
+     (Rev 2 hears the deck's side) and over TCP (REV2-2 hears the Nexus and
+     the A54, 2026-10-08). **Reasoned, untested:** neighbours over BLE and
+     ESP-NOW (the same callback sees every interface). The deck is rightly absent from Rev 1's
      neighbours: the deck's UDP interface to Rev 1 is disabled, so it reaches
      Rev 1 through the in-service Rev 2 and LoRa (the source of Rev 1's few
      UDP bytes is not yet identified). Not yet carried: packet counts, link
@@ -1961,8 +1962,8 @@ the field shows, not to have something to build.
      it). Rev 1 ran PR E2's stripped chain-test build for days unnoticed
      (2026-10-04): the image hash and build environment now in the report
      close that gap.
-   - **T4, what topology still needs:** neighbours proven on TCP, BLE
-     and ESP-NOW (LoRa and UDP are proven), every board reporting (T3), and
+   - **T4, what topology still needs:** neighbours proven on BLE and
+     ESP-NOW (LoRa, UDP and TCP are proven), every board reporting (T3), and
      phones and the deck shown as nodes by the boards that hear them --
      Reticulum keeps no topology database, so the map stays assembled from
      each board's own view. After T2.
