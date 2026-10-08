@@ -2037,11 +2037,34 @@ track: it rides the same uplink and the same command path.
   microcontroller. Our provisioning codec is already the compact binary
   equivalent. What to copy is the experience: the app talks to a board the
   same way whether it is local or several hops away.
-- **LoRa discovery across channel plans:** one radio listens on one channel.
-  Once teams are split across frequency plans, nodes visit a fleet-wide
-  rendezvous channel at time-synced slots to announce which plan they are on.
-  Default settings stay as they are until then. Designed after field
-  configuration, because channel plans are what make it necessary.
+- **LoRa rendezvous and channel escape -- one PR or two back to back,
+  scheduled 2026-10-08, after field configuration** (channel plans and
+  fleet-wide commands are what they build on):
+  1. **Rendezvous.** One radio listens on one channel. Nodes visit a
+     fleet-wide rendezvous channel at time-synced slots (time propagation is
+     the prerequisite, and is shipped) to announce which channel plan they
+     are on. Gains: teams split across plans still discover each other, and
+     a node on the wrong settings -- the 2026-08-22 outage -- is found
+     instead of lost. Cost: the radio is deaf on its working channel during
+     a slot (2 s every 10 min is ~0.3%), some airtime, no stock-RNode
+     interop. Default settings stay as they are until it ships.
+  2. **Channel escape, not continuous hopping.** Hopping adds little
+     security over Reticulum's encryption and IFAC (an SDR captures the
+     whole 868 band) and costs re-meshing speed. Escape keeps the
+     anti-jamming gain: a pre-shared list of fallback channels, a move only
+     when the working channel is measured bad (noise floor and channel use
+     are already in the detail report), ordered by an authority-signed
+     command or by a deterministic rule at a slot boundary. The rendezvous
+     slot is where a straggler finds the fleet again, which is why the two
+     go together.
+  **Bench tests, before deployment:** the escape rule as a pure, host-tested
+  function over recorded and synthetic noise traces; a deliberate jammer (a
+  board transmitting continuously on the working channel, lab gain 21) to
+  measure detection time and whether every node moves together; a forced
+  split (one node moved by hand) to measure time to rejoin through
+  rendezvous. Judged on every carrier it touches: LoRa only, by nature;
+  ESP-NOW's scan already visits a rendezvous channel first
+  (`ESPNowPeerProtocol.md`).
 - **Owning the protocol:**
   1. Fork and pin the Python RNS and LXMF that Columba runs, under DrLexus11.
      **Done 2026-10-04** (Columba #18, same commits), and the middle man cut:
