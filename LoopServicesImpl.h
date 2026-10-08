@@ -549,6 +549,13 @@ public:
   void poll(uint32_t now_ms) override {
     if (_detail_gateway) { send_detail(now_ms); return; }
 #if defined(LXMF_PROPAGATION_NODE)
+    // The announce that lets the gateway verify a batch: a poll after the
+    // batch, so the two signatures never share one.
+    if (_announce_pending) {
+      _announce_pending = false;
+      announce_delivery();
+      return;
+    }
     // Back in reach with reports kept: they leave now, a poll after the live
     // report so the two cryptographic jobs never share one.
     if (_flush_gateway) {
@@ -577,6 +584,9 @@ public:
     }
     const RNS::Bytes gateway_hash(best->hash, TELEMETRY_HASH_LEN);
     const RNS::Identity gateway_identity = RNS::Identity::recall(gateway_hash);
+#if defined(LXMF_PROPAGATION_NODE)
+    if (gateway_identity) _last_gateway = gateway_identity;
+#endif
     if (!gateway_identity) {
       RNS::Transport::request_path(gateway_hash);
       keep_while_unreachable(now_ms);
@@ -692,17 +702,23 @@ private:
                              > TELEMETRY_BATCH_MAX_LEN;
     if (!hour && !nearly_full) return;
     if (_compose_failed && now_ms - _compose_failed_at < TELEMETRY_INTERVAL_MS) return;
+    // Addressed to the newest gateway heard, or -- in a partition longer than
+    // the gateway list's two-hour expiry -- the last one this node knew.
     const TelemetryGateways::Entry* newest = telemetry_gateways().newest(now_ms);
-    if (newest == nullptr) return;   // never heard a gateway: nobody to address; keep
-    const RNS::Identity gateway = RNS::Identity::recall(RNS::Bytes(newest->hash, TELEMETRY_HASH_LEN));
-    if (!gateway) return;
-    compose_kept(now_ms, gateway);
+    if (newest != nullptr) {
+      const RNS::Identity heard = RNS::Identity::recall(RNS::Bytes(newest->hash, TELEMETRY_HASH_LEN));
+      if (heard) _last_gateway = heard;
+    }
+    if (!_last_gateway) return;   // no gateway known since boot: nobody to address; keep
+    compose_kept(now_ms, _last_gateway);
   }
 
   // The kept reports as one LXMF message to the gateway's delivery
   // destination, signed by this node, into this node's own propagation store.
-  // Then this node's delivery destination is announced, so the gateway can
-  // verify the signature when it collects the message.
+  // On the next poll this node's delivery destination is announced, so the
+  // gateway can verify the signature when it collects the message. One
+  // signature, one encryption and a flash write in this poll: its cost is to be
+  // measured on hardware and the budget set from it (PR #39).
   void compose_kept(uint32_t now_ms, const RNS::Identity& gateway_identity) {
     if (!t2() || t2()->kept.empty()) return;
     TelemetryKept& kept = t2()->kept;
@@ -735,7 +751,7 @@ private:
     printf("[telemetry] %u kept report(s) in a %u-byte batch for <%s>, held in this node's store\n",
            (unsigned)n, (unsigned)len, gateway.hash().toHex().substr(0, 16).c_str());
     kept.clear();
-    announce_delivery();
+    _announce_pending = true;
   }
 
   // This node's lxmf.delivery, registered once so it answers path requests and
@@ -804,6 +820,10 @@ private:
   bool _compose_failed = false;
   uint32_t _compose_failed_at = 0;
   RNS::Identity _flush_gateway{RNS::Type::NONE};
+  // Batches are addressed to the last gateway this node knew, which does not
+  // expire: live selection needs a recent one, a batch only needs an address.
+  RNS::Identity _last_gateway{RNS::Type::NONE};
+  bool _announce_pending = false;
 #endif
   mutable char _reason[32] = {};
 };
