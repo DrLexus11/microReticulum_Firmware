@@ -557,7 +557,7 @@ static void telemetry_fill_detail(NodeDetail& d, uint32_t sender_id, uint32_t up
 #if defined(LORA_TRANSPORT) && !defined(NO_LORA_HARDWARE)
   d.lora_rx = stat_rx;
   d.lora_tx = stat_tx;
-  if (LoRa != nullptr) d.lora_crc_errors = LoRa->crcErrors();
+  if (LoRa != nullptr) d.lora_crc_errors = LoRa->crcErrors();   // 0xFFFFFFFF: not counted
 #endif
   if (RNS::Utilities::OS::wall_time_known()) {
     d.time_source = (uint8_t)RNS::Utilities::OS::wall_time_source();

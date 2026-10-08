@@ -246,7 +246,7 @@ inline size_t telemetry_detail_encode(const NodeDetail& d, uint8_t* out, size_t 
     out[at++] = (uint8_t)d.temperature_c;
     detail_put32(out, at, d.lora_rx);
     detail_put32(out, at, d.lora_tx);
-    detail_put32(out, at, d.lora_crc_errors);
+    detail_put32(out, at, d.lora_crc_errors);   // the radio saturates a known count below the sentinel
     out[at++] = d.time_source;
     const uint32_t minutes = d.time_age_s == DETAIL_NEVER ? 0xFFFFu : d.time_age_s / 60;
     detail_put16(out, at, d.time_age_s == DETAIL_NEVER ? 0xFFFFu : (minutes >= 0xFFFFu ? 0xFFFEu : (uint16_t)minutes));

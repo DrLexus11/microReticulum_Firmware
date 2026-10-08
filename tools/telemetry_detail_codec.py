@@ -37,6 +37,15 @@ def _sat8(v):
     return 0xFF if v > 0xFF else v
 
 
+def _sat32(v):
+    return 0xFFFFFFFF if v > 0xFFFFFFFF else v
+
+
+def _known32(v):
+    """A known counter: never the unknown sentinel, saturating just below it."""
+    return 0xFFFFFFFE if v >= 0xFFFFFFFF else v
+
+
 def _pct(v):
     return 100 if v > 100 else v
 
@@ -102,9 +111,9 @@ def encode(d, out_len=WIRE_MAX_LEN):
     if system:
         age = d["time_age_s"]
         minutes = 0xFFFF if age is None else min(age // 60, 0xFFFE)
-        crc = UNKNOWN32 if d["lora_crc_errors"] is None else d["lora_crc_errors"]
-        ifac = UNKNOWN32 if d["ifac_rejected"] is None else d["ifac_rejected"]
-        out += struct.pack(">bIIIBHI", d["temperature_c"], d["lora_rx"], d["lora_tx"], crc,
+        crc = UNKNOWN32 if d["lora_crc_errors"] is None else _known32(d["lora_crc_errors"])
+        ifac = UNKNOWN32 if d["ifac_rejected"] is None else _known32(d["ifac_rejected"])
+        out += struct.pack(">bIIIBHI", d["temperature_c"], _sat32(d["lora_rx"]), _sat32(d["lora_tx"]), crc,
                            d["time_source"], minutes, ifac)
     return bytes(out)
 

@@ -147,7 +147,8 @@ private:
   int _crcMode;
   volatile uint32_t _crcErrors = 0;   // packets dropped on a CRC error since boot
 public:
-  uint32_t crcErrors() override { return _crcErrors; }
+  // Saturates below 0xFFFFFFFF, which means "not counted".
+  uint32_t crcErrors() override { const uint32_t n = _crcErrors; return n >= 0xFFFFFFFFu ? 0xFFFFFFFEu : n; }
 private:
   int _fifo_tx_addr_ptr;
   int _fifo_rx_addr_ptr;

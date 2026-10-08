@@ -41,6 +41,12 @@ class TelemetryDetailFixture(unittest.TestCase):
             with self.subTest(case["name"]):
                 self.assertLessEqual(len(case["hex"]) // 2, dc.WIRE_MAX_LEN)
 
+    def test_a_known_counter_never_reads_as_unknown(self):
+        d = dc.new_detail(system_known=True, lora_rx=2 ** 33, lora_crc_errors=0xFFFFFFFF, ifac_rejected=2 ** 40)
+        got = dc.decode(dc.encode(d))
+        self.assertEqual((got["lora_rx"], got["lora_crc_errors"], got["ifac_rejected"]),
+                         (0xFFFFFFFF, 0xFFFFFFFE, 0xFFFFFFFE))
+
     def test_the_firmware_host_test_pins_the_same_bytes(self):
         for case in FIXTURE["encode"] + FIXTURE["decode"]:
             with self.subTest(case["name"]):
