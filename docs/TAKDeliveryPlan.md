@@ -1967,8 +1967,12 @@ the field shows, not to have something to build.
      phones and the deck shown as nodes by the boards that hear them --
      Reticulum keeps no topology database, so the map stays assembled from
      each board's own view. After T2.
-   - **T6, board logs in Grafana (Loki) -- scheduled 2026-10-08, first after
-     PR F closes.** A board's logs exist only on a serial cable today; both of
+   - **T6, board logs in Grafana (Loki) -- scheduled 2026-10-08, server half
+     started at once (operator: "a good dashboard for all observations"), the
+     firmware half after the soaks, as its own PR after PR F.** The server half
+     -- Loki in production, the data source, a log dashboard, a collector on the
+     deck shipping the logs it already has (gateway, bridge, lxmd, the boards'
+     serial captures) -- touches no firmware, so the freeze does not hold it. A board's logs exist only on a serial cable today; both of
      the week's incidents (the 10-05 panics, the 10-08 power cut) were read
      from captures that happened to be running. Design, agreed with the
      operator:
