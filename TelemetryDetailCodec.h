@@ -48,8 +48,9 @@
 //   --         FLAG_SYSTEM (after the neighbours, so a decoder that predates it
 //              reads everything else unchanged; 20 bytes):
 //                temp_c i8 (chip temperature; -128 unknown),
-//                lora_rx u32, lora_tx u32 (packets since boot),
-//                lora_crc u32 (packets dropped on a CRC error since boot;
+//                lora_rx u32, lora_tx u32 (LoRa frames since boot; a split
+//                packet is two),
+//                lora_crc u32 (frames dropped on a CRC error since boot;
 //                0xFFFFFFFF where the radio does not count them),
 //                time_source u8 (the clock's source: OS::WallTimeSource,
 //                0 unknown), time_age_min u16 (since the clock was last

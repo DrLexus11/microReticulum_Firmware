@@ -779,7 +779,9 @@ void sx126x::onReceive(void(*callback)(int)){
     buf[0] = 0xFF;  // Set irq masks, enable all
     buf[1] = 0xFF;
     buf[2] = 0x00;  // Set dio0 masks
-    buf[3] = IRQ_RX_DONE_MASK_6X; 
+    // RX done and CRC error both raise DIO0: a corrupted payload may raise only
+    // CRC error, and handleDio0Rise() tells them apart and counts it.
+    buf[3] = IRQ_RX_DONE_MASK_6X | IRQ_PAYLOAD_CRC_ERROR_MASK_6X;
     buf[4] = 0x00;  // Set dio1 masks
     buf[5] = 0x00;
     buf[6] = 0x00;  // Set dio2 masks 
