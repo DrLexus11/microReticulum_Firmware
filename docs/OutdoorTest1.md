@@ -99,7 +99,7 @@ escalates to the propagation node after 140-180 s (measured over LoRa,
 At the first stop out of range, the far vehicle waits **10 minutes**.
 
 **Record:** when the command post's ATAK shows the far node's position as
-stale; when Grafana shows the far board silent (it alerts after 15 minutes);
+stale; when Grafana shows the far board silent (counted silent after 15 minutes; the alert fires after 30);
 when the far node's links turn amber on the topology map.
 
 ### R3 -- store and forward, out of range
