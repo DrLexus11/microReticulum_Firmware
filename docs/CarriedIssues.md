@@ -347,6 +347,95 @@ trigger on the current firmware. Its old TASK_WDT restarts (0.9-93 h) predate
 the library's link watchdog and lock fixes; whether those removed the cause or
 only the conditions is not proven.
 
+### Found, 2026-10-03: relayed links over TCP that were never culled -- fixed
+
+The spare (Rev 2, 20:6E), on F3b's soak from 2026-10-02 13:19: no restart in
+19 h, but internal heap fell from 86 KB to 51 KB between 21:00 and 08:40.
+`[tables]` named the table. `links` (Transport's link table, the links the
+board relays) held at 0-4 all day, then rose by one every ~8 minutes from 21:00:
+12 by 21:46, then 91-96 the next morning. The rate was the same before, during
+and after the deck's overnight suspend (21:55-08:00), so the sleeping lxmd was
+not the cause.
+
+**Cause:** `Transport::extra_link_proof_timeout()` divided by the receiving
+interface's bitrate. `TCPServerInterface` declares none (0, the library
+default), so a relayed link request arriving over TCP got a proof timeout of
++inf. If its proof never passed back through the board, the entry was never
+culled. Python divides too, but every Python interface declares a bitrate.
+
+- **Not identified:** the requester, about one every 8 minutes. The board does
+  not log link requests at soak level.
+- **The likely shape:** a phone reaching the deck's lxmd through the board while
+  the proof returns by another route.
+- **The fix does not depend on who it was.**
+
+**Fixed** in the library (DrLexus11/microReticulum#9, pinned at `676982d`).
+A zero bitrate now adds no extra proof time, as the library's other bitrate
+paths already treated it. A host test fails without the fix. The firmware's TCP
+server still declares no bitrate, on purpose: declared bitrates are guesses
+(CLAUDE.md, interface completeness), and nothing should key on one.
+
+**Next:** the soak restarts on the fixed build. The link table should stay
+level overnight and the heap should stop falling.
+
+### Found, 2026-10-03: a panic when a held announce was reinserted -- fixed
+
+Thirty minutes into the restarted soak (09:31), the spare panicked and
+restarted itself. The decoded backtrace: `std::_Rb_tree_increment`, while
+iterating `_announce_table` in `Transport::jobs()` (Transport.cpp:616). The
+last line before the panic was "Reinserting held announce into table".
+
+**Cause:** inside the loop over the announce table, a held announce (one
+stashed while a path request was served) was put back by erasing and
+reinserting the entry being iterated, followed by a cull of the table. The
+loop's next step started from a freed node. Python assigns the value in place
+and leaves the keys alone; `AnnounceEntry`'s const members rule that out in
+C++.
+
+**Fixed** in the library (DrLexus11/microReticulum#10, pinned at `17701cd`):
+the reinsertions are applied after the loop, with one cull. No host test: the
+path needs an announce and a path request for the same destination inside the
+retransmission window, which the suites have no fixture for. The soak on the
+spare is the proof.
+
+**Noticed, not changed:** where an announce is held for a path response, the
+new entry is `insert`ed, which never overwrites in a `std::map`. Python's
+assignment does, so the path response may not replace the pending announce.
+That gets its own PR. (It did: DrLexus11/microReticulum#11, merged
+2026-10-08 and pinned with #12 below.)
+
+### Found, 2026-10-08: a panic when a cached packet was replayed -- fixed
+
+The 48-hour soak of `dd5cae7` on the spare reached 45.0 h, then the board
+panicked three times on 2026-10-05 (11:46, 13:36, 21:06) and ran clean for
+58.8 h after. Rev 1 panicked once the same morning (10:16). The serial capture
+had stopped by then; board telemetry showed the restarts.
+
+The boards keep a core dump: `rad01_8mb.csv` has a `coredump` partition and
+the framework writes an ELF dump on every panic. Read the last one without
+erasing anything, then decode it against the **exact** build -- rebuilt at
+the same path, since asserts embed `__FILE__` and the dump checks the image's
+SHA-256:
+
+```
+esptool.py --chip esp32s3 --port <by-id> read_flash 0x5F0000 0x10000 core.bin
+esp-coredump --chip esp32s3 info_corefile --core core.bin --core-format raw \
+  --gdb xtensa-esp32s3-elf-gdb <build>.elf
+```
+
+`LoadProhibited` at `0x9c`, in `Transport::interface_to_shared_instance()`,
+called from `inbound()`, called from `cache_request_packet()`: a peer's cache
+request made the node replay a cached packet with its receiving interface --
+which the C++ cache does not store, so the handle was empty and its `assert`
+is compiled out. Python restores the interface by name and its helpers use
+`hasattr()`.
+
+**Fixed** in the library (DrLexus11/microReticulum#12, with #11, pinned at
+`9e83d72`): the interface helpers and `from_local_client()` treat an empty
+interface as none, and an announce without a receiving interface is not
+processed (Python drops it), so it never becomes a path with no next hop. A
+host test reproduces the abort without the fix. The soak restarts on this pin.
+
 ### Considered and currently disfavoured
 
 `BLEPeerInterface::drain_inbound()` was changed during PR #14 review from a
