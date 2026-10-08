@@ -401,7 +401,40 @@ spare is the proof.
 **Noticed, not changed:** where an announce is held for a path response, the
 new entry is `insert`ed, which never overwrites in a `std::map`. Python's
 assignment does, so the path response may not replace the pending announce.
-That gets its own PR.
+That gets its own PR. (It did: DrLexus11/microReticulum#11, merged
+2026-10-08 and pinned with #12 below.)
+
+### Found, 2026-10-08: a panic when a cached packet was replayed -- fixed
+
+The 48-hour soak of `dd5cae7` on the spare reached 45.0 h, then the board
+panicked three times on 2026-10-05 (11:46, 13:36, 21:06) and ran clean for
+58.8 h after. Rev 1 panicked once the same morning (10:16). The serial capture
+had stopped by then; board telemetry showed the restarts.
+
+The boards keep a core dump: `rad01_8mb.csv` has a `coredump` partition and
+the framework writes an ELF dump on every panic. Read the last one without
+erasing anything, then decode it against the **exact** build -- rebuilt at
+the same path, since asserts embed `__FILE__` and the dump checks the image's
+SHA-256:
+
+```
+esptool.py --chip esp32s3 --port <by-id> read_flash 0x5F0000 0x10000 core.bin
+esp-coredump --chip esp32s3 info_corefile --core core.bin --core-format raw \
+  --gdb xtensa-esp32s3-elf-gdb <build>.elf
+```
+
+`LoadProhibited` at `0x9c`, in `Transport::interface_to_shared_instance()`,
+called from `inbound()`, called from `cache_request_packet()`: a peer's cache
+request made the node replay a cached packet with its receiving interface --
+which the C++ cache does not store, so the handle was empty and its `assert`
+is compiled out. Python restores the interface by name and its helpers use
+`hasattr()`.
+
+**Fixed** in the library (DrLexus11/microReticulum#12, with #11, pinned at
+`9e83d72`): the interface helpers and `from_local_client()` treat an empty
+interface as none, and an announce without a receiving interface is not
+processed (Python drops it), so it never becomes a path with no next hop. A
+host test reproduces the abort without the fix. The soak restarts on this pin.
 
 ### Considered and currently disfavoured
 
