@@ -1925,27 +1925,47 @@ the field shows, not to have something to build.
      NomadNet announce; the 4-byte sender id is the start of the same
      identity's hash), one table row per board with every column filled,
      headline stats, carriers as a state timeline.
-   - **T5, more telemetry, scheduled with T4:** a separate, less frequent
-     **detail report** (one new message type with a version byte, pinned by a
-     fixture), so the 29-34 byte health report stays small on LoRa. Fields,
-     in order of value:
-     1. **Firmware identity:** version, build environment, git hash. Rev 1 ran
-        PR E2's stripped chain-test build for days unnoticed (2026-10-04).
-     2. **Radio:** last RSSI and SNR, noise floor, channel utilisation and
-        airtime, packets received and sent.
-     3. **Traffic per carrier:** packets and bytes, in and out.
-     4. **Reticulum:** link table, active links, announce queue, path
-        requests, and the LXMF store's messages and bytes.
-     5. **System:** chip temperature, free flash, Wi-Fi RSSI, time-sync source
-        and age, the slowest service poll (the unbounded `reticulum.loop`).
-     6. **Power:** supply voltage, where the board can measure it.
-   - **T4, topology, scheduled after T2:** each board reports its one-hop
-     neighbours and the carrier it hears each on, in a separate, less
-     frequent report (a new message type with a version byte and a
-     fixture). The backend builds the edges, and Grafana's Node Graph draws
-     the mesh. Reticulum keeps no topology database, so the map is assembled
-     from each board's own view: boards as full nodes, phones and the deck as
-     their neighbours.
+   - **T4 + T5, first cut, 2026-10-04 (firmware `feature/tak-t45-detail-report`,
+     reticulum-telemetry `feature/detail-report`):** the **detail report**
+     (wire 0x21, `TelemetryDetailCodec.h`, fixture `telemetry_detail_v1.json`),
+     sent with a board's first health report and then every 30 minutes:
+     firmware hash, version and build environment; per-interface online state
+     and bytes in and out since boot; LoRa RSSI, SNR, noise floor,
+     utilisation and airtime; the propagation store's messages, size, peers
+     and sync results; one-hop neighbours with carrier, RSSI and age. The
+     gateway names neighbours (NomadNet for boards, LXMF display names for
+     people); the backend exports `mesh_board_firmware_info`, per-interface
+     byte counters, radio and store gauges, `mesh_link_*{sender,neighbour}`
+     and `mesh_node_info`; Grafana gains a who-hears-whom matrix, a Node
+     Graph topology, the link list, a propagation-node table and carrier
+     throughput. Neighbours are recorded **as announces arrive** (the
+     receive callback: a rebroadcast names its transport identity, a hops-0
+     announce its originator's key), not by walking the path table, which on
+     the boards lives on flash -- the walk cost 819 ms of the loop for 27
+     entries; the hook measured 44 us at worst over 92 announces (Rev 1).
+     **Proven** end to end on Rev 1 and the first Rev 2 (reflashed over UART
+     the same day): neighbours heard over LoRa (both boards) and over UDP
+     (Rev 2 hears the deck's side). **Reasoned, untested:** neighbours over
+     TCP, BLE and ESP-NOW (the same callback sees every interface). The deck is rightly absent from Rev 1's
+     neighbours: the deck's UDP interface to Rev 1 is disabled, so it reaches
+     Rev 1 through the in-service Rev 2 and LoRa (the source of Rev 1's few
+     UDP bytes is not yet identified). Not yet carried: packet counts, link
+     table, announce queue, system and power fields (T5 items 3-6), git hash.
+   - **T5, what the detail report does not carry yet**, added to it in
+     order of value (version byte unchanged while fields are only appended
+     behind flags): the git hash beside the image hash; packet counts per
+     carrier; Reticulum's link table, active links, announce queue and path
+     requests; system (chip temperature, free flash, Wi-Fi RSSI, time-sync
+     source and age, the slowest service poll -- the unbounded
+     `reticulum.loop`); power (supply voltage, where the board can measure
+     it). Rev 1 ran PR E2's stripped chain-test build for days unnoticed
+     (2026-10-04): the image hash and build environment now in the report
+     close that gap.
+   - **T4, what topology still needs:** neighbours proven on TCP, BLE
+     and ESP-NOW (LoRa and UDP are proven), every board reporting (T3), and
+     phones and the deck shown as nodes by the boards that hear them --
+     Reticulum keeps no topology database, so the map stays assembled from
+     each board's own view. After T2.
 2. **The plugin half closes:** Columba #16 (the MeshService leak), and a
    stationary ATAK made visible after a restart (in Columba and the bridge,
    see below).
@@ -2017,11 +2037,34 @@ track: it rides the same uplink and the same command path.
   microcontroller. Our provisioning codec is already the compact binary
   equivalent. What to copy is the experience: the app talks to a board the
   same way whether it is local or several hops away.
-- **LoRa discovery across channel plans:** one radio listens on one channel.
-  Once teams are split across frequency plans, nodes visit a fleet-wide
-  rendezvous channel at time-synced slots to announce which plan they are on.
-  Default settings stay as they are until then. Designed after field
-  configuration, because channel plans are what make it necessary.
+- **LoRa rendezvous and channel escape -- one PR or two back to back,
+  scheduled 2026-10-08, after field configuration** (channel plans and
+  fleet-wide commands are what they build on):
+  1. **Rendezvous.** One radio listens on one channel. Nodes visit a
+     fleet-wide rendezvous channel at time-synced slots (time propagation is
+     the prerequisite, and is shipped) to announce which channel plan they
+     are on. Gains: teams split across plans still discover each other, and
+     a node on the wrong settings -- the 2026-08-22 outage -- is found
+     instead of lost. Cost: the radio is deaf on its working channel during
+     a slot (2 s every 10 min is ~0.3%), some airtime, no stock-RNode
+     interop. Default settings stay as they are until it ships.
+  2. **Channel escape, not continuous hopping.** Hopping adds little
+     security over Reticulum's encryption and IFAC (an SDR captures the
+     whole 868 band) and costs re-meshing speed. Escape keeps the
+     anti-jamming gain: a pre-shared list of fallback channels, a move only
+     when the working channel is measured bad (noise floor and channel use
+     are already in the detail report), ordered by an authority-signed
+     command or by a deterministic rule at a slot boundary. The rendezvous
+     slot is where a straggler finds the fleet again, which is why the two
+     go together.
+  **Bench tests, before deployment:** the escape rule as a pure, host-tested
+  function over recorded and synthetic noise traces; a deliberate jammer (a
+  board transmitting continuously on the working channel, lab gain 21) to
+  measure detection time and whether every node moves together; a forced
+  split (one node moved by hand) to measure time to rejoin through
+  rendezvous. Judged on every carrier it touches: LoRa only, by nature;
+  ESP-NOW's scan already visits a rendezvous channel first
+  (`ESPNowPeerProtocol.md`).
 - **Owning the protocol:**
   1. Fork and pin the Python RNS and LXMF that Columba runs, under DrLexus11.
      **Done 2026-10-04** (Columba #18, same commits), and the middle man cut:

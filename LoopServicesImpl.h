@@ -40,6 +40,8 @@
 #include "LoopPhase.h"
 #include "TelemetryUplink.h"
 #include "TelemetryCodec.h"
+#include "TelemetryDetailCodec.h"
+#include "TelemetryNeighbours.h"
 
 // Below these, the heap is short of what the mesh stack needs to keep working.
 // heap8/largest8, not "internal": see the [mem] line in heap_watch().
@@ -398,10 +400,125 @@ static void telemetry_fill_node(NodeTelemetry& report) {
   }
 }
 
+#ifndef TELEMETRY_SEND_BUDGET_MS
+#define TELEMETRY_SEND_BUDGET_MS 250
+#endif
+
+#ifndef TELEMETRY_DETAIL_INTERVAL_MS
+// The detail report's cadence: who this board hears and what it runs change
+// slowly, and on LoRa its ~100-300 bytes are shared airtime.
+#define TELEMETRY_DETAIL_INTERVAL_MS (30UL * 60UL * 1000UL)
+#endif
+
+static uint32_t detail_sat32(size_t v) { return v > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)v; }
+static int8_t detail_dbm(float v) {
+  if (!(v > -128.0f) || v > 127.0f) return DETAIL_RSSI_UNKNOWN;   // NaN and the -292 "unknown" sentinel
+  return (int8_t)v;
+}
+
+// Who this board hears directly, recorded by the receive callback as announces
+// arrive (TelemetryNeighbours.h). Interface kinds are cached by interface, so a
+// received announce costs no string copy; only its identity hash allocates.
+static NeighbourTable& telemetry_neighbours() { static NeighbourTable table; return table; }
+
+void telemetry_neighbour_heard(const RNS::Bytes& raw, const RNS::Interface& interface) {
+  size_t at = 0;
+  const AnnounceSource source = announce_neighbour(raw.data(), raw.size(), at);
+  if (source == AnnounceSource::None) return;
+
+  static struct { const void* impl; uint8_t kind; } kinds[DETAIL_MAX_INTERFACES] = {};
+  const void* impl = const_cast<RNS::Interface&>(interface).get();
+  uint8_t kind = DETAIL_IF_OTHER;
+  bool cached = false;
+  for (auto& k : kinds) {
+    if (k.impl == impl) { kind = k.kind; cached = true; break; }
+  }
+  if (!cached) {
+    kind = detail_kind_of(interface.name().c_str());
+    for (auto& k : kinds) {
+      if (k.impl == nullptr) { k.impl = impl; k.kind = kind; break; }
+    }
+  }
+
+  uint32_t id;
+  if (source == AnnounceSource::TransportId) {
+    id = neighbour_id_of(raw.data() + at);
+  } else {
+    const RNS::Bytes hash = RNS::Identity::full_hash(raw.mid(at, NEIGHBOUR_PUBKEY_LEN));
+    if (hash.size() < 4) return;
+    id = neighbour_id_of(hash.data());
+  }
+  // Our own announce, looped back, is not a neighbour: kept out of the table,
+  // where it would take a slot and could evict a real one.
+  static uint32_t self_id = 0;
+  if (self_id == 0 && RNS::Transport::identity()) self_id = neighbour_id_of(RNS::Transport::identity().hash().data());
+  if (id == self_id) return;
+  int8_t rssi = DETAIL_RSSI_UNKNOWN;
+#if defined(LORA_TRANSPORT) && !defined(NO_LORA_HARDWARE)
+  if (kind == DETAIL_IF_LORA) rssi = detail_dbm((float)last_rssi);   // this packet's, the radio's last
+#endif
+  telemetry_neighbours().heard(id, kind, rssi, (uint32_t)millis());
+}
+
+// The detail report: what this board runs, its interfaces, its radio, its
+// propagation store and who it hears (TelemetryDetailCodec.h).
+static void telemetry_fill_detail(NodeDetail& d, uint32_t sender_id, uint32_t uptime_s) {
+  // Reset field by field: `d = NodeDetail{}` may build an 800-byte temporary
+  // on the loop task's stack.
+  d.env[0] = 0;
+  d.if_count = 0;
+  d.radio_known = false;
+  d.propagation_known = false;
+  d.nb_count = 0;
+  d.neighbours_truncated = false;
+  d.sender_id = sender_id;
+  d.uptime_s = uptime_s;
+  memcpy(d.fw_hash, dev_firmware_hash, 4);
+  d.fw_version = (uint16_t)((MAJ_VERS << 8) | MIN_VERS);
+#ifdef FW_BUILD_ENV
+  strncpy(d.env, FW_BUILD_ENV, DETAIL_ENV_MAX);
+  d.env[DETAIL_ENV_MAX] = 0;
+#endif
+  for (const RNS::Interface& iface : RNS::Transport::get_interfaces()) {
+    if (d.if_count >= DETAIL_MAX_INTERFACES) break;
+    DetailInterface& f = d.interfaces[d.if_count++];
+    f.kind = detail_kind_of(iface.name().c_str());
+    f.up = iface.online();
+    f.rx_bytes = detail_sat32(iface.rxbytes());
+    f.tx_bytes = detail_sat32(iface.txbytes());
+  }
+#if defined(LORA_TRANSPORT) && !defined(NO_LORA_HARDWARE)
+  if (lora_interface) {
+    d.radio_known = true;
+    d.rssi = detail_dbm((float)last_rssi);
+    d.snr_q = (int8_t)last_snr_raw;                 // the radio's own quarter-dB figure
+    d.noise = detail_dbm((float)noise_floor);
+    d.utilisation_pct = (uint8_t)(total_channel_util * 100.0f + 0.5f);
+    d.airtime_pct = (uint8_t)(airtime * 100.0f + 0.5f);
+  }
+#endif
+#if defined(LXMF_PROPAGATION_NODE)
+  d.propagation_known = true;
+  d.store_messages = (uint32_t)lxmf_store_index.size();
+  d.store_bytes = detail_sat32(lxmf_store_bytes());
+  d.pn_peers = (uint8_t)(lxmf_peers().size() > 255 ? 255 : lxmf_peers().size());
+  const LXMFSyncStats& sync = lxmf_sync_stats();
+  d.sync_ok = sync.ok;
+  d.sync_fail = sync.failed;
+  d.last_sync_s = sync.any_ok ? ((uint32_t)millis() - sync.last_ok_ms) / 1000u : DETAIL_NEVER;
+#endif
+  telemetry_neighbours().fill(d, (uint32_t)millis());
+}
+
 class TelemetryUplinkService : public LoopService {
 public:
   explicit TelemetryUplinkService(const ServiceRunner& runner)
     : LoopService(LOOP_PHASE_TELEMETRY), _runner(runner), _schedule(0) {}
+
+  // A poll that sends encrypts one packet to the gateway: 167 ms measured on
+  // Rev 1 (2026-10-04), once per health report and once per detail report,
+  // never both in one poll. Every other poll returns at once.
+  uint32_t budget_ms() const override { return TELEMETRY_SEND_BUDGET_MS; }
 
   bool init(const AppContext& context) override {
     _schedule = TelemetrySchedule(context.boot_ms);
@@ -413,6 +530,7 @@ public:
   // One report a minute after boot, then every TELEMETRY_INTERVAL_MS. With no
   // gateway reachable, ask for a path to the newest heard and retry sooner.
   void poll(uint32_t now_ms) override {
+    if (_detail_gateway) { send_detail(now_ms); return; }
     if (!_schedule.due(now_ms)) return;
     _attempted = true;
     if (!reticulum || !RNS::Transport::identity()) { _schedule.unreachable(now_ms); return; }
@@ -458,6 +576,15 @@ public:
              gateway_hash.toHex().substr(0, 16).c_str(), (unsigned)len);
     }
     _schedule.sent(now_ms);
+
+    // The detail report follows on the next poll -- same gateway, first with
+    // the first health report, then every half hour. A poll apart, so the two
+    // encryptions (~170 ms each on Rev 1) never share one.
+    if (!_detail_sent || now_ms - _detail_last >= TELEMETRY_DETAIL_INTERVAL_MS) {
+      _detail_gateway = gateway_identity;
+      _detail_sender = report.sender_id;
+      _detail_uptime = report.uptime_s;
+    }
   }
 
   Health health() const override {
@@ -474,10 +601,38 @@ public:
   }
 
 private:
+  // Statics for the report and its wire bytes: nothing this size is
+  // allocated per report.
+  void send_detail(uint32_t now_ms) {
+    static NodeDetail detail;
+    static uint8_t wire[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+    const RNS::Identity gateway_identity = _detail_gateway;
+    _detail_gateway = {RNS::Type::NONE};
+    telemetry_fill_detail(detail, _detail_sender, _detail_uptime);
+    const size_t len = telemetry_detail_encode(detail, wire, sizeof(wire));
+    if (len == 0) return;
+    RNS::Destination gateway(gateway_identity, RNS::Type::Destination::OUT,
+                             RNS::Type::Destination::SINGLE,
+                             RNS::Type::Transport::APP_NAME, TELEMETRY_UPLINK_ASPECT);
+    RNS::Packet packet(gateway, RNS::Bytes(wire, len));
+    packet.send();
+    if (!_detail_sent) {
+      printf("[telemetry] first detail report, %u bytes: %u interface(s), %u neighbour(s)\n",
+             (unsigned)len, (unsigned)detail.if_count, (unsigned)detail.nb_count);
+    }
+    _detail_sent = true;
+    _detail_last = now_ms;
+  }
+
   const ServiceRunner& _runner;
   TelemetrySchedule _schedule;
   bool _attempted = false;
   uint32_t _sent = 0;
+  bool _detail_sent = false;
+  uint32_t _detail_last = 0;
+  RNS::Identity _detail_gateway{RNS::Type::NONE};
+  uint32_t _detail_sender = 0;
+  uint32_t _detail_uptime = 0;
   mutable char _reason[32] = {};
 };
 #endif

@@ -467,6 +467,11 @@ def firmware_package(env):
 Import("env")
 
 env.Replace(PROGNAME="rnode_firmware_%s" % env.GetProjectOption("custom_variant"))
+
+# The build environment's name, compiled in: the detail report says which build
+# a board runs (TelemetryDetailCodec.h). Rev 1 ran PR E2's stripped chain-test
+# build for days before anyone could see it (2026-10-04).
+env.Append(CPPDEFINES=[("FW_BUILD_ENV", env.StringifyMacro(env["PIOENV"]))])
 print("PROGNAME:", env.subst("$PROGNAME"))
 
 print("*** Running custom script...")

@@ -538,7 +538,10 @@ void on_log(const char* msg, RNS::LogLevel level) {
 }
 
 // CBA receive packet callback
+void telemetry_neighbour_heard(const RNS::Bytes& raw, const RNS::Interface& interface);  // LoopServicesImpl.h
+
 void on_receive_packet(const RNS::Bytes& raw, const RNS::Interface& interface) {
+  telemetry_neighbour_heard(raw, interface);
 #ifdef HAS_SDCARD
   TRACE("Logging receive packet to SD");
   String line = RNS::getTimeString() + String(" recv: ") + String(raw.toHex().c_str()) + "\n";
