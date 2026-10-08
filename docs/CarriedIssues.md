@@ -958,3 +958,29 @@ the Nexus 6P is ~50 kbit/s and bounded by the Nexus's radio -- one 488-byte
 packet per ~60 ms, with or without a write response; see *PR E extended* in
 `TAKDeliveryPlan.md`. Still owed: the same measurement between two current
 phones.
+
+## 12. The deck cannot reach REV2-2, though REV2-2 reaches the deck -- found 2026-10-08
+
+The gateway's first reachability probes (reticulum-telemetry #11): Rev 1
+answered every probe (0.76-2.2 s, 2 hops via UDP); **REV2-2 answered none**.
+Reticulum's own `rnprobe` agrees -- 100% loss -- and `rnpath` gives the
+deck's path to REV2-2's probe destination as **3 hops via REV2
+(`b495d0cd`) on UDP**. Yet REV2-2's own telemetry reaches the gateway in 2
+hops, and REV2 hears REV2-2 directly over LoRa (-51 dBm on the topology map).
+So the mesh carries traffic from REV2-2 and not to it.
+
+**Measured:** probe loss 100% (3 of 3 cycles, plus rnprobe); the deck's path,
+3 hops via REV2; REV2-2's reports arriving, 2 hops.
+
+**Not yet known:** which third hop the deck's path names, and whether it is a
+route from before the 2026-10-08 power outage (REV2-2 was off 14:05-14:32,
+and boards were moved between USB and wall) that a path request answered from
+a cache. **First thing to try:** drop the deck's path (`rnpath -d`) and
+request it again; read REV2's path table for REV2-2's destinations over its
+NomadNet page. If the 3-hop route comes back, the reverse route is what is
+wrong; if it does not, a stale path outlived its usefulness and a probe found
+it.
+
+**Why it matters for the field:** commands and messages to a board can fail
+while everything the board sends still arrives, and nothing but a probe shows
+it.
