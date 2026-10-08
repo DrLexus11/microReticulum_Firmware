@@ -1899,7 +1899,19 @@ the field shows, not to have something to build.
 
 1. **The firmware half of PR F closes:** the announce-table panic and the TCP
    link-table leak fixed in the library (both found by soaks, 2026-10-03), a
-   clean 48 h soak, #34 (F3b) merged, then F4a. F4 closes with telemetry
+   clean 48 h soak, #34 (F3b) merged, then F4a. **Soak status, 2026-10-08
+   evening -- evaluated on return, not at 48 h** (operator: the soaks run
+   on while the agent is out of usage, until the weekly reset; a longer run
+   is better evidence, as the 10-05 panic came at 45 h). Two boards on the
+   deck's USB, each with a serial logger (`~/.impr-tak/soak/`, also in
+   Grafana "Mesh logs") and its ELF kept for core dumps:
+   **Rev 1 on #39's code** (`b351e5ee`, from 16:05) -- it contains #34, #37,
+   #38 and #39, so its run gates their merges; **REV2-2 on #40's code**
+   (`e56ea104`, from 20:31) -- the top of the stack, system section and the
+   SX126x CRC-interrupt change. On return: uptime and restarts per board in
+   Prometheus, the boot logs, a core dump if any restart was a panic; clean
+   -> merge #34, #37, #38, #39, #40 in order and pin library #11/#12's
+   successor. F4 closes with telemetry
    reports over LoRa and BLE, not only Wi-Fi; more than one board reporting;
    and the MQTT topic layout documented. **Telemetry week (2026-10-04),
    while the field test waits for weather:**
