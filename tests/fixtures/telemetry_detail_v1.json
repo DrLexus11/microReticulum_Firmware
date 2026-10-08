@@ -1,5 +1,5 @@
 {
- "note": "Board detail report, telemetry wire format 0x21 (TelemetryDetailCodec.h, tools/telemetry_detail_codec.py). Synthetic values only. 'encode': reports and their exact bytes (interface bytes are cumulative since boot, store size whole KB, ages whole minutes, counts saturate, percentages cap at 100, neighbours cut to fit 380 bytes and flagged). 'decode': bytes and what they decode to, or null when refused; decoded store size is whole KB x 1024, ages whole minutes x 60, last_sync_s null for never.",
+ "note": "Board detail report, telemetry wire format 0x21 (TelemetryDetailCodec.h, tools/telemetry_detail_codec.py). Synthetic values only. 'encode': reports and their exact bytes (interface bytes are cumulative since boot, store size whole KB, ages whole minutes, counts saturate, percentages cap at 100, neighbours cut to fit 380 bytes and flagged). 'decode': bytes and what they decode to, or null when refused; decoded store size is whole KB x 1024, ages whole minutes x 60, last_sync_s null for never. FLAG_SYSTEM (0x08), appended after the neighbours 2026-10-08: temperature, LoRa packets and CRC errors, the clock's source and age, IFAC rejections; the earlier cases' bytes are unchanged.",
  "version": 33,
  "encode": [
   {
@@ -69,7 +69,15 @@
       "heard_s": 70000
      }
     ],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    },
    "hex": "21030a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff"
   },
@@ -96,7 +104,15 @@
     "sync_fail": 0,
     "last_sync_s": null,
     "neighbours": [],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    },
    "hex": "21000102030400000005000000000000000000"
   },
@@ -123,7 +139,15 @@
     "sync_fail": 70000,
     "last_sync_s": null,
     "neighbours": [],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    },
    "hex": "2102fedcba980001518000ff00ff0200036f7a6400ffffffff000000ffffffff00"
   },
@@ -150,7 +174,15 @@
     "sync_fail": 0,
     "last_sync_s": 4000000,
     "neighbours": [],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    },
    "hex": "2102fedcba99000000010000000000000000000000000000000000fffe00"
   },
@@ -538,9 +570,131 @@
       "heard_s": 60
      }
     ],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    },
    "hex": "21040a0b0c0e0000003c000000000000207878787878787878787878787878787878787878787878787878787878787878002f00000000019c0100000001019c0100000002019c0100000003019c0100000004019c0100000005019c0100000006019c0100000007019c0100000008019c0100000009019c010000000a019c010000000b019c010000000c019c010000000d019c010000000e019c010000000f019c0100000010019c0100000011019c0100000012019c0100000013019c0100000014019c0100000015019c0100000016019c0100000017019c0100000018019c0100000019019c010000001a019c010000001b019c010000001c019c010000001d019c010000001e019c010000001f019c0100000020019c0100000021019c0100000022019c0100000023019c0100000024019c0100000025019c0100000026019c0100000027019c0100000028019c0100000029019c010000002a019c010000002b019c010000002c019c010000002d019c010000002e019c01"
+  },
+  {
+   "name": "rad_full_with_system",
+   "detail": {
+    "sender_id": 168496141,
+    "uptime_s": 3600,
+    "fw_hash": "a1b2c3d4",
+    "fw_version": 342,
+    "env": "impr-rad01-rev1",
+    "interfaces": [
+     {
+      "kind": 1,
+      "up": true,
+      "rx_bytes": 48000,
+      "tx_bytes": 12000
+     },
+     {
+      "kind": 3,
+      "up": false,
+      "rx_bytes": 0,
+      "tx_bytes": 0
+     },
+     {
+      "kind": 4,
+      "up": true,
+      "rx_bytes": 5000000,
+      "tx_bytes": 2000000
+     },
+     {
+      "kind": 2,
+      "up": true,
+      "rx_bytes": 70000,
+      "tx_bytes": 5
+     }
+    ],
+    "radio_known": true,
+    "rssi": -97,
+    "snr_q": -22,
+    "noise": -110,
+    "utilisation_pct": 12,
+    "airtime_pct": 3,
+    "propagation_known": true,
+    "store_messages": 8,
+    "store_bytes": 3300,
+    "pn_peers": 2,
+    "sync_ok": 5,
+    "sync_fail": 12,
+    "last_sync_s": 7260,
+    "neighbours": [
+     {
+      "id": 235868177,
+      "kind": 1,
+      "rssi": -88,
+      "heard_s": 120
+     },
+     {
+      "id": 303240213,
+      "kind": 4,
+      "rssi": -128,
+      "heard_s": 30
+     },
+     {
+      "id": 370612249,
+      "kind": 3,
+      "rssi": -70,
+      "heard_s": 70000
+     }
+    ],
+    "neighbours_truncated": false,
+    "system_known": true,
+    "temperature_c": 47,
+    "lora_rx": 15982,
+    "lora_tx": 9120,
+    "lora_crc_errors": 13,
+    "time_source": 7,
+    "time_age_s": 1020,
+    "ifac_rejected": 2
+   },
+   "hex": "210b0a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff2f00003e6e000023a00000000d07001100000002"
+  },
+  {
+   "name": "system_unknowns",
+   "detail": {
+    "sender_id": 16909060,
+    "uptime_s": 60,
+    "fw_hash": "a1b2c3d4",
+    "fw_version": 342,
+    "env": "impr-rad01-rev2",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": false,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": null,
+    "neighbours": [],
+    "neighbours_truncated": false,
+    "system_known": true,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
+   },
+   "hex": "2108010203040000003ca1b2c3d401560f696d70722d72616430312d726576320000800000000000000000ffffffff00ffffffffffff"
   }
  ],
  "decode": [
@@ -612,7 +766,15 @@
       "heard_s": 15300
      }
     ],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    }
   },
   {
@@ -639,7 +801,15 @@
     "sync_fail": 0,
     "last_sync_s": null,
     "neighbours": [],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    }
   },
   {
@@ -666,7 +836,15 @@
     "sync_fail": 65535,
     "last_sync_s": null,
     "neighbours": [],
-    "neighbours_truncated": false
+    "neighbours_truncated": false,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    }
   },
   {
@@ -976,7 +1154,15 @@
       "heard_s": 60
      }
     ],
-    "neighbours_truncated": true
+    "neighbours_truncated": true,
+    "system_known": false,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
    }
   },
   {
@@ -1002,6 +1188,125 @@
   {
    "name": "shorter_than_the_fixed_part",
    "hex": "21000a0b0c0d00000e10a1b2c3d401",
+   "detail": null
+  },
+  {
+   "name": "rad_full_with_system_decoded",
+   "hex": "210b0a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff2f00003e6e000023a00000000d07001100000002",
+   "detail": {
+    "sender_id": 168496141,
+    "uptime_s": 3600,
+    "fw_hash": "a1b2c3d4",
+    "fw_version": 342,
+    "env": "impr-rad01-rev1",
+    "interfaces": [
+     {
+      "kind": 1,
+      "up": true,
+      "rx_bytes": 48000,
+      "tx_bytes": 12000
+     },
+     {
+      "kind": 3,
+      "up": false,
+      "rx_bytes": 0,
+      "tx_bytes": 0
+     },
+     {
+      "kind": 4,
+      "up": true,
+      "rx_bytes": 5000000,
+      "tx_bytes": 2000000
+     },
+     {
+      "kind": 2,
+      "up": true,
+      "rx_bytes": 70000,
+      "tx_bytes": 5
+     }
+    ],
+    "radio_known": true,
+    "rssi": -97,
+    "snr_q": -22,
+    "noise": -110,
+    "utilisation_pct": 12,
+    "airtime_pct": 3,
+    "propagation_known": true,
+    "store_messages": 8,
+    "store_bytes": 3072,
+    "pn_peers": 2,
+    "sync_ok": 5,
+    "sync_fail": 12,
+    "last_sync_s": 7260,
+    "neighbours": [
+     {
+      "id": 235868177,
+      "kind": 1,
+      "rssi": -88,
+      "heard_s": 120
+     },
+     {
+      "id": 303240213,
+      "kind": 4,
+      "rssi": -128,
+      "heard_s": 0
+     },
+     {
+      "id": 370612249,
+      "kind": 3,
+      "rssi": -70,
+      "heard_s": 15300
+     }
+    ],
+    "neighbours_truncated": false,
+    "system_known": true,
+    "temperature_c": 47,
+    "lora_rx": 15982,
+    "lora_tx": 9120,
+    "lora_crc_errors": 13,
+    "time_source": 7,
+    "time_age_s": 1020,
+    "ifac_rejected": 2
+   }
+  },
+  {
+   "name": "system_unknowns_decoded",
+   "hex": "2108010203040000003ca1b2c3d401560f696d70722d72616430312d726576320000800000000000000000ffffffff00ffffffffffff",
+   "detail": {
+    "sender_id": 16909060,
+    "uptime_s": 60,
+    "fw_hash": "a1b2c3d4",
+    "fw_version": 342,
+    "env": "impr-rad01-rev2",
+    "interfaces": [],
+    "radio_known": false,
+    "rssi": -128,
+    "snr_q": 0,
+    "noise": -128,
+    "utilisation_pct": 0,
+    "airtime_pct": 0,
+    "propagation_known": false,
+    "store_messages": 0,
+    "store_bytes": 0,
+    "pn_peers": 0,
+    "sync_ok": 0,
+    "sync_fail": 0,
+    "last_sync_s": null,
+    "neighbours": [],
+    "neighbours_truncated": false,
+    "system_known": true,
+    "temperature_c": -128,
+    "lora_rx": 0,
+    "lora_tx": 0,
+    "lora_crc_errors": null,
+    "time_source": 0,
+    "time_age_s": null,
+    "ifac_rejected": null
+   }
+  },
+  {
+   "name": "system_section_cut_short",
+   "hex": "210b0a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff2f00003e6e000023a00000000d070011000000",
    "detail": null
   }
  ]

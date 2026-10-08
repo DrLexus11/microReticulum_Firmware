@@ -145,6 +145,10 @@ private:
   int _implicitHeaderMode;
   int _payloadLength;
   int _crcMode;
+  volatile uint32_t _crcErrors = 0;   // packets dropped on a CRC error since boot
+public:
+  uint32_t crcErrors() override { return _crcErrors; }
+private:
   int _fifo_tx_addr_ptr;
   int _fifo_rx_addr_ptr;
   uint8_t _packet[255];

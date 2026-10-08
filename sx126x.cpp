@@ -1074,6 +1074,10 @@ void ISR_VECT sx126x::handleDio0Rise() {
     executeOpcodeRead(OP_RX_BUFFER_STATUS_6X, rxbuf, 2);
     int packetLength = rxbuf[0];
     if (_onReceive) { _onReceive(packetLength); }
+  } else {
+    // Dropped, as before, but counted: CRC errors beside a rising noise floor
+    // are how interference shows (detail report, FLAG_SYSTEM).
+    ++_crcErrors;
   }
 }
 

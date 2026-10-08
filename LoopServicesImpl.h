@@ -499,6 +499,13 @@ static void telemetry_fill_detail(NodeDetail& d, uint32_t sender_id, uint32_t up
   d.propagation_known = false;
   d.nb_count = 0;
   d.neighbours_truncated = false;
+  d.temperature_c = DETAIL_TEMP_UNKNOWN;
+  d.lora_rx = 0;
+  d.lora_tx = 0;
+  d.lora_crc_errors = DETAIL_UNKNOWN32;
+  d.time_source = 0;
+  d.time_age_s = DETAIL_NEVER;
+  d.ifac_rejected = DETAIL_UNKNOWN32;
   d.sender_id = sender_id;
   d.uptime_s = uptime_s;
   memcpy(d.fw_hash, dev_firmware_hash, 4);
@@ -536,6 +543,28 @@ static void telemetry_fill_detail(NodeDetail& d, uint32_t sender_id, uint32_t up
   d.last_sync_s = sync.any_ok ? ((uint32_t)millis() - sync.last_ok_ms) / 1000u : DETAIL_NEVER;
 #endif
   telemetry_neighbours().fill(d, (uint32_t)millis());
+
+  // FLAG_SYSTEM: the chip's temperature, LoRa packets and CRC errors, the
+  // clock's source and age, IFAC rejections (unknown until the library counts
+  // them).
+  d.system_known = true;
+#if defined(ESP32)
+  // The chip's own sensor, read once per report (a few ms; the RAD boards have
+  // no PMU, whose reading Power.h would otherwise keep).
+  const float t = temperatureRead();
+  if (t == t) d.temperature_c = (int8_t)(t > 127.0f ? 127 : (t < -127.0f ? -127 : (int)t));   // not NaN
+#endif
+#if defined(LORA_TRANSPORT) && !defined(NO_LORA_HARDWARE)
+  d.lora_rx = stat_rx;
+  d.lora_tx = stat_tx;
+  if (LoRa != nullptr) d.lora_crc_errors = LoRa->crcErrors();
+#endif
+  if (RNS::Utilities::OS::wall_time_known()) {
+    d.time_source = (uint8_t)RNS::Utilities::OS::wall_time_source();
+    const uint64_t now = RNS::Utilities::OS::monotonic_time_millis();
+    const uint64_t adopted = RNS::Utilities::OS::wall_time_adopted_at();
+    d.time_age_s = now > adopted ? (uint32_t)((now - adopted) / 1000u) : 0u;
+  }
 }
 
 class TelemetryUplinkService : public LoopService {
