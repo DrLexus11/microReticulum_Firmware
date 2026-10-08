@@ -69,6 +69,9 @@ public:
   // rnoded.conf without a downcast at the call site.
   virtual void    setTcxoVoltage(uint8_t /*mode_byte*/) {}
   virtual void    setDio2AsRfSwitch(bool /*enable*/) {}
+  // Packets dropped on a CRC error since boot, for the detail report.
+  // 0xFFFFFFFF from a driver that does not count them.
+  virtual uint32_t crcErrors() { return 0xFFFFFFFFu; }
 };
 
 #endif

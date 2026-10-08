@@ -19,6 +19,10 @@ MAX_NEIGHBOURS = 48
 FLAG_RADIO = 0x01
 FLAG_PROPAGATION = 0x02
 FLAG_NEIGHBOURS_TRUNCATED = 0x04
+FLAG_SYSTEM = 0x08
+SYSTEM_LEN = 20
+UNKNOWN32 = 0xFFFFFFFF
+TEMP_UNKNOWN = -128
 
 IF_NAMES = {0: "other", 1: "lora", 2: "ble_peer", 3: "espnow", 4: "tcp_server",
             5: "tcp_client", 6: "udp", 7: "auto", 8: "serial", 9: "halow"}
@@ -31,6 +35,15 @@ def _sat16(v):
 
 def _sat8(v):
     return 0xFF if v > 0xFF else v
+
+
+def _sat32(v):
+    return 0xFFFFFFFF if v > 0xFFFFFFFF else v
+
+
+def _known32(v):
+    """A known counter: never the unknown sentinel, saturating just below it."""
+    return 0xFFFFFFFE if v >= 0xFFFFFFFF else v
 
 
 def _pct(v):
@@ -47,6 +60,8 @@ def new_detail(**fields):
         "propagation_known": False, "store_messages": 0, "store_bytes": 0, "pn_peers": 0,
         "sync_ok": 0, "sync_fail": 0, "last_sync_s": None,
         "neighbours": [], "neighbours_truncated": False,
+        "system_known": False, "temperature_c": TEMP_UNKNOWN, "lora_rx": 0, "lora_tx": 0,
+        "lora_crc_errors": None, "time_source": 0, "time_age_s": None, "ifac_rejected": None,
     }
     d.update(fields)
     return d
@@ -57,8 +72,9 @@ def encode(d, out_len=WIRE_MAX_LEN):
     limit = min(out_len, WIRE_MAX_LEN)
     env = d["env"].encode("utf-8")[:ENV_MAX]
     ifs = d["interfaces"][:MAX_INTERFACES]
+    system = d.get("system_known", False)
     fixed = 17 + len(env) + 1 + len(ifs) * 10 + (5 if d["radio_known"] else 0) + \
-        (11 if d["propagation_known"] else 0) + 1
+        (11 if d["propagation_known"] else 0) + 1 + (SYSTEM_LEN if system else 0)
     if fixed > limit:
         return None
     wanted = d["neighbours"][:MAX_NEIGHBOURS]
@@ -72,6 +88,8 @@ def encode(d, out_len=WIRE_MAX_LEN):
         flags |= FLAG_PROPAGATION
     if nbs < len(wanted) or d["neighbours_truncated"]:
         flags |= FLAG_NEIGHBOURS_TRUNCATED
+    if system:
+        flags |= FLAG_SYSTEM
 
     out = bytearray(struct.pack(">BBII", WIRE_VERSION, flags, d["sender_id"], d["uptime_s"]))
     out += bytes.fromhex(d["fw_hash"])[:4].ljust(4, b"\0")
@@ -90,6 +108,13 @@ def encode(d, out_len=WIRE_MAX_LEN):
     out.append(nbs)
     for n in wanted[:nbs]:
         out += struct.pack(">IBbB", n["id"], n["kind"], n["rssi"], _sat8(n["heard_s"] // 60))
+    if system:
+        age = d["time_age_s"]
+        minutes = 0xFFFF if age is None else min(age // 60, 0xFFFE)
+        crc = UNKNOWN32 if d["lora_crc_errors"] is None else _known32(d["lora_crc_errors"])
+        ifac = UNKNOWN32 if d["ifac_rejected"] is None else _known32(d["ifac_rejected"])
+        out += struct.pack(">bIIIBHI", d["temperature_c"], _sat32(d["lora_rx"]), _sat32(d["lora_tx"]), crc,
+                           d["time_source"], minutes, ifac)
     return bytes(out)
 
 
@@ -144,4 +169,13 @@ def decode(data):
         d["neighbours"].append({"id": nid, "kind": kind, "rssi": rssi, "heard_s": minutes * 60})
         at += 7
     d["neighbours_truncated"] = bool(flags & FLAG_NEIGHBOURS_TRUNCATED)
+    if flags & FLAG_SYSTEM:
+        if at + SYSTEM_LEN > len(data):
+            return None
+        temp, rx, tx, crc, source, minutes, ifac = struct.unpack_from(">bIIIBHI", data, at)
+        d.update(system_known=True, temperature_c=temp, lora_rx=rx, lora_tx=tx,
+                 lora_crc_errors=None if crc == UNKNOWN32 else crc, time_source=source,
+                 time_age_s=None if minutes == 0xFFFF else minutes * 60,
+                 ifac_rejected=None if ifac == UNKNOWN32 else ifac)
+        at += SYSTEM_LEN
     return d

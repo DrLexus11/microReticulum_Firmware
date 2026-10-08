@@ -1009,6 +1009,38 @@ void test_kept_reports_always_fit_one_batch_and_the_oldest_give_way() {
 	TEST_ASSERT_FALSE(kept.dropped());
 }
 
+// FLAG_SYSTEM (0x08), appended after the neighbours: the fixture's cases decode
+// to the pinned values and encode back to the same bytes, and a section cut
+// short is refused. The earlier cases' bytes did not change.
+void test_detail_system_section_round_trips() {
+	static uint8_t in[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+	static uint8_t out[TELEMETRY_DETAIL_WIRE_MAX_LEN];
+	static NodeDetail d;
+	size_t n = bytes_of("210b0a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff2f00003e6e000023a00000000d07001100000002", in, sizeof(in));
+	TEST_ASSERT_TRUE(telemetry_detail_decode(in, n, d));
+	TEST_ASSERT_TRUE(d.system_known);
+	TEST_ASSERT_EQUAL_INT8(47, d.temperature_c);
+	TEST_ASSERT_EQUAL_UINT32(15982, d.lora_rx);
+	TEST_ASSERT_EQUAL_UINT32(9120, d.lora_tx);
+	TEST_ASSERT_EQUAL_UINT32(13, d.lora_crc_errors);
+	TEST_ASSERT_EQUAL_UINT8(7, d.time_source);
+	TEST_ASSERT_EQUAL_UINT32(17u * 60u, d.time_age_s);
+	TEST_ASSERT_EQUAL_UINT32(2, d.ifac_rejected);
+	TEST_ASSERT_EQUAL_STRING("210b0a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff2f00003e6e000023a00000000d07001100000002", hex_of(out, telemetry_detail_encode(d, out, sizeof(out))).c_str());
+
+	n = bytes_of("2108010203040000003ca1b2c3d401560f696d70722d72616430312d726576320000800000000000000000ffffffff00ffffffffffff", in, sizeof(in));
+	TEST_ASSERT_TRUE(telemetry_detail_decode(in, n, d));
+	TEST_ASSERT_TRUE(d.system_known);
+	TEST_ASSERT_EQUAL_INT8(DETAIL_TEMP_UNKNOWN, d.temperature_c);
+	TEST_ASSERT_EQUAL_UINT32(DETAIL_UNKNOWN32, d.lora_crc_errors);
+	TEST_ASSERT_EQUAL_UINT32(DETAIL_NEVER, d.time_age_s);
+	TEST_ASSERT_EQUAL_UINT32(DETAIL_UNKNOWN32, d.ifac_rejected);
+	TEST_ASSERT_EQUAL_STRING("2108010203040000003ca1b2c3d401560f696d70722d72616430312d726576320000800000000000000000ffffffff00ffffffffffff", hex_of(out, telemetry_detail_encode(d, out, sizeof(out))).c_str());
+
+	n = bytes_of("210b0a0b0c0d00000e10a1b2c3d401560f696d70722d72616430312d726576310401010000bb8000002ee0030000000000000000000401004c4b40001e8480020100011170000000059fea920c0300080003020005000c0079030e0f101101a802121314150480001617181903baff2f00003e6e000023a00000000d070011000000", in, sizeof(in));
+	TEST_ASSERT_FALSE(telemetry_detail_decode(in, n, d));
+}
+
 int main() {
 	UNITY_BEGIN();
 	RUN_TEST(test_bootlog_that_fits_is_kept_whole);
@@ -1068,5 +1100,6 @@ int main() {
 	RUN_TEST(test_kept_reports_compose_into_one_batch_with_their_times);
 	RUN_TEST(test_kept_reports_always_fit_one_batch_and_the_oldest_give_way);
 	RUN_TEST(test_gateway_live_needs_a_recent_announce);
+	RUN_TEST(test_detail_system_section_round_trips);
 	return UNITY_END();
 }

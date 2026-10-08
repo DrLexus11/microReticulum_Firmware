@@ -2021,6 +2021,7 @@ void ISR_VECT receive_callback(int packet_size) {
   #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52
     BaseType_t int_mask;
   #endif
+  ++stat_rx;   // one LoRa frame received (a split packet is two)
 
   bool    ready    = false;
   if (!promisc) { // Not in promiscuous mode
@@ -2457,6 +2458,7 @@ float packet_airtime_ms(uint16_t written) {
 }
 
 void add_airtime(uint16_t written) {
+  ++stat_tx;   // one LoRa frame sent (a split packet is two)
   #if MCU_VARIANT == MCU_ESP32 || MCU_VARIANT == MCU_NRF52 || MCU_VARIANT == MCU_NATIVE
     const float packet_cost_ms = packet_airtime_ms(written);
     uint16_t cb = current_airtime_bin();

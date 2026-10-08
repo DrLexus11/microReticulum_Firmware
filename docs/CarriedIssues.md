@@ -984,3 +984,15 @@ it.
 **Why it matters for the field:** commands and messages to a board can fail
 while everything the board sends still arrives, and nothing but a probe shows
 it.
+
+**Resolved, 2026-10-08 ~16:50: a stale route.** By the time it was looked at
+again the deck's path was 2 hops via REV2 and `rnprobe` got its proof (0%
+loss); all three boards answered the gateway's probes (REV2-2 1.2 s, 2 hops).
+A later announce had replaced the 3-hop route the deck kept from before the
+power cut, which carried nothing. Nothing removes such a route sooner: a path
+outlives the route it describes, toward the board, for as long as the board
+stays quiet. **Mitigation (reticulum-telemetry, probes heal paths):** after
+two probes lost in a row the gateway drops its paths to the board and asks
+again -- for the whole host, since the shared instance holds them, the TAK
+bridge included. The same healing on the boards themselves, for their paths
+to each other, is open.

@@ -1967,6 +1967,35 @@ the field shows, not to have something to build.
      phones and the deck shown as nodes by the boards that hear them --
      Reticulum keeps no topology database, so the map stays assembled from
      each board's own view. After T2.
+   - **T6, board logs in Grafana (Loki) -- scheduled 2026-10-08, server half
+     started at once (operator: "a good dashboard for all observations"), the
+     firmware half after the soaks, as its own PR after PR F.** The server half
+     -- Loki in production, the data source, a log dashboard, a collector on the
+     deck shipping the logs it already has (gateway, bridge, lxmd, the boards'
+     serial captures) -- touches no firmware, so the freeze does not hold it. A board's logs exist only on a serial cable today; both of
+     the week's incidents (the 10-05 panics, the 10-08 power cut) were read
+     from captures that happened to be running. Design, agreed with the
+     operator:
+     1. **Path:** board -> gateway over Reticulum -> MQTT `mesh/log/<sender>`
+        (already reserved, reticulum-telemetry `docs/MQTT.md`) -> backend ->
+        **Loki**, labelled sender, board name, level, service. Grafana's log
+        panel filters by board.
+     2. **Fast carriers only, decided per packet:** the board sends logs only
+        when its path to the gateway leaves by Wi-Fi/IP or HaLow, measured by
+        the actual next-hop interface, never by a declared bitrate. LoRa never
+        carries them; BLE is opt-in.
+     3. **Warnings and errors by default, rate-limited:** a fixed ring buffer
+        allocated in `init()`, sent in batches about every 30 s; debug per
+        board later through the control plane.
+     4. **Crash reports:** at boot after a panic the board reads its core-dump
+        summary (PC and backtrace; the `coredump` partition) and sends it as
+        one log event; the gateway, holding an ELF per firmware hash (kept at
+        flash time, as since 2026-10-08), resolves it to function names.
+        "Board X panicked in Y" in Grafana within minutes, with no USB.
+     5. **Where:** Loki runs in production (ubuntudb); the deck's RAM is
+        tight (100-200 MB for Loki), so dev forwards rather than stores.
+     About two days: firmware (a log service and the crash summary), gateway
+     (receive, symbolise, publish), backend and Loki, dashboard.
 2. **The plugin half closes:** Columba #16 (the MeshService leak), and a
    stationary ATAK made visible after a restart (in Columba and the bridge,
    see below).

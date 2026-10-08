@@ -45,6 +45,18 @@
 //                id u32 (four bytes of the neighbour's identity hash),
 //                kind u8 (DETAIL_IF_* it is heard on), rssi i8 dBm
 //                (DETAIL_RSSI_UNKNOWN off radio), heard_min u8 (minutes ago)
+//   --         FLAG_SYSTEM (after the neighbours, so a decoder that predates it
+//              reads everything else unchanged; 20 bytes):
+//                temp_c i8 (chip temperature; -128 unknown),
+//                lora_rx u32, lora_tx u32 (LoRa frames since boot; a split
+//                packet is two),
+//                lora_crc u32 (frames dropped on a CRC error since boot;
+//                0xFFFFFFFF where the radio does not count them),
+//                time_source u8 (the clock's source: OS::WallTimeSource,
+//                0 unknown), time_age_min u16 (since the clock was last
+//                adopted; 0xFFFF never),
+//                ifac_rejected u32 (packets refused for a wrong network key
+//                since boot; 0xFFFFFFFF until the library counts them)
 //
 // The whole report fits one encrypted Reticulum packet: past
 // TELEMETRY_DETAIL_WIRE_MAX_LEN the encoder drops neighbours and sets
@@ -63,6 +75,7 @@
 #define DETAIL_FLAG_RADIO                0x01
 #define DETAIL_FLAG_PROPAGATION          0x02
 #define DETAIL_FLAG_NEIGHBOURS_TRUNCATED 0x04
+#define DETAIL_FLAG_SYSTEM               0x08
 
 #define DETAIL_IF_OTHER      0
 #define DETAIL_IF_LORA       1
@@ -77,6 +90,9 @@
 
 #define DETAIL_RSSI_UNKNOWN  (-128)
 #define DETAIL_NEVER         0xFFFFFFFFu
+#define DETAIL_UNKNOWN32     0xFFFFFFFFu
+#define DETAIL_TEMP_UNKNOWN  (-128)
+#define DETAIL_SYSTEM_LEN    20
 
 struct DetailInterface {
   uint8_t kind = DETAIL_IF_OTHER;
@@ -120,6 +136,15 @@ struct NodeDetail {
   uint8_t nb_count = 0;
   DetailNeighbour neighbours[DETAIL_MAX_NEIGHBOURS];
   bool neighbours_truncated = false;
+
+  bool system_known = false;
+  int8_t temperature_c = DETAIL_TEMP_UNKNOWN;
+  uint32_t lora_rx = 0;
+  uint32_t lora_tx = 0;
+  uint32_t lora_crc_errors = DETAIL_UNKNOWN32;
+  uint8_t time_source = 0;
+  uint32_t time_age_s = DETAIL_NEVER;        // encoded as whole minutes; never = 0xFFFF
+  uint32_t ifac_rejected = DETAIL_UNKNOWN32;
 };
 
 // An interface's kind from its name, as the firmware names them
@@ -164,7 +189,7 @@ inline size_t telemetry_detail_encode(const NodeDetail& d, uint8_t* out, size_t 
   size_t env_len = strnlen(d.env, DETAIL_ENV_MAX);
   const uint8_t ifs = d.if_count > DETAIL_MAX_INTERFACES ? DETAIL_MAX_INTERFACES : d.if_count;
   size_t fixed = 17 + env_len + 1 + (size_t)ifs * 10 + (d.radio_known ? 5 : 0) +
-                 (d.propagation_known ? 11 : 0) + 1;
+                 (d.propagation_known ? 11 : 0) + 1 + (d.system_known ? DETAIL_SYSTEM_LEN : 0);
   if (out == nullptr || fixed > limit) return 0;
   const uint8_t wanted = d.nb_count > DETAIL_MAX_NEIGHBOURS ? DETAIL_MAX_NEIGHBOURS : d.nb_count;
   uint8_t nbs = wanted;
@@ -173,6 +198,7 @@ inline size_t telemetry_detail_encode(const NodeDetail& d, uint8_t* out, size_t 
   if (d.radio_known)       flags |= DETAIL_FLAG_RADIO;
   if (d.propagation_known) flags |= DETAIL_FLAG_PROPAGATION;
   if (nbs < wanted || d.neighbours_truncated) flags |= DETAIL_FLAG_NEIGHBOURS_TRUNCATED;
+  if (d.system_known)      flags |= DETAIL_FLAG_SYSTEM;
 
   size_t at = 0;
   out[at++] = TELEMETRY_DETAIL_WIRE_VERSION;
@@ -215,6 +241,16 @@ inline size_t telemetry_detail_encode(const NodeDetail& d, uint8_t* out, size_t 
     out[at++] = n.kind;
     out[at++] = (uint8_t)n.rssi;
     out[at++] = detail_sat8(n.heard_s / 60);
+  }
+  if (d.system_known) {
+    out[at++] = (uint8_t)d.temperature_c;
+    detail_put32(out, at, d.lora_rx);
+    detail_put32(out, at, d.lora_tx);
+    detail_put32(out, at, d.lora_crc_errors);   // the radio saturates a known count below the sentinel
+    out[at++] = d.time_source;
+    const uint32_t minutes = d.time_age_s == DETAIL_NEVER ? 0xFFFFu : d.time_age_s / 60;
+    detail_put16(out, at, d.time_age_s == DETAIL_NEVER ? 0xFFFFu : (minutes >= 0xFFFFu ? 0xFFFEu : (uint16_t)minutes));
+    detail_put32(out, at, d.ifac_rejected);
   }
   return at;
 }
@@ -280,5 +316,18 @@ inline bool telemetry_detail_decode(const uint8_t* in, size_t len, NodeDetail& o
     at += 7;
   }
   out.neighbours_truncated = (flags & DETAIL_FLAG_NEIGHBOURS_TRUNCATED) != 0;
+  if (flags & DETAIL_FLAG_SYSTEM) {
+    if (at + DETAIL_SYSTEM_LEN > len) return false;
+    out.system_known = true;
+    out.temperature_c = (int8_t)in[at];
+    out.lora_rx = detail_get32(in + at + 1);
+    out.lora_tx = detail_get32(in + at + 5);
+    out.lora_crc_errors = detail_get32(in + at + 9);
+    out.time_source = in[at + 13];
+    const uint16_t minutes = detail_get16(in + at + 14);
+    out.time_age_s = minutes == 0xFFFFu ? DETAIL_NEVER : (uint32_t)minutes * 60u;
+    out.ifac_rejected = detail_get32(in + at + 16);
+    at += DETAIL_SYSTEM_LEN;
+  }
   return true;
 }
