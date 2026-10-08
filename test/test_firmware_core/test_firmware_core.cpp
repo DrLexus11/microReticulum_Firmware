@@ -13,6 +13,7 @@
 #include "PositionCodec.h"
 #include "TelemetryCodec.h"
 #include "TelemetryBatchCodec.h"
+#include "TelemetryKept.h"
 #include "TelemetryDetailCodec.h"
 #include "TelemetryNeighbours.h"
 #include "ServiceRunner.h"
@@ -934,6 +935,62 @@ void test_batch_decodes_the_fixture_and_refuses_the_rest() {
 	}
 }
 
+void test_kept_reports_compose_into_one_batch_with_their_times() {
+	static TelemetryKept kept;
+	kept.clear();
+	uint8_t report[30];
+	for (size_t i = 0; i < sizeof(report); ++i) report[i] = (uint8_t)i;
+	report[0] = 0x01;
+	TEST_ASSERT_TRUE(kept.keep(report, sizeof(report), 1000, 1791100000));   // clock set
+	TEST_ASSERT_TRUE(kept.keep(report, sizeof(report), 61000, 0));           // clock not set
+	BatchEntry entries[TELEMETRY_KEPT_MAX_ENTRIES];
+	const size_t n = kept.entries(entries, TELEMETRY_KEPT_MAX_ENTRIES, 121000);
+	TEST_ASSERT_EQUAL_size_t(2, n);
+	TEST_ASSERT_EQUAL_UINT8(BATCH_TIME_ABSOLUTE, entries[0].time_kind);
+	TEST_ASSERT_EQUAL_UINT32(1791100000, entries[0].time);
+	TEST_ASSERT_EQUAL_UINT8(BATCH_TIME_RELATIVE, entries[1].time_kind);
+	TEST_ASSERT_EQUAL_UINT32(60, entries[1].time);                          // taken 60 s before composing
+	static uint8_t out[TELEMETRY_BATCH_MAX_LEN];
+	const size_t len = telemetry_batch_encode(0x0a0b0c0d, 1791100120, kept.dropped(), entries, n, out, sizeof(out));
+	TEST_ASSERT_EQUAL_size_t(kept.encoded_len(), len);
+	BatchHeader h;
+	TEST_ASSERT_TRUE(telemetry_batch_header(out, len, h));
+	TEST_ASSERT_EQUAL_UINT8(2, h.count);
+	TEST_ASSERT_EQUAL_UINT8(0, h.flags);
+}
+
+void test_kept_reports_always_fit_one_batch_and_the_oldest_give_way() {
+	static TelemetryKept kept;
+	kept.clear();
+	static uint8_t big[TELEMETRY_BATCH_ENTRY_MAX];
+	memset(big, 0x21, sizeof(big));
+	for (uint32_t i = 0; i < 20; ++i) {
+		big[1] = (uint8_t)i;   // tell them apart
+		TEST_ASSERT_TRUE(kept.keep(big, sizeof(big), 1000 * i, 1791100000 + i));
+		TEST_ASSERT_TRUE(kept.encoded_len() <= TELEMETRY_BATCH_MAX_LEN);
+	}
+	TEST_ASSERT_TRUE(kept.dropped());
+	BatchEntry entries[TELEMETRY_KEPT_MAX_ENTRIES];
+	const size_t n = kept.entries(entries, TELEMETRY_KEPT_MAX_ENTRIES, 30000);
+	TEST_ASSERT_EQUAL_UINT8(19, entries[n - 1].report[1]);                 // the newest kept
+	TEST_ASSERT_EQUAL_UINT32(1791100000 + 20 - n, entries[0].time);         // the oldest that fit
+	static uint8_t out[TELEMETRY_BATCH_MAX_LEN];
+	const size_t len = telemetry_batch_encode(1, 1791100030, kept.dropped(), entries, n, out, sizeof(out));
+	BatchHeader h;
+	TEST_ASSERT_TRUE(telemetry_batch_header(out, len, h));
+	TEST_ASSERT_EQUAL_size_t(n, h.count);                                   // nothing more cut by the encoder
+	TEST_ASSERT_EQUAL_UINT8(BATCH_FLAG_TRUNCATED, h.flags);
+	// Small reports: the entry count is the limit, not the bytes.
+	kept.clear();
+	uint8_t small[4] = {0x01, 2, 3, 4};
+	for (uint32_t i = 0; i < TELEMETRY_KEPT_MAX_ENTRIES + 5; ++i) kept.keep(small, sizeof(small), i, 0);
+	TEST_ASSERT_EQUAL_size_t(TELEMETRY_KEPT_MAX_ENTRIES, kept.count());
+	TEST_ASSERT_FALSE(kept.keep(small, 0, 0, 0));
+	kept.clear();
+	TEST_ASSERT_TRUE(kept.empty());
+	TEST_ASSERT_FALSE(kept.dropped());
+}
+
 int main() {
 	UNITY_BEGIN();
 	RUN_TEST(test_bootlog_that_fits_is_kept_whole);
@@ -990,5 +1047,7 @@ int main() {
 	RUN_TEST(test_neighbour_table_keeps_the_freshest_and_expires_the_rest);
 	RUN_TEST(test_batch_encodes_the_fixture);
 	RUN_TEST(test_batch_decodes_the_fixture_and_refuses_the_rest);
+	RUN_TEST(test_kept_reports_compose_into_one_batch_with_their_times);
+	RUN_TEST(test_kept_reports_always_fit_one_batch_and_the_oldest_give_way);
 	return UNITY_END();
 }
