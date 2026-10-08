@@ -626,6 +626,24 @@ void test_gateway_unheard_for_the_expiry_is_forgotten() {
 	TEST_ASSERT_EQUAL_UINT32(0, gateways.count(1000 + TELEMETRY_GATEWAY_EXPIRY_MS));
 }
 
+// A path outlives its gateway by days: a board keeping reports asks for one
+// heard recently, and is told none when the last announce is too old.
+void test_gateway_live_needs_a_recent_announce() {
+	fake_hops_reset();
+	TelemetryGateways gateways;
+	uint8_t a[16];
+	gateway_hash(a, 0x10);
+	fake_hops_table[0x10] = 2;   // the path is still there
+	gateways.heard(a, 16, 1000);
+	const uint32_t live = 25u * 60u * 1000u;
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + live - 1, fake_hops, live));
+	TEST_ASSERT_NULL(gateways.best(1000 + live, fake_hops, live));
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + live, fake_hops));          // without the limit: still chosen
+	TEST_ASSERT_EQUAL_UINT8(0x10, gateways.newest(1000 + live)->hash[0]); // and still addressable
+	gateways.heard(a, 16, 1000 + live);                                     // heard again
+	TEST_ASSERT_NOT_NULL(gateways.best(1000 + live, fake_hops, live));
+}
+
 void test_gateway_table_full_drops_the_oldest_and_refuses_bad_hashes() {
 	fake_hops_reset();
 	TelemetryGateways gateways;
@@ -1049,5 +1067,6 @@ int main() {
 	RUN_TEST(test_batch_decodes_the_fixture_and_refuses_the_rest);
 	RUN_TEST(test_kept_reports_compose_into_one_batch_with_their_times);
 	RUN_TEST(test_kept_reports_always_fit_one_batch_and_the_oldest_give_way);
+	RUN_TEST(test_gateway_live_needs_a_recent_announce);
 	return UNITY_END();
 }

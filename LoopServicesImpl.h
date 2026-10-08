@@ -414,8 +414,22 @@ static void telemetry_fill_node(NodeTelemetry& report) {
 #endif
 #define TELEMETRY_BATCH_TITLE "telemetry/batch"
 
+// Live reports go only to a gateway heard this recently. Reticulum keeps a path
+// for days after its far end has gone, so "has a path" cannot tell a board that
+// drove out of range; a gateway announces every 10 minutes, and two and a half
+// of those unheard is the board's cue to keep its reports instead (T2). A false
+// alarm only delays reports into a batch. Without a propagation store there is
+// nothing to keep them in, and a stale gateway is still the best guess.
+#ifndef TELEMETRY_GATEWAY_LIVE_MS
+#if defined(LXMF_PROPAGATION_NODE)
+#define TELEMETRY_GATEWAY_LIVE_MS (25UL * 60UL * 1000UL)
+#else
+#define TELEMETRY_GATEWAY_LIVE_MS TELEMETRY_GATEWAY_EXPIRY_MS
+#endif
+#endif
+
 #ifndef TELEMETRY_SEND_BUDGET_MS
-#define TELEMETRY_SEND_BUDGET_MS 250
+#define TELEMETRY_SEND_BUDGET_MS 300
 #endif
 
 #ifndef TELEMETRY_DETAIL_INTERVAL_MS
@@ -531,7 +545,9 @@ public:
 
   // A poll that sends encrypts one packet to the gateway: 167 ms measured on
   // Rev 1 (2026-10-04), once per health report and once per detail report,
-  // never both in one poll. Every other poll returns at once.
+  // never both in one poll. A T2 batch (sign, encrypt, flash write) measured
+  // 159-237 ms on Rev 1 (2026-10-08), in a poll of its own; its announce in
+  // the next. Every other poll returns at once.
   uint32_t budget_ms() const override { return TELEMETRY_SEND_BUDGET_MS; }
 
   bool init(const AppContext& context) override {
@@ -574,7 +590,7 @@ public:
       if (!RNS::Transport::has_path(h)) return TELEMETRY_HOPS_UNKNOWN;
       const uint8_t hops = RNS::Transport::hops_to(h);
       return hops >= TELEMETRY_HOPS_UNKNOWN ? (uint8_t)(TELEMETRY_HOPS_UNKNOWN - 1) : hops;
-    });
+    }, TELEMETRY_GATEWAY_LIVE_MS);
     if (best == nullptr) {
       const TelemetryGateways::Entry* newest = telemetry_gateways().newest(now_ms);
       if (newest != nullptr) RNS::Transport::request_path(RNS::Bytes(newest->hash, TELEMETRY_HASH_LEN));
@@ -717,10 +733,11 @@ private:
   // destination, signed by this node, into this node's own propagation store.
   // On the next poll this node's delivery destination is announced, so the
   // gateway can verify the signature when it collects the message. One
-  // signature, one encryption and a flash write in this poll: its cost is to be
-  // measured on hardware and the budget set from it (PR #39).
+  // signature, one encryption and a flash write in this poll: 159-237 ms on
+  // Rev 1, within TELEMETRY_SEND_BUDGET_MS.
   void compose_kept(uint32_t now_ms, const RNS::Identity& gateway_identity) {
     if (!t2() || t2()->kept.empty()) return;
+    const uint32_t started = (uint32_t)millis();
     TelemetryKept& kept = t2()->kept;
     BatchEntry* entries = t2()->entries;
     uint8_t* batch = t2()->batch;
@@ -748,8 +765,9 @@ private:
       return;
     }
     _compose_failed = false;
-    printf("[telemetry] %u kept report(s) in a %u-byte batch for <%s>, held in this node's store\n",
-           (unsigned)n, (unsigned)len, gateway.hash().toHex().substr(0, 16).c_str());
+    printf("[telemetry] %u kept report(s) in a %u-byte batch for <%s>, held in this node's store (%lu ms)\n",
+           (unsigned)n, (unsigned)len, gateway.hash().toHex().substr(0, 16).c_str(),
+           (unsigned long)((uint32_t)millis() - started));
     kept.clear();
     _announce_pending = true;
   }
